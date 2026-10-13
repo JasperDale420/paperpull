@@ -106,6 +106,13 @@ CUT_KEY = ("moves a record off a key cut before 0.34.0, and --minimal carries wh
 # And these decide no download for another reason, or read only what a moved
 # record holds, some of it another way.
 WALKS_DECIDE_NOTHING = {
+    "robinhood": {
+        "robinhood_docs.migrate_html_titles":
+            "moves a record titled with the control's words Download HTML under the cleaned "
+            "title's key; it decides no download. document_id is read only so a record keyed "
+            "by its id keeps that key; the title key it rebuilds otherwise uses category, "
+            "date, title and account, which --minimal carries",
+    },
     "aafmaa": {
         "aafmaa_docs.forget_postback_names":
             "takes out of a record an id that --minimal never carries",

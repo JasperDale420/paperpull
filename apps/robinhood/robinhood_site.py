@@ -886,7 +886,9 @@ _COLLECT_JS = r"""(readYears) => {""" + _PAGE_JS_LIB + r"""
   for (const el of document.querySelectorAll("a[download], a, button, [role=button]")) {
     const own = ((el.innerText||'') + ' ' + (el.getAttribute('aria-label')||'')).trim();
     const hasDlAttr = el.hasAttribute('download');
-    const isPdfBtn = /download\s*pdf/i.test(own);
+    // "Download HTML" is a statement served as a web page (some months of
+    // an account); it is listed like a PDF and rendered to one when taken.
+    const isPdfBtn = /download\s*(pdf|html)/i.test(own);
     const isCsvBtn = /download\s*csv/i.test(own);
     let title = '', is_pdf = false;
     if (hasDlAttr && !isCsvBtn && TITLE_RE.test(own)) {
@@ -904,7 +906,7 @@ _COLLECT_JS = r"""(readYears) => {""" + _PAGE_JS_LIB + r"""
     } else {
       continue;  // CSV buttons, plain title links, nav, etc.
     }
-    title = title.replace(/\s+/g, ' ').replace(/\s*Download (PDF|CSV)\s*/gi, ' ').trim();
+    title = title.replace(/\s+/g, ' ').replace(/\s*Download (PDF|CSV|HTML)\s*/gi, ' ').trim();
     if (!title || title.length < 4) continue;
     // On the tax page, a tax form whose name has no year is one document
     // per tax year it is shown under. Everything else, and everything on
@@ -1070,6 +1072,12 @@ def _squash(text: str) -> str:
 
 
 def find_control(page, title: str, year: str = ""):
+    """The download control for `title`, or None (see find_control_with_label)."""
+    found = find_control_with_label(page, title, year)
+    return found[0] if found else None
+
+
+def find_control_with_label(page, title: str, year: str = ""):
     """The download control for `title`, or None. Found in one pass in the
     page and marked there, then checked here against the guard with its
     whole label, never a forbidden label unless the control is a plain
@@ -1111,7 +1119,7 @@ def find_control(page, title: str, year: str = ""):
             return None
     except Exception:
         return None
-    return handle
+    return handle, own
 
 
 def has_control(page, title: str, year: str = "") -> bool:
@@ -1156,12 +1164,13 @@ def download_named(page, title: str, out_path, year: str = "") -> bool:
     pressed when none is."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    control = find_control(page, title, year)
-    if control is None:
+    found = find_control_with_label(page, title, year)
+    if found is None:
         log.info("download control not found for %r%s", title,
                  f" of tax year {year}" if year else "")
         return False
-    return _click_and_capture(page, control, title, out_path)
+    control, label = found
+    return _click_and_capture(page, control, title, out_path, label=label)
 
 
 # Robinhood changed how a statement is served, some time between August and
@@ -1203,7 +1212,7 @@ def is_document_store_url(url: str) -> bool:
     return got.hostname.lower().rstrip(".") in DOCUMENT_STORE_HOSTS
 
 
-def _click_and_capture(page, control, title: str, out_path) -> bool:
+def _click_and_capture(page, control, title: str, out_path, label: str = "") -> bool:
     """Click a download control and take the PDF however Robinhood serves it."""
     import json as _json
     import time as _time
@@ -1314,13 +1323,116 @@ def _click_and_capture(page, control, title: str, out_path) -> bool:
     except Exception as e:
         log.info("fetching the PDF for %r failed: %s", title, e)
         return False
-    if not data or b"%PDF-" not in data[:1024]:
-        log.info("fetched %d bytes for %r but it is not a PDF", len(data), title)
+    return keep_fetched(page, data, title, out_path, label=label)
+
+
+# Robinhood serves some months of an account's statements as HTML only: the
+# row's control reads "Download HTML" and the pre-signed link answers a web
+# page, not a PDF. Those used to be refused as "not a PDF" and sent to manual
+# review every run (three months of an individual account, October 2026). The
+# page is the statement, so it is rendered to PDF through the core's inert
+# print path: active content stripped, drawn in a fresh context with
+# JavaScript off and none of the session's cookies, robinhood.com as its base.
+# It is kept only when what came out is a PDF whose text names the statement's
+# month and year, and written beside the target first so a half-made file is
+# never left in Statements.
+HTML_CONTROL_RE = re.compile(r"\bdownload\s+html\s*$", re.I)
+_MONTH_YEAR_IN_TITLE_RE = re.compile(
+    r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|"
+    r"Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+((?:19|20)\d{2})\b", re.I)
+
+
+def looks_like_html(data: bytes) -> bool:
+    head = (data or b"")[:2048].lstrip().lower()
+    return head.startswith(b"<!doctype html") or head.startswith(b"<html") or b"<html" in head
+
+
+_MONTH_NUMBERS = {m: i + 1 for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
+
+
+def names_month(text: str, month_word: str, year: str) -> bool:
+    """Whether `text` names the month `month_word` of `year`: the month's
+    name, whole and in either spelling ("January", "Jan", never "Jan" inside
+    "January" or "Dec" inside "Decrease"), beside the year; or a date of
+    that month and year written with numbers, "01/31/2026" or
+    "2026-01-31", which is how Robinhood prints a statement's period."""
+    stem = month_word[:3].lower()
+    number = _MONTH_NUMBERS.get(stem)
+    if not number:
         return False
+    full = {"jan": "january", "feb": "february", "mar": "march", "apr": "april", "may": "may", "jun": "june",
+            "jul": "july", "aug": "august", "sep": "september", "oct": "october", "nov": "november",
+            "dec": "december"}[stem]
+    # The month's name bound to the year it is printed with, an optional day
+    # between them: "January 2026", "Jan. 31, 2026", never a January of one
+    # year beside some other year elsewhere on the page.
+    forms = [full, stem] + (["sept"] if stem == "sep" else [])
+    word = re.compile(r"\b(%s)\.?\s+(?:\d{1,2}(?:st|nd|rd|th)?,?\s+)?%s(?!\d)" % ("|".join(forms), re.escape(year)), re.I)
+    if word.search(text):
+        return True
+    if re.search(r"(?<!\d)0?%d/\d{1,2}/%s(?!\d)" % (number, re.escape(year)), text):
+        return True
+    if re.search(r"(?<!\d)%s-%02d-\d{2}(?!\d)" % (re.escape(year), number), text):
+        return True
+    return False
+
+
+def rendered_names_statement(path, title: str) -> bool:
+    """Whether the rendered PDF's text names the month and year the
+    statement's title does (names_month). A title naming no month is not
+    checked."""
+    from paperpull_core.receipt_pdf import pdf_text
+    m = _MONTH_YEAR_IN_TITLE_RE.search(title or "")
+    if not m:
+        return True
+    return names_month(pdf_text(Path(path)), m.group(1), m.group(2))
+
+
+def keep_fetched(page, data: bytes, title: str, out_path, label: str = "", render=None, check=None) -> bool:
+    """Keep what the pre-signed link answered: a PDF as it is, or, behind a
+    control labelled "Download HTML", the HTML statement rendered to one.
+    Anything else is refused and nothing is left behind. `render` and
+    `check` stand in for the core's print path and the text check in tests."""
     out_path = Path(out_path)
+    if data and b"%PDF-" in data[:1024]:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(data)
+        return True
+    if not data or not (HTML_CONTROL_RE.search(label or "") and looks_like_html(data)):
+        log.info("fetched %d bytes for %r but it is not a PDF", len(data or b""), title)
+        return False
+    if render is None:
+        from paperpull_core import receipt_pdf
+        render = receipt_pdf.print_html_inert_to_pdf
+    check = check or rendered_names_statement
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(data)
-    return True
+    tmp = out_path.with_name(out_path.name + ".rendering")
+    try:
+        try:
+            render(page, data.decode("utf-8", "replace"), tmp)
+        except Exception as e:
+            log.info("rendering the HTML statement for %r failed (%s)", title, type(e).__name__)
+            return False
+        try:
+            ok = tmp.is_file() and tmp.read_bytes()[:5] == b"%PDF-"
+        except OSError:
+            ok = False
+        if not ok:
+            log.info("the HTML statement for %r did not render to a PDF", title)
+            return False
+        if not check(tmp, title):
+            log.info("the rendered PDF for %r does not name the statement's month", title)
+            return False
+        tmp.replace(out_path)
+        log.info("rendered the HTML statement for %r to PDF", title)
+        return True
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------

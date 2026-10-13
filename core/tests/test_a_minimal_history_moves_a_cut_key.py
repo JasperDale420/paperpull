@@ -169,6 +169,11 @@ OTHER_MOVES = {
     ("optum", "adopt_product_keys"):
         "Optum first shipped in 0.46.0 with this move, so no released version "
         "wrote a key it moves",
+    ("robinhood", "migrate_html_titles"):
+        "moves a record whose title still carries the control's words Download HTML "
+        "under the cleaned title's key, read from category, date, title and account, "
+        "which --minimal carries, so it moves there as from a full history; it moves "
+        "no cut key",
 }
 
 LOADS = {app: load_time_moves(app) for app in APPS}

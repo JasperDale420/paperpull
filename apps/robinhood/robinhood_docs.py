@@ -141,6 +141,51 @@ def migrate_legacy_keys(records: dict) -> int:
     return _migrate_account_keys(records, lambda r: Document.from_dict(r).key)
 
 
+_HTML_WORDS_RE = re.compile(r"\s*Download HTML\s*", re.I)
+
+
+def migrate_html_titles(records: dict) -> int:
+    """Move records whose title still carries the words "Download HTML".
+
+    Until October 2026 the control's words stayed in a statement's title, so
+    its key, which carries the title, named them too. Discovery now strips
+    them, and a record under the old key would sit beside a new one for the
+    same statement, both taken. So each such record is moved under the
+    cleaned title's key. When a record already holds that key, the one with
+    a saved PDF stays, else the moved record, and the other is dropped.
+    Returns how many records moved."""
+    moved = 0
+    for old_key in list(records.keys()):
+        rec = records.get(old_key)
+        if not isinstance(rec, dict):
+            continue
+        title = str(rec.get("title") or "")
+        if not _HTML_WORDS_RE.search(title):
+            continue
+        cleaned = re.sub(r"\s+", " ", _HTML_WORDS_RE.sub(" ", title)).strip()
+        if not cleaned:
+            continue
+        rec = dict(rec, title=cleaned)
+        if str(old_key).startswith("id:"):
+            # Keyed by Robinhood's own document id: the key stands whatever
+            # the title says, and whether or not a --minimal history kept
+            # the id field itself. Only the title is cleaned.
+            records[old_key] = rec
+            moved += 1
+            continue
+        new_key = Document.from_dict(rec).key
+        other = records.get(new_key) if new_key != old_key else None
+        if other is not None:
+            keep = other if (other.get("pdf_path") and not rec.get("pdf_path")) else rec
+            records[new_key] = keep
+        else:
+            records[new_key] = rec
+        if new_key != old_key:
+            records.pop(old_key, None)
+        moved += 1
+    return moved
+
+
 def source_rank(source_url: str) -> int:
     """The order documents are taken in, by the page they are on. The
     statements pages come in the order the site layer lists them, the tax
@@ -324,7 +369,12 @@ class App:
         self.progress.load()
         self.discovery.load()
         for store in (self.progress, self.discovery):
-            if migrate_legacy_keys(store.data):
+            # Each move on its own: one that moved something never keeps the
+            # other from running.
+            moved = migrate_legacy_keys(store.data)
+            if migrate_html_titles(store.data):
+                moved = True
+            if moved:
                 store.save(backup=True)
         self.index_csv = CsvFile(self.paths.document_index_csv,
                                  DOCUMENT_INDEX_COLUMNS, self.paths.backups)

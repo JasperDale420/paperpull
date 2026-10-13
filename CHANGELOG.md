@@ -77,6 +77,16 @@ to the Capital One app, so Discover counts as supported.
   the same, and Discover counts as supported, so sixty providers are
   supported and seven wait for a tester.
 
+### Fixed
+- **Robinhood saves the months it serves only as HTML.** Some months of an
+  account's statements come from Robinhood as a web page, behind a
+  "Download HTML" control, and used to be refused as "not a PDF" and marked
+  for manual review on every run. They are now rendered to PDF through
+  PaperPull's own print path, drawn in a separate browser context with
+  JavaScript off and no connection to anything, and kept only when the PDF's
+  text names the statement's month. A record listed under the old title
+  moves under the cleaned one, so nothing is downloaded twice.
+
 ## [0.49.0] - 2026-10-12
 
 Review names comes to the control panel, so PaperPull Server, which has no

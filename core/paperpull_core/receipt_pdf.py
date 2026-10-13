@@ -334,6 +334,56 @@ def print_html_to_pdf(page, html: str, out_path: Path) -> None:
             pass
 
 
+_ACTIVE_TAGS_RE = re.compile(r"<\s*(script|iframe|frame|frameset|object|embed|applet|form|base|link|meta)\b[^>]*>.*?<\s*/\s*\1\s*>|<\s*(script|iframe|frame|frameset|object|embed|applet|form|base|link|meta)\b[^>]*/?>", re.I | re.S)
+_ON_ATTR_RE = re.compile(r"\s+on[a-z]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)", re.I)
+_JS_URL_RE = re.compile(r"(href|src|action|formaction|xlink:href)\s*=\s*([\"']?)\s*javascript:[^\"'>\s]*", re.I)
+
+
+def inert_html(html: str, base: str) -> str:
+    """The HTML with every way to run code or load a frame taken out, and a
+    <base> of the caller's choosing: scripts, frames, objects, forms, link
+    and meta tags, the supplied base, inline event handlers and javascript:
+    URLs. Styles and images stay, since they are what a printed statement
+    needs. Belt and braces: the page it is rendered in has JavaScript off."""
+    out = _ACTIVE_TAGS_RE.sub("", html or "")
+    out = _ON_ATTR_RE.sub("", out)
+    out = _JS_URL_RE.sub(r"\1=\2#", out)
+    tag = f'<base href="{base}">' if base else ""
+    if re.search(r"<head[^>]*>", out, re.I):
+        out = re.sub(r"(<head[^>]*>)", lambda m: m.group(1) + tag, out, count=1, flags=re.I)
+    else:
+        out = f"<html><head>{tag}</head><body>{out}</body></html>"
+    return out
+
+
+def print_html_inert_to_pdf(page, html: str, out_path: Path, base: Optional[str] = None) -> None:
+    """Render HTML the app fetched itself, not a page the browser already
+    showed, to a PDF without letting it run: active content is stripped
+    (inert_html) and the page it is drawn in belongs to a fresh browser
+    context with JavaScript off and none of the signed-in session's cookies.
+    `base` defaults to the bound provider's. Raises on failure."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    browser = getattr(page.context, "browser", None)
+    if browser is None:
+        raise RuntimeError("no browser to render in")
+    ctx = browser.new_context(java_script_enabled=False, accept_downloads=False)
+    try:
+        # Offline: the stripped page may still name outside addresses in
+        # styles and images, and none is fetched. Text is what a statement
+        # needs; a missing logo is not a loss.
+        ctx.route("**/*", lambda route: route.abort())
+        tmp = ctx.new_page()
+        tmp.set_content(inert_html(html, base if base is not None else _base_href()), wait_until="load")
+        tmp.wait_for_timeout(1500)
+        print_page_to_pdf(tmp, out_path)
+    finally:
+        try:
+            ctx.close()
+        except Exception:
+            pass
+
+
 def get_print_snapshot(page) -> Optional[str]:
     """HTML stashed by the print hook at the moment print() was called
     (from the main window or any same-origin iframe), or None."""
