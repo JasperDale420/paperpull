@@ -7,6 +7,25 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Fixed
+- **Robinhood saves the months it serves only as HTML.** Some months of an
+  account's statements come from Robinhood as a web page, behind a
+  "Download HTML" control, and used to be refused as "not a PDF" and marked
+  for manual review on every run. They are now rendered to PDF through
+  PaperPull's own print path, drawn in a separate browser context with
+  JavaScript off and no connection to anything, and kept only when the PDF's
+  first page prints a statement period ending in that month. A record
+  listed under the old title moves under the cleaned one, keeping whichever
+  of two is done, so nothing is downloaded twice. The page is stripped of
+  anything active until nothing more comes out, and refused when a tag
+  rebuilt by the strip is still there. A retirement or crypto page that
+  hands over the individual account's HTML month is still caught, by the
+  digest of the statement's text, since each print of one page is a
+  different file. These months need the signed-in browser (`cdp_url`), and
+  without it go to manual review.
+
 ## [0.50.0] - 2026-10-13
 
 Two providers arrive, SDG&E bills from My Energy Center and Shelby County
@@ -76,16 +95,6 @@ to the Capital One app, so Discover counts as supported.
   history kept. The provider tables and the panel's line for Discover say
   the same, and Discover counts as supported, so sixty providers are
   supported and seven wait for a tester.
-
-### Fixed
-- **Robinhood saves the months it serves only as HTML.** Some months of an
-  account's statements come from Robinhood as a web page, behind a
-  "Download HTML" control, and used to be refused as "not a PDF" and marked
-  for manual review on every run. They are now rendered to PDF through
-  PaperPull's own print path, drawn in a separate browser context with
-  JavaScript off and no connection to anything, and kept only when the PDF's
-  text names the statement's month. A record listed under the old title
-  moves under the cleaned one, so nothing is downloaded twice.
 
 ## [0.49.0] - 2026-10-12
 

@@ -886,8 +886,8 @@ _COLLECT_JS = r"""(readYears) => {""" + _PAGE_JS_LIB + r"""
   for (const el of document.querySelectorAll("a[download], a, button, [role=button]")) {
     const own = ((el.innerText||'') + ' ' + (el.getAttribute('aria-label')||'')).trim();
     const hasDlAttr = el.hasAttribute('download');
-    // "Download HTML" is a statement served as a web page (some months of
-    // an account); it is listed like a PDF and rendered to one when taken.
+    // "Download HTML" is a statement served as a web page, as some months
+    // of an account are. It is listed like a PDF and rendered to one when taken.
     const isPdfBtn = /download\s*(pdf|html)/i.test(own);
     const isCsvBtn = /download\s*csv/i.test(own);
     let title = '', is_pdf = false;
@@ -1351,42 +1351,81 @@ _MONTH_NUMBERS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
 
 
+_MONTH_FULL = {"jan": "january", "feb": "february", "mar": "march", "apr": "april", "may": "may",
+               "jun": "june", "jul": "july", "aug": "august", "sep": "september", "oct": "october",
+               "nov": "november", "dec": "december"}
+_MONTH_WORD = r"(?:%s|sept)" % "|".join(sorted(
+    set(_MONTH_FULL) | set(_MONTH_FULL.values()), key=len, reverse=True))
+# One printed date: 01/31/2026, 2026-01-31, or January 31, 2026 (Jan. 31st, 2026).
+_DATE = (r"(?:\d{1,2}/\d{1,2}/\d{4}|\d{4}-\d{2}-\d{2}|\b%s\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4})"
+         % _MONTH_WORD)
+# A period's end: the second date of a range printed under the words
+# "period" or "statement", or the date after "period ending" or "statement
+# ended". Never a date alone, nor a range of anything else, which is as often
+# trade dates, an opening balance's day or the day the page was made. The
+# label may sit a line above its dates, but no other label between them.
+_OTHER_LABEL = r"trade|generated|as\s+of|balance|settle|activity|transaction"
+_LABEL_TO_DATE = r"(?:(?!%s)[^\d]){0,40}?" % _OTHER_LABEL
+_PERIOD_END_RE = re.compile(
+    r"\b(?:period|statement)\b%s(?<![\d/])%s\s*(?:-|\u2013|\u2014|to|through|thru)\s*(%s)(?!\d)"
+    r"|\b(?:period|statement)\s+(?:ending|ended)\s*:?\s*(%s)(?!\d)"
+    % (_LABEL_TO_DATE, _DATE, _DATE, _DATE), re.I)
+
+
+def _month_and_year(date: str):
+    """The (month number, year) a printed date (_DATE) names, or None."""
+    date = date.strip()
+    m = re.fullmatch(r"(\d{1,2})/\d{1,2}/(\d{4})", date)
+    if m:
+        return int(m.group(1)), m.group(2)
+    m = re.fullmatch(r"(\d{4})-(\d{2})-\d{2}", date)
+    if m:
+        return int(m.group(2)), m.group(1)
+    m = re.match(r"([a-z]+)\.?\s.*?(\d{4})$", date, re.I)
+    if m:
+        number = _MONTH_NUMBERS.get(m.group(1)[:3].lower())
+        if number:
+            return number, m.group(2)
+    return None
+
+
 def names_month(text: str, month_word: str, year: str) -> bool:
-    """Whether `text` names the month `month_word` of `year`: the month's
-    name, whole and in either spelling ("January", "Jan", never "Jan" inside
-    "January" or "Dec" inside "Decrease"), beside the year; or a date of
-    that month and year written with numbers, "01/31/2026" or
-    "2026-01-31", which is how Robinhood prints a statement's period."""
-    stem = month_word[:3].lower()
-    number = _MONTH_NUMBERS.get(stem)
+    """Whether `text` prints a statement period that ends in the month
+    `month_word` of `year`. The end is the second date of a range printed
+    under "period" or "statement", "Statement period 01/01/2026 to
+    01/31/2026" or "Period: January 1, 2026 - January 31, 2026", or the date
+    after "period ending" or "statement ended". A date on its own, or a
+    range under another label, is not read, since a page of February can
+    print trade dates or an opening balance of January, and the day it was
+    made."""
+    number = _MONTH_NUMBERS.get((month_word or "")[:3].lower())
     if not number:
         return False
-    full = {"jan": "january", "feb": "february", "mar": "march", "apr": "april", "may": "may", "jun": "june",
-            "jul": "july", "aug": "august", "sep": "september", "oct": "october", "nov": "november",
-            "dec": "december"}[stem]
-    # The month's name bound to the year it is printed with, an optional day
-    # between them: "January 2026", "Jan. 31, 2026", never a January of one
-    # year beside some other year elsewhere on the page.
-    forms = [full, stem] + (["sept"] if stem == "sep" else [])
-    word = re.compile(r"\b(%s)\.?\s+(?:\d{1,2}(?:st|nd|rd|th)?,?\s+)?%s(?!\d)" % ("|".join(forms), re.escape(year)), re.I)
-    if word.search(text):
-        return True
-    if re.search(r"(?<!\d)0?%d/\d{1,2}/%s(?!\d)" % (number, re.escape(year)), text):
-        return True
-    if re.search(r"(?<!\d)%s-%02d-\d{2}(?!\d)" % (re.escape(year), number), text):
-        return True
+    for m in _PERIOD_END_RE.finditer(text or ""):
+        if _month_and_year(m.group(1) or m.group(2)) == (number, year):
+            return True
     return False
 
 
+def _first_page_text(path) -> str:
+    """The first page's text, or "" when it cannot be read. A period
+    printed further in, beside a list of trades, is not the statement's own."""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(str(path))
+        return (reader.pages[0].extract_text() or "") if reader.pages else ""
+    except Exception:
+        return ""
+
+
 def rendered_names_statement(path, title: str) -> bool:
-    """Whether the rendered PDF's text names the month and year the
-    statement's title does (names_month). A title naming no month is not
-    checked."""
-    from paperpull_core.receipt_pdf import pdf_text
+    """Whether the rendered PDF's first page prints a period ending in the
+    month and year the statement's title names (names_month). A title
+    naming no month is not checked."""
     m = _MONTH_YEAR_IN_TITLE_RE.search(title or "")
     if not m:
         return True
-    return names_month(pdf_text(Path(path)), m.group(1), m.group(2))
+    return names_month(_first_page_text(Path(path)), m.group(1), m.group(2))
 
 
 def keep_fetched(page, data: bytes, title: str, out_path, label: str = "", render=None, check=None) -> bool:

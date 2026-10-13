@@ -109,8 +109,8 @@ WALKS_DECIDE_NOTHING = {
     "robinhood": {
         "robinhood_docs.migrate_html_titles":
             "moves a record titled with the control's words Download HTML under the cleaned "
-            "title's key; it decides no download. document_id is read only so a record keyed "
-            "by its id keeps that key; the title key it rebuilds otherwise uses category, "
+            "title's key. It decides no download. document_id is read only so a record keyed "
+            "by its id keeps that key, and the title key it rebuilds otherwise uses category, "
             "date, title and account, which --minimal carries",
     },
     "aafmaa": {
@@ -852,7 +852,7 @@ HISTORY = {"title": "Invented Monthly Statement", "summary": "Invented Statement
            "source_url": "https://statements.example.invalid/page",
            "undated_key": "Statement::Invented_Monthly_Statement:",
            "pdf_filename": "2026-05-14 Invented Statement.pdf", "pdf_size": "4096",
-           "pdf_sha256": "ab" * 32}
+           "pdf_sha256": "ab" * 32, "text_sha256": "cd" * 32}
 
 
 def records(folder: Path):
@@ -1027,6 +1027,21 @@ def test_another_accounts_saved_statement_is_known_after_the_move(loading, tmp_p
 
     got = moved(tmp_path, old, new, held)
     assert app_over(mod, new, got)._other_accounts_statement(crypto, "ab" * 32), \
+        "the individual statement would be saved again as the crypto one"
+
+
+@pytest.mark.parametrize("minimal", [False, True], ids=["whole", "minimal"])
+def test_another_accounts_statement_is_known_by_its_text_after_the_move(loading, tmp_path,
+                                                                       minimal):
+    """A month served as HTML is a new file on each print, and is known by
+    the digest of its text, which the move carries."""
+    mod = loading(ROBINHOOD)
+    old, new = computers(tmp_path)
+    individual = statement(mod)
+    held = {individual.key: saved(individual, pdf_sha256="ab" * 32, text_sha256="cd" * 32)}
+    crypto = statement(mod, account="Crypto")
+    got = moved(tmp_path, old, new, held, minimal=minimal)
+    assert app_over(mod, new, got)._other_accounts_statement(crypto, "ef" * 32, "cd" * 32), \
         "the individual statement would be saved again as the crypto one"
 
 

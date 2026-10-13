@@ -172,7 +172,7 @@ OTHER_MOVES = {
     ("robinhood", "migrate_html_titles"):
         "moves a record whose title still carries the control's words Download HTML "
         "under the cleaned title's key, read from category, date, title and account, "
-        "which --minimal carries, so it moves there as from a full history; it moves "
+        "which --minimal carries, so it moves there as from a full history. It moves "
         "no cut key",
 }
 

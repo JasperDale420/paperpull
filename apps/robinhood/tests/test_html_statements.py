@@ -1,8 +1,10 @@
 """Statements Robinhood serves as HTML are rendered to PDF through the
-core's inert print path; anything else that is not a PDF is still refused,
+core's inert print path. Anything else that is not a PDF is still refused,
 and nothing half-made is left behind."""
 import sys
 from pathlib import Path
+
+import pytest
 
 HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE))
@@ -138,11 +140,15 @@ def test_the_inert_render_fetches_nothing_and_runs_nothing(tmp_path):
 
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
-            hits.append(self.path); self.send_response(200); self.end_headers(); self.wfile.write(b"x")
+            hits.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"x")
 
         def log_message(self, *a):
             pass
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), H); port = srv.server_address[1]
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     html = (f"<html><head><style>@import url(http://127.0.0.1:{port}/a.css); body{{background:url(http://127.0.0.1:{port}/b.png)}}</style>"
             f"<script>fetch('http://127.0.0.1:{port}/js')</script></head>"
@@ -193,8 +199,12 @@ def test_both_load_time_moves_run_on_one_store():
     import robinhood_docs as docs
 
     class Store:
-        def __init__(self, data): self.data = data; self.saved = 0
-        def save(self, backup=False): self.saved += 1
+        def __init__(self, data):
+            self.data = data
+            self.saved = 0
+
+        def save(self, backup=False):
+            self.saved += 1
     legacy = {"title": "January 2026 \u2013 Individual Investing Account Statement Download HTML",
               "category": "Statement", "summary": "Statement", "date": "2026-01-31",
               "account": "Individual", "state": "NEEDS_MANUAL_REVIEW", "document_id": ""}
@@ -221,7 +231,7 @@ def test_both_load_time_moves_run_on_one_store():
 
 
 def test_a_record_keyed_by_its_document_id_keeps_that_key():
-    """--minimal histories drop document_id but keep the id: key; the title
+    """--minimal histories drop document_id but keep the id: key. The title
     is cleaned and the key stands, so fresh discovery finds it done."""
     import robinhood_docs as docs
     rec = {"title": "March 2026 \u2013 Individual Investing Account Statement Download HTML",
@@ -234,17 +244,249 @@ def test_a_record_keyed_by_its_document_id_keeps_that_key():
     assert records["id:0b1e-uuid"]["state"] == "COMPLETED"
 
 
-def test_the_month_check_reads_names_or_numeric_dates_and_not_look_alikes():
+def test_the_month_check_wants_a_printed_period_ending_in_the_month():
     assert site.names_month("Statement period 01/01/2026 to 01/31/2026", "January", "2026")
-    assert site.names_month("as of 2026-02-28", "February", "2026")
-    assert site.names_month("Jan 2026 statement", "January", "2026")
-    assert site.names_month("January 31, 2026", "Jan", "2026")
-    assert not site.names_month("Decrease in value 2025", "December", "2025"), "Dec inside Decrease"
-    assert not site.names_month("12/31/2024 to 12/31/2024", "December", "2025"), "wrong year"
-    assert not site.names_month("02/28/2026", "January", "2026"), "wrong month"
+    assert site.names_month("Statement 01/01/2026 - 01/31/2026", "Jan", "2026")
+    assert site.names_month("Period 2026-02-01 through 2026-02-28", "February", "2026")
+    assert site.names_month("Statement Period:\nJanuary 1, 2026 \u2013 January 31, 2026", "January", "2026")
+    assert site.names_month("Period Jan. 1st, 2026 to Jan. 31st, 2026", "January", "2026")
+    assert site.names_month("For the period ending January 31, 2026", "January", "2026")
+    assert site.names_month("Period ended 09/30/2026", "September", "2026")
+    assert site.names_month("Statement period Sept. 1, 2026 - Sept. 30, 2026", "September", "2026")
     assert not site.names_month("", "January", "2026")
-    assert not site.names_month("January 2025 statement total 2026", "January", "2026"), "name and year must be bound"
-    assert site.names_month("Jan. 31st, 2026", "January", "2026")
-    assert not site.names_month("January 31 2025 and later in 2026", "January", "2026")
-    assert not site.names_month("Sept. 2026", "January", "2026"), "sept is September only"
-    assert site.names_month("Sept. 2026", "September", "2026")
+    assert not site.names_month("01/01/2026 - 01/31/2026", "January", "2026"), "a range with no label"
+    assert not site.names_month("Period 12/01/2024 to 12/31/2024", "December", "2025"), "wrong year"
+    assert not site.names_month("Period 02/01/2026 to 02/28/2026", "January", "2026"), "wrong month"
+    assert not site.names_month("Period 01/01/2026 to 02/28/2026", "January", "2026"), "the end is what counts"
+    assert not site.names_month("Decrease 12/31/2025", "December", "2025"), "a date alone is no period"
+
+
+@pytest.mark.parametrize("text", [
+    "Trade date 01/30/2026",
+    "Opening balance as of 12/31/2025",
+    "Generated January 3, 2026",
+    "January 2026 statement",
+    "as of 2026-01-31",
+    "Period 12/01/2025 to 12/31/2025  Trade date 01/02/2026",
+    "Trade dates 01/01/2026 to 01/31/2026",
+    "Statement of activity, trade dates 01/01/2026 to 01/31/2026",
+    "Generated 01/01/2026 to 01/31/2026",
+    "Statement balance as of 01/01/2026 - 01/31/2026",
+    "Ended 01/31/2026",
+])
+def test_a_date_that_is_not_the_period_end_does_not_pass_for_january(text):
+    """The maintainer's counterexamples. A February page printing a trade
+    date in January, an opening balance of the month before, or the day the
+    page was made says nothing of the statement's own month."""
+    assert not site.names_month(text, "January", "2026")
+
+
+def test_only_the_first_page_is_read(tmp_path, monkeypatch):
+    """A period printed on a later page, a list of trades for instance,
+    is not the statement's own."""
+    pages = ["Statement for an invented account", "Period 01/01/2026 to 01/31/2026"]
+    monkeypatch.setattr(site, "_first_page_text", lambda path: pages[0])
+    assert not site.rendered_names_statement(tmp_path / "x.pdf", TITLE)
+    monkeypatch.setattr(site, "_first_page_text", lambda path: pages[1])
+    assert site.rendered_names_statement(tmp_path / "x.pdf", TITLE)
+
+
+def test_the_first_page_text_reads_one_page_of_a_real_render(tmp_path):
+    from playwright.sync_api import sync_playwright
+    html = ("<html><body><p>Period 01/01/2026 to 01/31/2026</p>"
+            "<p style='page-break-before:always'>Period 02/01/2026 to 02/28/2026</p></body></html>")
+    out = tmp_path / "r.pdf"
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        try:
+            page = browser.new_page()
+            receipt_pdf.print_html_inert_to_pdf(page, html, out, base="https://robinhood.com/")
+        finally:
+            browser.close()
+    text = site._first_page_text(out)
+    assert "01/31/2026" in text and "02/28/2026" not in text
+
+
+def _done_and_reviewed():
+    import robinhood_docs as docs
+    legacy = {"title": "January 2026 \u2013 Individual Investing Account Statement Download HTML",
+              "category": "Statement", "summary": "Statement", "date": "2026-01-31",
+              "account": "Individual", "document_id": ""}
+    old_key = docs.Document.from_dict(legacy).key
+    clean = dict(legacy, title="January 2026 \u2013 Individual Investing Account Statement")
+    new_key = docs.Document.from_dict(clean).key
+    return docs, legacy, old_key, clean, new_key
+
+
+def test_the_done_record_stays_when_both_titles_are_held():
+    """Done, not a path, decides. The record under the cleaned key is done
+    with its file deleted once imported, and the old one is in review with a
+    path to the copy set aside there. The done one stays."""
+    docs, legacy, old_key, clean, new_key = _done_and_reviewed()
+    done = dict(clean, state="COMPLETED", downloaded_ok=True, pdf_path="")
+    review = dict(legacy, state="NEEDS_MANUAL_REVIEW", pdf_path="/review/copy.pdf")
+    both = {old_key: review, new_key: done}
+    assert docs.migrate_html_titles(both) == 1
+    assert list(both) == [new_key] and both[new_key]["state"] == "COMPLETED"
+    # And the other way round: the old record is the done one.
+    done = dict(legacy, state="COMPLETED", downloaded_ok=True, pdf_path="")
+    review = dict(clean, state="NEEDS_MANUAL_REVIEW", pdf_path="/review/copy.pdf")
+    both = {old_key: done, new_key: review}
+    assert docs.migrate_html_titles(both) == 1
+    assert list(both) == [new_key] and both[new_key]["state"] == "COMPLETED"
+    assert "Download" not in both[new_key]["title"]
+
+
+def test_when_neither_is_done_the_one_already_under_the_cleaned_key_stays():
+    docs, legacy, old_key, clean, new_key = _done_and_reviewed()
+    listed = dict(clean, state="DISCOVERED")
+    both = {old_key: dict(legacy, state="NEEDS_MANUAL_REVIEW"), new_key: listed}
+    assert docs.migrate_html_titles(both) == 1
+    assert both == {new_key: listed}
+
+
+# Each of these once left, or could leave, something live after the strip.
+# Removing a tag joined the text around it into a new one, or a tag the
+# pattern did not see opened a connection the route abort did not stop.
+ADVERSARIAL = [
+    "<li<link>nk rel=prefetch href=//evil.test/a>",
+    "<scr<script>x</script>ipt src=//evil.test/a.js></script>",
+    "<me<meta>ta http-equiv=refresh content='0;url=//evil.test/'>",
+    "<if<iframe></iframe>rame src=//evil.test/></iframe>",
+    "<ob<object></object>ject data=//evil.test/a></object>",
+    "<em<embed>bed src=//evil.test/a>",
+    "<ba<base>se href=//evil.test/>",
+    "<fo<form></form>rm action=//evil.test/><button>x</button></form>",
+    "<<script>script>x()<</script>/script>",
+    "<l<li<link>nk>nk rel=prefetch href=//evil.test/a>",
+    "<meta http-equiv=refresh content='0;url=//evil.test/'>",
+    "<META HTTP-EQUIV='Refresh' CONTENT='0; URL=//evil.test/'>",
+    "<iframe src=//evil.test/></iframe>",
+    "<iframe srcdoc='<img src=//evil.test/a>'>",
+    "<object data=//evil.test/a type=text/html></object>",
+    "<link rel=prefetch href=//evil.test/a>",
+    "<link rel=preload as=image href=//evil.test/a>",
+    "<frameset><frame src=//evil.test/></frameset>",
+    "<applet code=x codebase=//evil.test/></applet>",
+    "<script\nsrc=//evil.test/a.js></script>",
+    "<script src=//evil.test/a.js",
+    "<svg><script>x()</script></svg>",
+    "<img src=x/onerror=fetch('//evil.test/')>",
+    "<img/onerror=fetch('//evil.test/') src=x>",
+    "<a href=' javascript:fetch(1)'>a</a>",
+    "<p o<script></script>nclick=x()>t</p>",
+]
+LIVE = ("<script", "<iframe", "<frame", "<object", "<embed", "<applet", "<form", "<link",
+        "<meta", "onerror", "onclick", "javascript:")
+
+
+@pytest.mark.parametrize("html", ADVERSARIAL)
+def test_nothing_live_is_left_or_the_render_is_refused(html):
+    try:
+        out = receipt_pdf.inert_html("<html><head></head><body>" + html + "<p>January 2026</p></body></html>",
+                                     "https://robinhood.com/")
+    except receipt_pdf.UnsafeHtml:
+        return
+    low = out.lower()
+    assert out.lower().count("<base") == 1, out
+    for bad in LIVE:
+        assert bad not in low, (bad, out)
+
+
+@pytest.mark.parametrize("unit", ["<script>", "<script ", "<a ", "<a \"", "<li<link>nk ", "<p onclick=x "])
+def test_a_page_of_broken_tags_is_read_in_one_pass(unit):
+    """Each start is never scanned to the end of the page, so a large page
+    of unclosed or broken tags takes no longer than a page of text."""
+    import time
+    html = "<html><head></head><body>" + unit * 50000 + "</body></html>"
+    started = time.perf_counter()
+    try:
+        receipt_pdf.inert_html(html, "https://robinhood.com/")
+    except receipt_pdf.UnsafeHtml:
+        pass
+    assert time.perf_counter() - started < 3, "the strip is no longer linear"
+
+
+def test_an_unclosed_script_tag_goes_with_the_rest_of_the_page():
+    """A tag with no ">" runs to the end of the page, as a browser reads it,
+    and is taken out with it."""
+    out = receipt_pdf.inert_html("<html><body><p>x</p><script src=//evil.test/a.js", "https://robinhood.com/")
+    assert "<p>x</p>" in out and "script" not in out.lower() and "evil" not in out
+
+
+def test_an_unclosed_script_element_never_shows_what_it_held():
+    """A script opened and never closed holds the rest of the page as its
+    code. Shown as text, a period written there would pass for the
+    statement's own."""
+    out = receipt_pdf.inert_html("<html><body><p>Kept</p><script><p>Period 01/01/2026 to 01/31/2026"
+                                 "<img src=//evil.test/a>", "")
+    assert "Kept" in out and "Period" not in out and "evil" not in out
+
+
+def test_an_active_tag_the_strip_cannot_settle_refuses_the_render(monkeypatch):
+    """When a pass still changes the page after the last one allowed, or an
+    active tag is left, nothing is drawn."""
+    monkeypatch.setattr(receipt_pdf, "_MAX_STRIPS", 1)
+    with pytest.raises(receipt_pdf.UnsafeHtml):
+        receipt_pdf.inert_html("<l<link>ink rel=prefetch href=//evil.test/a>", "")
+
+
+def test_a_handler_written_inside_a_quoted_value_is_left_alone():
+    out = receipt_pdf.inert_html('<p title="x onerror=y" data-a=\'b onclick=c\'>t</p>', "")
+    assert 'title="x onerror=y"' in out and "data-a='b onclick=c'" in out
+
+
+def test_a_handler_after_a_slash_or_a_quote_is_taken_out():
+    out = receipt_pdf.inert_html("<img src=\"a.png\"/onerror=x() alt='a'onload=y()>", "")
+    assert "onerror" not in out and "onload" not in out and 'src="a.png"' in out
+
+
+@pytest.mark.parametrize("html", [
+    "<me<meta>ta http-equiv=refresh content='0;url=http://127.0.0.1:{port}/refresh'>",
+    "<if<iframe></iframe>rame src=http://127.0.0.1:{port}/iframe></iframe>",
+    "<ob<object></object>ject data=http://127.0.0.1:{port}/object></object>",
+    "<li<link>nk rel=prefetch href=http://127.0.0.1:{port}/prefetch>",
+    "<meta http-equiv=refresh content='0;url=http://127.0.0.1:{port}/refresh'>",
+    "<iframe src=http://127.0.0.1:{port}/iframe></iframe>",
+    "<object data=http://127.0.0.1:{port}/object></object>",
+    "<link rel=prefetch href=http://127.0.0.1:{port}/prefetch>",
+])
+def test_a_split_or_plain_active_tag_reaches_nothing_in_a_real_render(tmp_path, html):
+    """In a real browser, with a local server counting every request, none
+    of these is fetched, whether the strip took it out or refused the page."""
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from playwright.sync_api import sync_playwright
+    hits = []
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"x")
+
+        def log_message(self, *a):
+            pass
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    out = tmp_path / "r.pdf"
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            try:
+                page = browser.new_page()
+                try:
+                    receipt_pdf.print_html_inert_to_pdf(
+                        page, "<html><head></head><body>" + html.format(port=port)
+                        + "<p>January 2026</p></body></html>", out, base="https://robinhood.com/")
+                except receipt_pdf.UnsafeHtml:
+                    assert len(browser.contexts) == 1, "a refused page opens no context"
+                time.sleep(0.5)
+            finally:
+                browser.close()
+    finally:
+        srv.shutdown()
+    assert hits == [], hits

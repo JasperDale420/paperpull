@@ -106,6 +106,10 @@ class Document:
         # The saved statement's SHA-256, so a statement another account's
         # page hands over is known for this one after its file is deleted.
         self.pdf_sha256 = kw.get("pdf_sha256", "")
+        # And the SHA-256 of its text, since a month served as HTML is
+        # printed anew on each run and the print stamps its own time, so the
+        # same statement twice is two files with one text (_text_sha256).
+        self.text_sha256 = kw.get("text_sha256", "")
         self.notes = kw.get("notes", "")
         self.discovered_at = kw.get("discovered_at", now_iso())
 
@@ -151,9 +155,10 @@ def migrate_html_titles(records: dict) -> int:
     its key, which carries the title, named them too. Discovery now strips
     them, and a record under the old key would sit beside a new one for the
     same statement, both taken. So each such record is moved under the
-    cleaned title's key. When a record already holds that key, the one with
-    a saved PDF stays, else the moved record, and the other is dropped.
-    Returns how many records moved."""
+    cleaned title's key. When a record already holds that key, the one that
+    is done stays (is_done), whether or not its file is still there, and
+    when both or neither is done the one already under the cleaned key
+    stays. The other is dropped. Returns how many records moved."""
     moved = 0
     for old_key in list(records.keys()):
         rec = records.get(old_key)
@@ -176,8 +181,7 @@ def migrate_html_titles(records: dict) -> int:
         new_key = Document.from_dict(rec).key
         other = records.get(new_key) if new_key != old_key else None
         if other is not None:
-            keep = other if (other.get("pdf_path") and not rec.get("pdf_path")) else rec
-            records[new_key] = keep
+            records[new_key] = rec if (is_done(rec) and not is_done(other)) else other
         else:
             records[new_key] = rec
         if new_key != old_key:
@@ -223,6 +227,22 @@ def _clear(path) -> None:
         Path(path).unlink(missing_ok=True)
     except OSError:
         pass
+
+
+# Fewer characters than this say too little to tell one account's statement
+# from another's, a page number or a logo's words, and give no text digest.
+MIN_TEXT_FOR_DIGEST = 200
+
+
+def _text_sha256(path) -> str:
+    """The SHA-256 of the PDF's text, its whitespace run together, or ""
+    when it holds less than MIN_TEXT_FOR_DIGEST characters of it. Two prints
+    of one HTML statement differ in their bytes and not in this."""
+    import hashlib
+    text = " ".join(receipt_pdf.pdf_text(Path(path)).split())
+    if len(text) < MIN_TEXT_FOR_DIGEST:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _sha256(path) -> str:
@@ -1164,18 +1184,20 @@ class App:
             print(f"  !! Validation failed ({result.reason}); moved to Manual Review.")
             return
 
-        # A statement of an account page whose file is byte for byte the
+        # A statement of an account page whose file, or whose text, is the
         # statement of another account saved for the same date is that
         # statement, the page having shown the other account's list. The
-        # digest is kept with every statement saved, so this still holds once
-        # the person has deleted a file they imported elsewhere.
+        # text is what tells a month served as HTML, printed anew each run.
+        # Both digests are kept with every statement saved, so this still
+        # holds once the person has deleted a file they imported elsewhere.
         if doc.category == doc_types.STATEMENT:
-            digest = _sha256(out_path)
-            twin = self._other_accounts_statement(doc, digest) if doc.account else None
+            digest, text_digest = _sha256(out_path), _text_sha256(out_path)
+            twin = (self._other_accounts_statement(doc, digest, text_digest)
+                    if doc.account else None)
             if twin is not None:
                 self._refuse_another_accounts(doc, out_path, target, twin)
                 return
-            doc.pdf_sha256 = digest
+            doc.pdf_sha256, doc.text_sha256 = digest, text_digest
 
         # A form set with more than one file arrives here as a ZIP, and the
         # extraction above is what unpacks it. A second mechanism for that
@@ -1319,10 +1341,13 @@ class App:
         account page before the account was in its key says it by the page."""
         return rec.get("account") or site.account_for(rec.get("source_url", ""))
 
-    def _other_accounts_statement(self, doc: Document, digest: str) -> Optional[dict]:
+    def _other_accounts_statement(self, doc: Document, digest: str,
+                                  text_digest: str = "") -> Optional[dict]:
         """The saved statement of another account, the individual one among
-        them, of the same date as `doc` and with these very bytes, or None."""
-        if not digest:
+        them, of the same date as `doc` and with these very bytes or this
+        very text, or None. A digest a record lacks is read from its file
+        while the file is there."""
+        if not digest and not text_digest:
             return None
         for key, rec in (self.progress.data or {}).items():
             if (not isinstance(rec, dict) or key == doc.key
@@ -1332,10 +1357,12 @@ class App:
                     or not is_done(rec)):
                 continue
             theirs = rec.get("pdf_sha256") or ""
+            their_text = rec.get("text_sha256") or ""
             own = (rec.get("pdf_path") or "").strip()
-            if not theirs and own and Path(own).is_file():
-                theirs = _sha256(own)
-            if theirs == digest:
+            if (not theirs or not their_text) and own and Path(own).is_file():
+                theirs = theirs or _sha256(own)
+                their_text = their_text or _text_sha256(own)
+            if (digest and theirs == digest) or (text_digest and their_text == text_digest):
                 return rec
         return None
 
