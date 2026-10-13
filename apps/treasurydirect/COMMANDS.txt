@@ -1,0 +1,3 @@
+TreasuryDirect pages saved as PDFs: Current Holdings, Security History and Payment History. Taxable years are listed for you to save their 1099 yourself.
+
+See README.md for setup and supervised pilot instructions.

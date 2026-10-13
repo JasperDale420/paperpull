@@ -90,6 +90,11 @@ STOPS = {
         "pages the billing and payment tables every receipt is listed from, read as "
         "turned on before it is pressed, so a turned off NEXT where the footer says more "
         "pages leaves the rest of the list unread"),
+    ("treasurydirect", "_press_link", "click", ""): (1,
+        "TreasuryDirect moves only by its own links, a top tab, a history, a tax year, "
+        "the 1099 or Return, each a plain server-drawn link that is never turned off; one "
+        "that is would be a page this app does not know, and every later document is "
+        "reached through the same tabs"),
     ("vanguard", "dismiss_timeout", "click", "continue the session"): (1,
         "keeps the session open for every document"),
     ("vanguard", "show_more", "click", "show more of the list"): (1,

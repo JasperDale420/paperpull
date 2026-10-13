@@ -1,0 +1,32 @@
+{
+  "_comment": "Editable rules mapping TreasuryDirect document titles to filename summaries. Checked in order: tax, then insurance (unused), then statement. treasurydirect_site.py titles a taxable year's 1099 'TreasuryDirect Form 1099 <year>' and each snapshot 'TreasuryDirect <Current Holdings|Security History|Payment History> <date>'.",
+  "tax_rules": [
+    {
+      "pattern": "\\bform\\s+1099\\b|\\b1099\\b",
+      "summary": "1099 Tax Form"
+    }
+  ],
+  "insurance_rules": [],
+  "statement_rules": [
+    {
+      "pattern": "current\\s+holdings",
+      "summary": "Current Holdings"
+    },
+    {
+      "pattern": "security\\s+history",
+      "summary": "Security History"
+    },
+    {
+      "pattern": "payment\\s+history",
+      "summary": "Payment History"
+    }
+  ],
+  "skip_patterns": [
+    "investor\\s+inbox",
+    "gift\\s+box",
+    "account\\s+history",
+    "rights\\s+history",
+    "c\\s+of\\s+i\\s+history",
+    "payroll\\s+savings\\s+plan\\s+history"
+  ]
+}

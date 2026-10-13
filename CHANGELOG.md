@@ -7,6 +7,26 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Added
+- **TreasuryDirect.** A new app for the U.S. Treasury's own site for
+  savings bonds and Treasury securities. TreasuryDirect has no PDFs, so the
+  app saves its pages as PDFs: Current Holdings, Security History and
+  Payment History as dated snapshots, each kept only when its text names the
+  page. TreasuryDirect ends your session if a page is opened any way but by
+  its own links, so the app works in the tab you signed in with and only
+  presses the site's own tab and history links, checked by their words and
+  by exactly where they lead. It never opens an address, never submits a
+  form, and never presses BuyDirect, Gift Box, Logoff, the Investor InBox or
+  any link that changes your account. A year ManageDirect lists as taxable
+  is shown for you to save its 1099 yourself, since its pages have not been
+  seen yet. If TreasuryDirect signs you out or asks for a passcode or a
+  security answer, the run stops and keeps what it saved. Your account
+  number, name and session id are kept out of every log and diagnostic
+  file. Run on a contributor's own account: Discover listed 3 documents,
+  Pilot saved 1 and Run All the other 2, every PDF opened.
+
 ## [0.51.0] - 2026-10-14
 
 Alpaca arrives, statements and trade confirmations from a Live brokerage

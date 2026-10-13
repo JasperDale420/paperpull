@@ -65,6 +65,7 @@
     "stripe": {"gets": "Fee invoices and tax forms such as the 1099-K", "group": "banks", "tested": false},
     "target": {"gets": "Online and in-store receipts", "group": "shopping"},
     "tmobile": {"gets": "Bill statements", "group": "bills"},
+    "treasurydirect": {"gets": "Current Holdings, Security and Payment History, saved from its pages", "group": "investing", "note": "Tested on one account so far, 1099s not yet"},
     "tsp": {"gets": "Participant statements, 1099-R", "group": "investing"},
     "uber": {"gets": "Ride and Uber Eats receipts", "group": "shopping"},
     "ukg": {"gets": "Pay statements", "group": "pay"},
