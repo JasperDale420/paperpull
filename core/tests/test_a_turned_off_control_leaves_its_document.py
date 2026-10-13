@@ -75,9 +75,9 @@ STOPS = {
         "the dialog's own Download, once the row's Download opened the dialog, so a "
         "press was made for the document already"),
     ("chasebusiness", "_press", "click", ""): (1,
-        "one press site serves all six controls, the account menu, Statements, the "
-        "year picker and its year, the row's save menu and its Save as PDF, and a "
-        "turned off control there fails closed by stopping the run"),
+        "one press site serves the four controls that reach a list, an account in the "
+        "menu, Statements, the year picker and a year in it, so a turned off one "
+        "would leave every statement after it"),
     ("coinbase", "_press_load_more", "click", "load more of the list"): (1,
         "a control of the whole list, read as showing and turned on before it is pressed, "
         "and a list shown in full leaves only the statement not shown"),
@@ -107,7 +107,7 @@ STOPS = {
 LEAVES = {
     ("alpaca", "_press"), ("amex", "download_document"),
     ("amfam", "_catch_pdf"), ("applecard", "_catch_pdf"), ("att", "_catch_pdf"),
-    ("coinbase", "_catch_statement"),
+    ("chasebusiness", "_press_row"), ("coinbase", "_catch_statement"),
     ("etrade", "_catch_pdf"), ("golden1", "_catch_pdf"), ("nelnet", "_catch_pdf"),
     ("newrez", "_catch_pdf"), ("pge", "_press_once"), ("sba", "_catch_pdf"),
     ("smud", "_catch_pdf"), ("statefarm", "_catch_pdf"), ("vanguard", "download_document"),
@@ -527,6 +527,20 @@ def _alpaca_download(off: bool) -> str:
             % (' aria-disabled="true"' if off else ""))
 
 
+def _chasebusiness(site, page, out, staging, trace):
+    """A statement's save menu, pressed as the row's own press path presses
+    it, with the date the row reads."""
+    return site._press_row(page, page.locator("#get"), css="#get",
+                           what="the statement's save menu", guard=site.is_save_menu,
+                           expect="Jun 30, 2026", step="open the save menu", run=site.Run())
+
+
+def _chasebusiness_menu(off: bool) -> str:
+    return ('<a id="get" class="ctl" href="#"%s onclick="window.presses++; return false;">'
+            'Jun 30, 2026 Opens menu to save document</a>'
+            % (' aria-disabled="true"' if off else ""))
+
+
 def _vanguard_icon(off: bool) -> str:
     return ('<a id="get" class="ctl" title="Pdf download icon" href="/doc"%s '
             'onclick="window.presses++" aria-label="Download a pdf statement generated on '
@@ -573,6 +587,8 @@ def _how(app: str, function: str, monkeypatch):
     if (app, function) == ("vanguard", "download_document"):
         return "vanguard_site", _vanguard(monkeypatch), _vanguard_icon, \
             "%s</td><td>08/31/2026" % VG_ACCOUNT
+    if (app, function) == ("chasebusiness", "_press_row"):
+        return "chasebusiness_site", _chasebusiness, _chasebusiness_menu, "Jun 30, 2026"
     if (app, function) == ("coinbase", "_catch_statement"):
         return "coinbase_site", _coinbase, _coinbase_button, "June 2026"
     if (app, function) == ("pge", "_press_once"):

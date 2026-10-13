@@ -744,15 +744,18 @@ def test_one_history_named_for_several_places_is_refused(tmp_path):
 
 @pytest.mark.parametrize("minimal", [False, True])
 def test_chase_business_ids_never_leave_this_computer(tmp_path, minimal):
-    """Chase Business keeps its document center's account reference and a
-    statement's documentId only to reach the statement again. Neither is in
-    any export, full or --minimal, and a moved history still skips the
-    statement, which its key, a digest of the id, says on its own."""
+    """Chase Business keeps its document center's account reference only to
+    reach a statement's account again, and records documentId empty, since
+    Chase mints a new one each session. Neither field is in any export,
+    full or --minimal, even on a record that holds an id. A moved history
+    still skips the statement, which its key says on its own, and a full
+    export keeps the record's account_digest, which Rename reads to tell
+    two accounts' files apart."""
     ref, doc_id = "ACCTREFQX0042", "DOCIDQX987654"
     rec = _rec()
     rec.update({"account_ref": ref, "document_id": doc_id, "category": "Statement",
-                "account": "Business Checking"})
-    key = "id:Business Checking:0a1b2c3d4e5f60718293a4b5"
+                "account": "Business Checking", "account_digest": "0a1b2c3d4e5f"})
+    key = "id:Business Checking:2026-01-31:Statement:0a1b2c3d4e5f"
     old = tmp_path / "old"
     _install(old, "Chase Business Statements", "Chase Business", {key: rec})
     archive = tmp_path / "h.ppz"
@@ -762,6 +765,7 @@ def test_chase_business_ids_never_leave_this_computer(tmp_path, minimal):
         blob = b" ".join(z.read(n) for n in z.namelist()).decode("utf-8", "ignore")
     assert ref not in blob and doc_id not in blob
     assert "account_ref" not in blob and "document_id" not in blob
+    assert ("account_digest" in blob) is not minimal
 
     new = tmp_path / "new"
     _install(new, "Chase Business Statements", "Chase Business", {})

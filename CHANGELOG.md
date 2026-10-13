@@ -150,13 +150,16 @@ to the Capital One app, so Discover counts as supported.
   filed as Business Checking, Business Card or Business Debit. It chooses
   each account in the document center's menu, opens Statements, picks each
   year and saves a statement through its row's own save menu and Save as
-  PDF. Those six kinds of control are the only ones it ever presses;
+  PDF. Those six kinds of control are the only ones it ever presses, and
   payments, transfers, wires, Zelle, settings and sign-out are never
   touched. A run stops on its own when Chase shows its session timeout or
   signs you out, and keeps what it saved. Account names and numbers stay
-  out of every file name, log and diagnostic file, and Chase's account and
-  statement ids never leave your computer in an exported history. Verified
-  on one profile, where it saved 10 checking statements on a full run.
+  out of every file name, log and diagnostic file. An exported history
+  leaves out Chase's account and statement ids and keeps only a short
+  digest of each account's id, which tells two accounts apart but is no
+  secret from someone who holds the id. Verified on one profile, where it
+  saved 10 checking statements on a full run. A business card's statements
+  are untested.
 - **SDG&E (San Diego Gas & Electric) bills from My Energy Center.** The app
   reads the bills Billing History lists, about two years of them, and saves
   each bill's PDF, fetched by its own address with your signed-in session.

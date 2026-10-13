@@ -39,16 +39,14 @@ SECRETS = ["BUS COMPLETE CHK", "BUSINESS CARD (...8765)", "BUS TOTAL DEBIT", "ZE
            "7700778899", "7700990011", "DOCQX", "KEYZZ", "TOKZZ"]
 
 
-def _pdf() -> bytes:
-    from pypdf import PdfWriter
-    buf = io.BytesIO()
-    w = PdfWriter()
-    w.add_blank_page(612, 792)
-    w.write(buf)
-    return buf.getvalue()
+def _pdf(tail: str = "") -> bytes:
+    """A statement PDF whose text prints an account number ending in
+    `tail`, the way Chase prints it in full."""
+    from paperpull_core import testkit
+    return testkit.text_pdf(["Business Complete Checking", "Account Number: 000000%s" % tail])
 
 
-PDF = _pdf()
+PDF = _pdf("4321")
 
 
 def item(doc_id, iso, pages=2, kind="Statement"):
@@ -139,7 +137,8 @@ class Center:
         self.duplicate_answers = False
         self.answer_override = {}     # (account_id, filter) -> Response factory
         self.rows_override = None
-        self.download_body = PDF
+        # None: a statement printing the current account's own last four.
+        self.download_body = None
         self.download_url = PDF_URL
         self.downloads_per_save = 1
         self.on_goto = None
@@ -188,9 +187,12 @@ class Center:
             self._emit(self.answer())
 
     def _download(self):
-        dl = Download(self.download_url, self.download_body)
+        body = self.download_body
+        if body is None:
+            body = _pdf(site.label_tail(self.acct()["label"]))
+        dl = Download(self.download_url, body)
         if self.folder_copy is not None:
-            (Path(self.folder_copy) / dl.suggested_filename).write_bytes(self.download_body)
+            (Path(self.folder_copy) / dl.suggested_filename).write_bytes(body)
         self.downloads.append(dl)
         for f in list(self.listeners["download"]):
             f(dl)
@@ -264,7 +266,7 @@ class Center:
                 text = str(y)
                 if y == self.year:
                     text += ", current selection"
-                elif i == len(self.years) - 1:
+                if i == len(self.years) - 1:
                     text += ", you've reached the end of the list"
                 options.append({"id": "container-%d-filterstyledselect-0" % i,
                                 "labels": [text], "shown": True})
@@ -492,10 +494,57 @@ def test_label_classification():
 
 
 def test_cardholder_entries_are_skipped_and_shared_tails_kept_apart():
+    """The cardholder is listed under the card's own last four, as the
+    survey found it, so it is passed over."""
     st = center().state()
     accts = site.accounts_of(st)
     assert [a.klass for a in accts] == ["Business Checking", "Business Card", "Business Debit"]
+    assert [a.tail for a in accts] == ["4321", "8765", "5555"]
     assert len({a.ref for a in accts}) == 3
+
+
+@pytest.mark.parametrize("label", ["INK BUSINESS CASH (...9876)", "ZEPHYRINA QUILLFEATHER (...9876)",
+                                   "BUS DEBIT CARD (...1357)", "ZEPHYRINA QUILLFEATHER"])
+def test_an_entry_that_names_no_class_and_is_no_cardholder_stops_the_list(label):
+    """A card whose name carries no product word, an entry under no
+    account's last four, one naming two classes, or one with no last four
+    is not passed over, since the list would then be called whole
+    without it."""
+    page = center()
+    page.accounts.append({"id": "bottom-7700123123", "label": label, "years": None})
+    with pytest.raises(site.ListStopped):
+        site.collect_download_docs(page, run())
+    assert page.presses == []
+
+
+def test_a_menu_that_reads_differently_twice_over_stops_the_list():
+    """The menu is read again once the page settles, and an account drawn
+    late is never left out of a list called whole."""
+    page = center()
+    reads = []
+
+    def late_entry(st):
+        reads.append(1)
+        if len(reads) >= 2:
+            st["menu"].append({"id": "bottom-7700123123", "labels": ["BUS SAVINGS CHK (...1212)"],
+                               "all": "BUS SAVINGS CHK (...1212)", "shown": True})
+    page.state_hook = late_entry
+    with pytest.raises(site.ListStopped) as stop:
+        site.collect_download_docs(page, run())
+    assert "differently" in str(stop.value)
+    assert page.presses == []
+
+
+def test_a_menu_that_changes_between_accounts_stops_the_list():
+    page = center()
+
+    def drop_debit(p):
+        if p.presses:
+            p.accounts = [a for a in p.accounts if a["id"] != DEBIT["id"]]
+    page.on_goto = drop_debit
+    with pytest.raises(site.ListStopped) as stop:
+        site.collect_download_docs(page, run())
+    assert "changed during the listing" in str(stop.value)
 
 
 def test_duplicate_labels_are_two_accounts_and_one_id_twice_stops():
@@ -559,10 +608,12 @@ def test_an_answer_for_another_account_is_not_taken():
 def test_the_empty_year_baseline():
     r = run()
     empty = Response("1", "CURRENT_YEAR_MINUS_7", {"code": "SUCCESS"})
-    with pytest.raises(site.ListStopped):
-        site.read_answer(empty, r, 2019)
+    # Held, not stopped, before any list has shown what success looks like.
+    assert site.read_answer(empty, r, 2019) == []
+    assert r.unproven()
     full = Response("1", "CURRENT_YEAR", {"code": "SUCCESS", "idaldocRefs": [item("DOCQX1", "2026-01-31")]})
     assert [i.date for i in site.read_answer(full, r, 2026)] == ["2026-01-31"]
+    assert not r.unproven()
     assert site.read_answer(empty, r, 2019) == []
     with pytest.raises(site.ListStopped):
         site.read_answer(Response("1", "X", {"code": "ERROR"}), r, 2019)
@@ -590,12 +641,31 @@ def test_an_answer_is_validated_whole():
             site.read_answer(Response("1", "CURRENT_YEAR", {"code": "SUCCESS", "idaldocRefs": bad}), r, 2026)
 
 
-def test_an_empty_year_before_any_list_stops_discovery():
-    page = Center([dict(CHK, years={2026: [], 2025: [item("DOCQX1225", "2025-12-31")]})],
+def test_an_empty_current_year_is_held_until_a_list_shows_success():
+    """In January every account's current year is empty, and it is the first
+    list read. It is held until the next year's statements show the code."""
+    page = Center([dict(CHK, years={2026: [], 2025: [item("DOCQX1225", "2025-12-31")]}),
+                   dict(CARD, years={2026: [], 2025: []})],
                   years=[2026, 2025])
+    docs_ = site.collect_download_docs(page, run())
+    assert [(d.account, d.date_text) for d in docs_] == [("Business Checking", "2025-12-31")]
+
+
+def test_a_held_empty_year_with_another_code_stops_the_list():
+    r = run()
+    assert site.read_answer(Response("1", "CURRENT_YEAR", {"code": "PARTIAL"}), r, 2026) == []
+    full = Response("1", "CURRENT_YEAR_MINUS_1",
+                    {"code": "SUCCESS", "idaldocRefs": [item("DOCQX1", "2025-01-31")]})
+    with pytest.raises(site.ListStopped) as stop:
+        site.read_answer(full, r, 2025)
+    assert "another code" in str(stop.value)
+
+
+def test_a_listing_where_every_year_is_empty_stops():
+    page = Center([dict(CHK, years={2026: [], 2025: []})], years=[2026, 2025])
     with pytest.raises(site.ListStopped) as stop:
         site.collect_download_docs(page, run())
-    assert "empty year" in str(stop.value)
+    assert "every year read was empty" in str(stop.value)
 
 
 # ---------------------------------------------------------------------------
@@ -1045,14 +1115,17 @@ def test_the_one_press_is_the_cores_inside_press_and_every_press_names_one_of_si
         for c in ast.walk(fn):
             if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute) and c.func.attr == "click":
                 clicks.append((fn.name, ast.unparse(c.func.value)))
-    assert clicks == [("_press", "pressing")]
-    guards = []
+    assert clicks == [("_press", "pressing"), ("_press_row", "pressing")]
+    guards = {"_press": [], "_press_row": []}
     for c in ast.walk(SITE):
-        if isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id == "_press":
+        if isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id in guards:
             g = [k.value for k in c.keywords if k.arg == "guard"]
             assert len(g) == 1 and isinstance(g[0], ast.Name), ast.unparse(c)
-            guards.append(g[0].id)
-    assert set(guards) == SIX and len(guards) == 6
+            guards[c.func.id].append(g[0].id)
+    # The four that reach a list stop the run when turned off, and the two a
+    # statement's own row carries leave that statement.
+    assert sorted(guards["_press"]) == sorted(SIX - {"is_save_menu", "is_save_as_pdf"})
+    assert sorted(guards["_press_row"]) == ["is_save_as_pdf", "is_save_menu"]
     assert {g.__name__ for g in site.PRESS_GUARDS} == SIX
     # The JavaScript handed to the page reads; it presses nothing.
     for js in (site._STATE_JS, site._LABELS_JS):
@@ -1149,7 +1222,8 @@ def test_a_hidden_entry_is_never_the_current_account():
     st = page.state()
     st["menu"][0]["shown"] = False
     assert site._entry(st, CHK["id"]) is None
-    assert [a.ref for a in site.accounts_of(st)] == [CARD["id"], DEBIT["id"]]
+    with pytest.raises(site.ListStopped):
+        site.accounts_of(st)
 
 
 def test_the_timeout_dialog_during_the_download_settle_is_session_expired(tmp_path):
@@ -1296,7 +1370,7 @@ def test_the_pickers_inner_parts_are_not_read_as_years():
         {"id": "container-0-filterstyledselect-0", "shown": True, "labels": ["2026, current selection"]},
         {"id": "container-primary-0-filterstyledselect-0", "shown": True, "labels": ["2026"]},
         {"id": "container-secondary-0-filterstyledselect-0", "shown": True, "labels": []},
-        {"id": "container-1-filterstyledselect-0", "shown": True, "labels": ["2025"]},
+        {"id": "container-1-filterstyledselect-0", "shown": True, "labels": ["2025 , you've reached the end of the menu"]},
         {"id": "container-primary-1-filterstyledselect-0", "shown": True, "labels": ["2025"]},
         {"id": "container-secondary-1-filterstyledselect-0", "shown": True, "labels": []},
     ]}
@@ -1316,7 +1390,7 @@ def test_the_last_year_in_the_menu_reads_with_its_end_of_menu_words():
 
 def test_the_current_year_reads_with_a_space_before_its_comma_too():
     state = {"options": [{"id": "container-0-filterstyledselect-0", "shown": True, "labels": ["2026 , current selection"]},
-                         {"id": "container-1-filterstyledselect-0", "shown": True, "labels": ["2025"]}]}
+                         {"id": "container-1-filterstyledselect-0", "shown": True, "labels": ["2025, you've reached the end of the list"]}]}
     assert site._options(state) == [(2026, "#container-0-filterstyledselect-0", True), (2025, "#container-1-filterstyledselect-0", False)]
 
 
@@ -1348,3 +1422,86 @@ def test_the_save_menu_is_named_by_its_exact_id_before_any_press():
     src = inspect.getsource(site._catch_statement)
     assert 'a#header-accountsTable-STATEMENTS-row%d-cell3-downloadDocumentDropdown' in src
     assert 'a[id^="header-"][id$="-row%d-cell3-downloadDocumentDropdown"]' not in src
+
+
+# ---------------------------------------------------------------------------
+# After the maintainer's review: turned off row controls, the PDF's last
+# four, the picker's end, the account digest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("which", ["downloadDocumentDropdown", "downloadPDFOption"])
+def test_a_turned_off_row_control_leaves_its_statement_and_the_run_goes_on(tmp_path, monkeypatch,
+                                                                          which):
+    page = center()
+
+    def click(pg, locator, *, css, what, words, step="press a control", **kw):
+        if which in css:
+            raise site.pressing.TurnedOff(step, "the control is turned off", ["turned off"])
+        pg.click(css)
+    monkeypatch.setattr(site.pressing, "click", click)
+    trace: list = []
+    got, out = take(page, tmp_path, trace=trace)
+    assert got is False and not out.exists()
+    assert page.downloads == []
+    assert any("turned off" in str(t.get("note")) for t in trace)
+
+
+def test_a_turned_off_list_control_stops_the_run(monkeypatch):
+    page = center()
+
+    def click(pg, locator, *, css, what, words, step="press a control", **kw):
+        if css.startswith("#container-"):
+            raise site.pressing.TurnedOff(step, "the control is turned off", ["turned off"])
+        pg.click(css)
+    monkeypatch.setattr(site.pressing, "click", click)
+    with pytest.raises(site.pressing.TurnedOff):
+        site.collect_download_docs(page, run())
+
+
+def test_a_pdf_that_does_not_print_the_accounts_last_four_is_not_kept(tmp_path):
+    page = center()
+    page.download_body = _pdf("9999")
+    trace: list = []
+    got, out = take(page, tmp_path, trace=trace)
+    assert got is False and not out.exists()
+    assert {"note": "the pdf does not print the account's last four"} in trace
+    page = center()
+    page.download_body = _pdf("4321")
+    got, out = take(page, tmp_path, name="kept.pdf")
+    assert got is True and out.exists()
+
+
+def test_the_last_four_must_end_a_number():
+    assert site.names_tail("Account Number: 000000004321", "4321")
+    assert site.names_tail("Card ending XXXX XXXX XXXX 4321.", "4321")
+    assert not site.names_tail("Account Number: 000043210", "4321")
+    assert not site.names_tail("", "4321")
+    assert not site.names_tail("Account Number: 4321", "")
+
+
+def _options_state(labels):
+    return {"options": [{"id": "container-%d-filterstyledselect-0" % i, "labels": [t], "shown": True}
+                        for i, t in enumerate(labels)]}
+
+
+def test_the_oldest_year_must_carry_the_end_of_menu_words():
+    end = ", you've reached the end of the menu"
+    good = site._options(_options_state(["2026 , current selection", "2025", "2024" + end]))
+    assert [y for y, _c, _cur in good] == [2026, 2025, 2024]
+    assert site._options(_options_state(["2026", "2025 , current selection" + end]))[1][2] is True
+    for labels in (["2026 , current selection", "2025", "2024"],            # no end words
+                   ["2026 , current selection", "2025" + end, "2024"],      # on another year
+                   ["2026" + end, "2025", "2024" + end]):                   # on two
+        with pytest.raises(site.ListStopped):
+            site._options(_options_state(labels))
+
+
+def test_the_account_digest_is_its_own_field_and_survives_without_the_ref():
+    d = docs.Document(title="Business Checking Statement", account="Business Checking",
+                      date="2026-09-30", account_ref=CHK["id"], doc_type="Statement")
+    assert d.account_digest == docs.account_digest_of(CHK["id"]) and len(d.account_digest) == 12
+    assert d.key.endswith(":" + d.account_digest)
+    rec = d.to_dict()
+    moved = {k: v for k, v in rec.items() if k not in ("account_ref", "document_id")}
+    assert docs.Document.from_dict(moved).key == d.key
+    assert docs.told_apart_by(moved) == docs.told_apart_by(rec) == d.account_digest[:6]

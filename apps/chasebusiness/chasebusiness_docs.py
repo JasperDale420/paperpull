@@ -123,7 +123,7 @@ class Document:
     def __init__(self, title="", category="", summary="", date="", period="",
                  href="", row_index=-1, confidence="", account="",
                  date_text="", document_id="", account_ref="", doc_type="",
-                 page_count=0, **kw):
+                 page_count=0, account_digest="", **kw):
         self.title = title
         # The account's class only, "Business Checking", "Business Card" or
         # "Business Debit". Its name and number are never written down.
@@ -132,6 +132,10 @@ class Document:
         # when the statement is taken. Private: never logged, said or in a
         # file name.
         self.account_ref = account_ref
+        # A short digest of the ref, kept as its own field so the key and
+        # told_apart_by still read it in a history moved to another computer,
+        # which carries no ref (tools/migrate.py PROVIDER_PRIVATE_FIELDS).
+        self.account_digest = account_digest or account_digest_of(account_ref)
         # What binds the record to one row when it is taken: its type and
         # page count as the list answered them.
         self.doc_type = doc_type
@@ -163,15 +167,13 @@ class Document:
     @property
     def key(self) -> str:
         """Stable identity: the account's class, the statement's date and
-        type, and a digest of the account's ref. The ref itself is private
-        and never in a key, so it is in no exported history either
-        (tools/migrate.py PROVIDER_PRIVATE_FIELDS)."""
+        type, and the account's digest (account_digest_of). The ref itself
+        is private and never in a key."""
         # Chase mints a statement's documentId anew each session, so the
-        # record is its account's class, its date and its type; the account
-        # ref (private) is folded in as a digest so two accounts of one
-        # class stay apart.
-        ref = hashlib.sha256((self.account_ref or "").encode("utf-8")).hexdigest()[:12]
-        return f"id:{self.account}:{self.date}:{sanitize_component(self.doc_type or 'Statement')[:30]}:{ref}"
+        # record is its account's class, its date and its type, and the
+        # account's digest keeps two accounts of one class apart.
+        return (f"id:{self.account}:{self.date}:"
+                f"{sanitize_component(self.doc_type or 'Statement')[:30]}:{self.account_digest}")
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
@@ -181,16 +183,28 @@ class Document:
         return cls(**d)
 
 
+def account_digest_of(ref: str) -> str:
+    """Twelve hex letters of an unsalted SHA-256 of an account's ref, or ""
+    for no ref. It tells two accounts apart in a key and a file name. It is
+    not a secret, since anyone who holds the ref can make it again."""
+    ref = str(ref or "").strip()
+    return hashlib.sha256(ref.encode("utf-8")).hexdigest()[:12] if ref else ""
+
+
 def told_apart_by(record: dict) -> str:
     """What a statement's file adds to its name when another file already
     has that name, the same on every run and never " (2)"
-    (core/tests/test_every_app_renames_each_file_for_its_own_record): six
-    letters of a hash of its account ref, never the ref itself, which is
-    private. Two accounts of one class with a statement on one date are
-    what reaches this. The download and Rename both ask this, so they
+    (core/tests/test_every_app_renames_each_file_for_its_own_record): the
+    first six letters of its account's digest, never the ref itself, which
+    is private. The digest is read from the record's own field, so a
+    history moved to another computer without its refs tells files apart
+    the same way. Two accounts of one class with a statement on one date
+    are what reaches this. The download and Rename both ask this, so they
     agree."""
-    ref = str((record or {}).get("account_ref") or "").strip()
-    return hashlib.sha256(ref.encode("utf-8")).hexdigest()[:6] if ref else ""
+    record = record or {}
+    digest = str(record.get("account_digest") or "").strip() \
+        or account_digest_of(record.get("account_ref"))
+    return digest[:6]
 
 
 class App:
@@ -477,6 +491,7 @@ class App:
         # refresh what binds the record to its row when it is taken
         self.discovery.update(doc.key, {"source_url": persistable(source_url),
                                         "account_ref": doc.account_ref,
+                                        "account_digest": doc.account_digest,
                                         "doc_type": doc.doc_type,
                                         "page_count": doc.page_count}, save=False)
         return 0
@@ -659,8 +674,8 @@ class App:
         that row's save menu and its Save as PDF, taking the download."""
         self.check_session(page)
         folder = self.paths.folder_for(doc.category)
-        # Only a name already taken in the folder gets a hash of the
-        # statement id (told_apart_by).
+        # Only a name already taken in the folder gets the account's
+        # digest (told_apart_by).
         out_path = unique_path(folder, filename, self.config["max_path_length"],
                                distinguisher=told_apart_by(doc.to_dict()))
         if out_path.name != filename:

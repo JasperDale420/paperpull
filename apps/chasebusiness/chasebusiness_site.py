@@ -27,14 +27,17 @@ WHAT THE SURVEY ESTABLISHED
   * Saving is a two-step menu on the row: "<date> Opens menu to save
     document" opens it, and "Save as PDF" makes the browser download the PDF
     from secure.chase.com. Its address carries a per-click key and a csrf
-    token, so it is never built here; the press is made and the download
+    token, so it is never built here. The press is made and the download
     taken.
 
-THE SIX PRESSES. Nothing else is ever pressed, and each goes through one
-place, _press, which reads every label the control carries, asks this
-module's own predicate for that kind of control, and only then hands the
-press to the core (pressing.click), which presses nothing that something
-covers and stops the run instead:
+THE SIX PRESSES. Nothing else is ever pressed. Each is proven by _guarded,
+which reads every label the control carries and asks this module's own
+predicate for that kind of control, and only then handed to the core
+(pressing.click), which presses nothing that something covers and stops the
+run instead. The first four go through _press, and a turned off one stops
+the run, since every statement after it is reached through it. The last
+two are a statement's own and go through _press_row, which leaves that
+statement for review when the site has turned its control off:
   1. an account menu entry (is_account_entry)
   2. the STATEMENTS accordion, only while it is closed (is_statements_accordion)
   3. the "View:" year picker (is_year_picker)
@@ -59,23 +62,33 @@ documentId as soon as an answer is read. None of them, nor a request body,
 an answer, or an address with its query, is ever logged or said. A
 statement's account is written down only as its class, "Business Checking",
 "Business Card" or "Business Debit", read from the product noun in its
-label. An entry with no such noun, a cardholder's name, is skipped.
+label. An entry with no such noun is passed over only when its last four
+are an account's own, which is how the survey found a cardholder listed.
+Any other stops the list (accounts_of).
 
 SIGNED OUT: the session-timeout dialog drawn open, a sign-in address, a
 password field, or a 401, 403 or redirect answering the list call, checked
 before and after every wait and press, raises SessionExpired. The run saves,
-says so and stops; nothing is recorded for review.
+says so and stops, and nothing is recorded for review.
 
 KNOWN CEILINGS (ponytail: left until a live run shows otherwise)
   * The document center must open with its account menu and at least one
-    document accordion drawn; Statements itself is asked of each account in
+    document accordion drawn. Statements itself is asked of each account in
     turn (a debit account showed only ATM receipts live).
-  * An empty year is accepted only once a non-empty answer in the same run
-    has shown the success code; before that it stops the list.
+  * An empty year read before any non-empty one is held until a non-empty
+    answer in the same run shows the success code, and a listing in which
+    every year was empty stops.
+  * Whether the account id in bottom-<accountId> stays the same from one
+    sign-in to the next is not yet known. A record's key holds a digest of
+    it, so an id that changed would list every statement anew.
+  * Two statements of one account on one date stop the list, on every run,
+    since nothing on a row tells them apart.
+  * Rows do not name their account, so a saved PDF is kept only when its
+    text prints the account's last four (names_tail).
   * Tax documents, notices, ATM receipts, check images and branch documents
     are never opened. The business card's statements were not in the center
-    when it was surveyed; the card is listed like any account.
-  * Only rows typed "Statement" are read; any other type stops the list.
+    when it was surveyed, and the card is listed like any account.
+  * Only rows typed "Statement" are read, and any other type stops the list.
 """
 from __future__ import annotations
 
@@ -101,6 +114,7 @@ from paperpull_core.capture import snapshot as _snapshot
 from paperpull_core.capture import take_download as _take_download
 from paperpull_core.capture import clear_copies as _clear_copies
 from paperpull_core.words import words_for as _words_for
+from paperpull_core.receipt_pdf import pdf_text as _pdf_text
 
 log = logging.getLogger("chasebusiness_docs.site")
 
@@ -257,7 +271,7 @@ FALLBACK = {
     "doc_row": STATEMENT_ROW,
     "doc_link": '[id$="-downloadPDFOption"]',
     "download_control": 'a[id^="header-"][id$="-cell3-downloadDocumentDropdown"]',
-    # Live, a wrapper div carries the same id without the header- prefix; the
+    # Live, a wrapper div carries the same id without the header- prefix, and the
     # anchor is the control.
     "page_ready": f"{MENU_ENTRY}, #{STATEMENTS_ACCORDION_ID}",
     "account_select": MENU_ENTRY,
@@ -517,7 +531,7 @@ def is_save_menu(label: str, row_date_label: str = "") -> bool:
 
 def is_save_as_pdf(label: str) -> bool:
     """"Save as PDF", with or without the menu's "1 of 2 items" place hint,
-    and nothing else; the accessible variant is refused."""
+    and nothing else. The accessible variant is refused."""
     label = _tidy(label)
     return bool(label) and not _refused(label) and bool(SAVE_AS_PDF_RE.fullmatch(label))
 
@@ -578,8 +592,9 @@ def is_download_url(url: str) -> bool:
 
 class Run:
     """What one run carries between presses: when its first press was made,
-    for the deadline, and the code the first non-empty list answered with,
-    which is what an empty year is checked against. The App owns one."""
+    for the deadline, the code the first non-empty list answered with,
+    which is what an empty year is checked against, and the codes of the
+    empty years read before any list showed that code. The App owns one."""
 
     def __init__(self, clock: Callable[[], float] = time.monotonic,
                  limit_s: float = DEADLINE_S, today: Callable[[], _date] = _date.today):
@@ -588,6 +603,10 @@ class Run:
         self.today = today
         self.first_press: Optional[float] = None
         self.success_code = None
+        # The codes of empty years answered before any non-empty list did.
+        # Each is checked against the success code once one is known, and a
+        # listing that ends with some held and no code known stops.
+        self.held: list = []
         # Every download any watched tab raises for the whole run, and how
         # many of them a Save as PDF took. One more than were taken is a
         # download no press of this run is known to have made, and nothing
@@ -613,6 +632,11 @@ class Run:
     def pressed(self) -> None:
         if self.first_press is None:
             self.first_press = self.clock()
+
+    def unproven(self) -> bool:
+        """Whether an empty year was read and no list of this run has shown
+        what success looks like, so that year cannot yet be read as empty."""
+        return bool(self.held) and self.success_code is None
 
     def past_deadline(self) -> bool:
         return self.first_press is not None and self.clock() - self.first_press >= self.limit_s
@@ -654,6 +678,9 @@ class Account:
     ref: str          # bottom-<accountId>
     account_id: str
     klass: str
+    # The last four digits the menu label shows, "(...1234)". Private, and
+    # only what a saved statement's text is checked for.
+    tail: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -727,6 +754,14 @@ _CLASSES = ((re.compile(r"\b(CHK|CHECKING)\b", re.I), "Business Checking"),
             (re.compile(r"\bCARD\b", re.I), "Business Card"),
             (re.compile(r"\bDEBIT\b", re.I), "Business Debit"))
 _TAIL_RE = re.compile(r"\s*\(\.\.\.\d{4}\)(, current selection)?\s*$", re.I)
+_FOUR_RE = re.compile(r"\(\.\.\.(\d{4})\)")
+
+
+def label_tail(label: str) -> str:
+    """The last four digits a menu label shows as "(...1234)", or "" for a
+    label with none or more than one."""
+    found = _FOUR_RE.findall(_tidy(label))
+    return found[0] if len(found) == 1 else ""
 
 
 def account_class(label: str) -> str:
@@ -772,11 +807,18 @@ def _guard_ids(ids) -> None:
 
 
 def accounts_of(state: dict) -> List[Account]:
-    """The menu entries this app lists, in menu order: each with a well-formed
-    element id, a label its predicate takes on every reading, and a class.
-    A cardholder's entry, with no product noun, is skipped. One element id
-    twice stops the list."""
-    out, seen = [], set()
+    """The menu entries this app lists, in menu order, each with a
+    well-formed element id, one last four, and a class every label it
+    carries agrees on.
+
+    An entry with no class is a cardholder's only when its last four are
+    those of an entry that has one. The survey found the business card's
+    cardholder listed under the card's own last four, with only notices.
+    Any other entry without a class stops the list, since it may be an
+    account whose name carries no product word (a card named "INK BUSINESS
+    CASH", say) and skipping it would call the list whole without it. One
+    element id twice stops the list too."""
+    seen, read = set(), []
     for e in state.get("menu") or []:
         ref = str(e.get("id") or "")
         m = _ACCOUNT_REF_RE.fullmatch(ref)
@@ -786,17 +828,39 @@ def accounts_of(state: dict) -> List[Account]:
             raise ListStopped("two account menu entries carry one id")
         seen.add(ref)
         if not e.get("shown"):
-            log.info("an account menu entry is not shown; skipped")
-            continue
+            raise ListStopped("an account menu entry is drawn but not shown")
         labels = list(e.get("labels") or [])
-        klass = account_class(labels[0]) if labels else ""
-        if not klass:
-            log.info("an account menu entry names no business account class; skipped")
-            continue
+        if not labels:
+            raise ListStopped("an account menu entry has no label")
+        klass = account_class(labels[0])
+        # An entry that is listed is pressed, so its every label must be one
+        # the press would take. A cardholder's is never pressed, and a name
+        # can hold letters the guard's shape does not.
+        if klass and not all(is_account_entry(t) for t in labels):
+            raise ListStopped("an account menu entry reads in a way this cannot read")
         if any(account_class(t) != klass for t in labels):
             raise ListStopped("an account menu entry's labels name different accounts")
-        out.append(Account(ref=ref, account_id=m.group(1), klass=klass))
+        tails = {label_tail(t) for t in labels}
+        if len(tails) != 1 or "" in tails:
+            raise ListStopped("an account menu entry shows no single last four")
+        read.append((ref, m.group(1), klass, tails.pop()))
+    classed_tails = {tail for _r, _i, klass, tail in read if klass}
+    out = []
+    for ref, account_id, klass, tail in read:
+        if klass:
+            out.append(Account(ref=ref, account_id=account_id, klass=klass, tail=tail))
+        elif tail in classed_tails:
+            log.info("a cardholder's menu entry, under an account's own last four, is passed over")
+        else:
+            raise ListStopped("an account menu entry names no class of business account this reads")
     return out
+
+
+def _menu_reading(state: dict) -> list:
+    """The account menu as one reading saw it: each entry's id, labels,
+    whole text and whether it shows, in order."""
+    return [(str(e.get("id") or ""), tuple(_tidy(t) for t in e.get("labels") or []),
+             _tidy(e.get("all")), bool(e.get("shown"))) for e in state.get("menu") or []]
 
 
 # ---------------------------------------------------------------------------
@@ -894,7 +958,7 @@ def _await_answers(page, account_id: str, filter_type: str, press: Callable[[], 
                    timeout_ms: int) -> list:
     """Make `press` while the page's answer for this account and year is
     awaited, then let the page settle and say every such answer that came.
-    None coming in `timeout_ms` is not an error here; the caller decides."""
+    None coming in `timeout_ms` is not an error here, and the caller decides."""
     with _Heard(page) as heard:
         try:
             with page.expect_response(lambda r: answers(r, account_id, filter_type),
@@ -920,9 +984,13 @@ def read_answer(response, run: Run, year: int) -> List[Item]:
 
     An answer must be 200 JSON with a code. idaldocRefs present must be a
     non-empty list of well-formed statements, and the first such answer in
-    the run sets the success code. idaldocRefs absent is an empty year only
-    once that code is known and this answer carries it; before then, or
-    with another code, the list stops. Nothing of the answer is logged."""
+    the run sets the success code. idaldocRefs absent is an empty year when
+    it carries that code. Before any code is known an empty year is held
+    (Run.held), since in January every account's current year is empty and
+    is the first list read. The first non-empty answer then checks every
+    held code, and a listing that ends with none known stops
+    (collect_download_docs). An empty year with another code stops the
+    list. Nothing of the answer is logged."""
     try:
         status = int(response.status)
     except Exception:
@@ -942,7 +1010,8 @@ def read_answer(response, run: Run, year: int) -> List[Item]:
         raise ListStopped("the list answer carries no code")
     if "idaldocRefs" not in data:
         if run.success_code is None:
-            raise ListStopped("an empty year came before any list showed what success looks like")
+            run.held.append(code)
+            return []
         if code != run.success_code:
             raise ListStopped("an empty year came with another code than the lists before it")
         return []
@@ -978,6 +1047,8 @@ def read_answer(response, run: Run, year: int) -> List[Item]:
     if len({i.document_id for i in out}) != len(out):
         raise ListStopped("two statements in one answer carry one id")
     if run.success_code is None:
+        if any(h != code for h in run.held):
+            raise ListStopped("an empty year came with another code than the first list")
         run.success_code = code
     elif code != run.success_code:
         raise ListStopped("a list came with another code than the lists before it")
@@ -1040,12 +1111,10 @@ def _labels_of(locator) -> List[str]:
     return [str(x) for x in labels or [] if str(x or "").strip()]
 
 
-def _press(page, locator, *, css: str, what: str, guard, step: str, run: Run,
-           expect: Optional[str] = None) -> None:
-    """Press one control, once, through the core, after every label it
-    carries has passed `guard`, one of PRESS_GUARDS. A control that is not
-    exactly one shown element, or a label refused, stops the list and
-    nothing is pressed."""
+def _guarded(page, locator, *, what: str, guard, expect: Optional[str]) -> None:
+    """Prove a control may be pressed: exactly one shown element, every
+    label it carries passing `guard`, one of PRESS_GUARDS. Anything else
+    stops the list with nothing pressed."""
     if guard not in PRESS_GUARDS:
         raise ListStopped("a press was asked for with no guard of this app's own")
     check_signed_in(page)
@@ -1060,9 +1129,38 @@ def _press(page, locator, *, css: str, what: str, guard, step: str, run: Run,
     ok = bool(labels) and all(guard(t) if expect is None else guard(t, expect) for t in labels)
     if not ok:
         raise ListStopped("the guard refused %s" % what)
+
+
+def _press(page, locator, *, css: str, what: str, guard, step: str, run: Run,
+           expect: Optional[str] = None) -> None:
+    """Press one of the four controls that reach a list, an account in the
+    menu, the Statements accordion, the year picker or a year in it, once,
+    through the core, once _guarded has passed it. Every statement after
+    such a control is reached through it, so one the site has turned off
+    stops the run (pressing.TurnedOff) rather than leave each statement."""
+    _guarded(page, locator, what=what, guard=guard, expect=expect)
     run.pressed()
     pressing.click(page, locator, css=css, what=what, words=_words(), step=step)
     check_signed_in(page)
+
+
+def _press_row(page, locator, *, css: str, what: str, guard, step: str, run: Run,
+               expect: Optional[str] = None) -> bool:
+    """Press one statement's own control, its save menu or the Save as PDF
+    in it, once, through the core, once _guarded has passed it. True when
+    pressed. False when the site has turned that control off, which the
+    core says only once nothing was pressed and nothing came
+    (pressing.TurnedOff). Its statement is then left for review and the
+    next run, and the run goes on to the next statement."""
+    _guarded(page, locator, what=what, guard=guard, expect=expect)
+    run.pressed()
+    try:
+        pressing.click(page, locator, css=css, what=what, words=_words(), step=step)
+    except pressing.TurnedOff:
+        log.info("%s is turned off, so its statement is left for review", what)
+        return False
+    check_signed_in(page)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1102,9 +1200,12 @@ def _ready(state: dict) -> bool:
 def _open(page) -> Opened:
     """Open the document center by its address and wait for it to be ready:
     the account menu and the Statements accordion drawn, on its own route.
-    Every menu label and id is private from here on. Raises SessionExpired
-    for a signed-out page and ListStopped for one that did not open. The
-    list answers the load itself makes are kept. Nothing is pressed."""
+    Every menu label and id is private from here on. The menu is read again
+    once the page has settled, and the two readings must agree, so a menu
+    still being drawn is never taken for the whole of it. Raises
+    SessionExpired for a signed-out page and ListStopped for one that did
+    not open or whose menu changed between readings. The list answers the
+    load itself makes are kept. Nothing is pressed."""
     with _Heard(page) as heard:
         try:
             page.goto(DOCUMENTS_URL, wait_until="domcontentloaded", timeout=60000)
@@ -1128,6 +1229,10 @@ def _open(page) -> Opened:
         page.wait_for_timeout(SETTLE_MS)
         check_signed_in(page)
         heard.raise_if_signed_out()
+        again = _read(page)
+        guard_menu(again)
+        if _menu_reading(again) != _menu_reading(state):
+            raise ListStopped("the account menu read differently twice over")
         return Opened(state, list(heard.all))
 
 
@@ -1152,7 +1257,7 @@ def _arrive(page, run: Run, opened: Opened, acct: Account):
 
     Returns (items, current_year), or None for an account that shows no
     Statements accordion once it is proven current. The account's entry is
-    pressed only when it is not the current selection already; the load's
+    pressed only when it is not the current selection already, and the load's
     own answers hold its list then. The accordion is pressed only while
     closed. Exactly one answer for this account's current year, from these
     transitions together, or the list stops."""
@@ -1228,10 +1333,15 @@ def _arrive(page, run: Run, opened: Opened, acct: Account):
     return items, year
 
 
+_END_WORDS_RE = re.compile(r"you[’']ve reached the end of the (?:list|menu)", re.I)
+
+
 def _options(state: dict) -> List[Tuple[int, str, bool]]:
     """(year, css, current) for each shown year option. An option that
-    cannot be read stops the list."""
-    out = []
+    cannot be read stops the list, and so does a list whose oldest year
+    does not carry the picker's end of the menu words, or whose words are
+    on another year, since the list may then be cut short."""
+    out, ends = [], []
     for o in state.get("options") or []:
         # Live, each year is drawn as container-<n>-... with inner
         # container-primary-<n>-... and container-secondary-<n>-... parts, the
@@ -1244,7 +1354,8 @@ def _options(state: dict) -> List[Tuple[int, str, bool]]:
         years = set()
         current = False
         for t in labels:
-            if re.fullmatch(r"\d{4}\s*,\s*current selection", t, re.I):
+            if re.fullmatch(r"\d{4}\s*,\s*current selection(\s*,\s*you[’']ve reached the end of the "
+                            r"(?:list|menu))?", t, re.I):
                 current = True
                 years.add(int(t[:4]))
                 continue
@@ -1254,9 +1365,14 @@ def _options(state: dict) -> List[Tuple[int, str, bool]]:
             years.add(int(m.group(1)))
         if len(years) != 1 or not re.fullmatch(r"container-[0-9]+-filterstyledselect-0", o.get("id") or ""):
             raise ListStopped("a year in the picker reads in a way this cannot read")
-        out.append((years.pop(), "#" + o["id"], current))
+        year = years.pop()
+        out.append((year, "#" + o["id"], current))
+        if any(_END_WORDS_RE.search(t) for t in labels):
+            ends.append(year)
     if len({y for y, _c, _cur in out}) != len(out):
         raise ListStopped("the picker offers one year twice")
+    if out and ends != [min(y for y, _c, _cur in out)]:
+        raise ListStopped("the picker's oldest year does not say it ends the menu")
     return out
 
 
@@ -1307,9 +1423,13 @@ def _rawdocs(acct: Account, items: List[Item]) -> List[RawDoc]:
                    doc_type=i.doc_type, page_count=i.pages) for i in items]
 
 
-def _account_docs(page, run: Run, acct: Account) -> List[RawDoc]:
-    """Every statement of one account, each year the picker offers."""
+def _account_docs(page, run: Run, acct: Account, accounts: List[Account]) -> List[RawDoc]:
+    """Every statement of one account, each year the picker offers. The
+    menu the document center opens with must list the same accounts as
+    the one the listing began from."""
     opened = _open(page)
+    if accounts_of(opened.state) != accounts:
+        raise ListStopped("the account menu changed during the listing")
     arrived = _arrive(page, run, opened, acct)
     if arrived is None:
         log.info("a %s account shows no Statements", acct.klass)
@@ -1345,17 +1465,20 @@ def collect_download_docs(page, run: Optional[Run] = None) -> List[RawDoc]:
     docs: List[RawDoc] = []
     for acct in accounts:
         try:
-            docs.extend(_account_docs(page, run, acct))
+            docs.extend(_account_docs(page, run, acct, accounts))
         except ListStopped as stop:
             raise ListStopped(str(stop), docs + stop.docs)
+    if run.unproven():
+        raise ListStopped("every year read was empty, so none showed what success looks like", docs)
     # A statement is its account, date and type (Chase mints its documentId
     # anew each session), so two listed alike would share one record and no
-    # download could tell them apart.
+    # download could tell them apart. Two statements of one account on one
+    # date stop the list here on every run (README, Validation status).
     seen = set()
     for d in docs:
         ident = (d.account_ref, d.date_text, d.doc_type)
         if ident in seen:
-            raise ListStopped("one statement is listed twice", docs)
+            raise ListStopped("one account has two statements on one date", docs)
         seen.add(ident)
     return docs
 
@@ -1390,7 +1513,7 @@ def bind(items: List[Item], rows: list, document_id: str, iso_date: str, doc_typ
     """The row number of the one statement to save, or -1.
 
     Exactly one answered statement must have the record's date, type and
-    page count; exactly one shown row must read that same date, type and
+    page count, and exactly one shown row must read that same date, type and
     page count. The documentId is not compared (see below)."""
     # Chase mints a statement's documentId anew each session, so it names
     # nothing across runs: the record is its account, date, type and page
@@ -1406,22 +1529,23 @@ def bind(items: List[Item], rows: list, document_id: str, iso_date: str, doc_typ
 
 
 def _reach_row(page, run: Run, account_ref: str, document_id: str, iso_date: str,
-               doc_type: str, pages: int, trace: Optional[list]) -> int:
+               doc_type: str, pages: int, trace: Optional[list]) -> Tuple[int, str]:
     """Open the document center afresh, choose the record's account, open
     Statements, choose the record's year and bind the record to one row.
-    The row's number, or -1 with nothing pressed past the list."""
+    The row's number and the account's last four, or -1 with nothing
+    pressed past the list."""
     opened = _open(page)
     accts = [a for a in accounts_of(opened.state) if a.ref == account_ref]
     if len(accts) != 1:
         if trace is not None:
             trace.append({"note": "the account is not in the menu once"})
-        return -1
+        return -1, ""
     acct = accts[0]
     arrived = _arrive(page, run, opened, acct)
     if arrived is None:
         if trace is not None:
             trace.append({"note": "the account shows no statements"})
-        return -1
+        return -1, ""
     items, current_year = arrived
     year = int(iso_date[:4])
     if year != current_year:
@@ -1429,7 +1553,7 @@ def _reach_row(page, run: Run, account_ref: str, document_id: str, iso_date: str
     n = bind(items, _read(page).get("rows") or [], document_id, iso_date, doc_type, pages)
     if n < 0 and trace is not None:
         trace.append({"note": "no single statement and row match the record"})
-    return n
+    return n, acct.tail
 
 
 def _unfinished(dl_dir) -> bool:
@@ -1502,7 +1626,7 @@ def _own_pdf_option(page, n: int) -> str:
     The row's save control must be exactly
     header-accountsTable-STATEMENTS-row<N>-cell3-downloadDocumentDropdown and
     the option item-0-<N>-downloadPDFOption, the same N, as the survey found
-    them; no other row's save control may be expanded; and the option must
+    them, no other row's save control may be expanded, and the option must
     be the only shown Save as PDF on the page. It is then taken inside the
     row itself, or inside the one menu the control names (aria-controls or
     aria-owns) only while this control is the one expanded, since such a
@@ -1528,6 +1652,10 @@ def _own_pdf_option(page, n: int) -> str:
     if _MENU_ID_RE.fullmatch(menu):
         return '[id="%s"] #%s' % (menu, option)
     return ""
+
+
+class _LeftTurnedOff(Exception):
+    """Save as PDF was turned off and not pressed (_press_row)."""
 
 
 def _catch_statement(page, run: Run, dl_dir, n: int, iso_date: str, out_path: Path,
@@ -1556,9 +1684,12 @@ def _catch_statement(page, run: Run, dl_dir, n: int, iso_date: str, out_path: Pa
         if run.untied():
             raise _stop("A download came that no Save as PDF of this run took, so nothing "
                         "more is pressed.", "a download came that no press took")
-        _press(page, page.locator(menu_css), css=menu_css, what="the statement's save menu",
-               guard=is_save_menu, expect=_row_label_date(iso_date), step="open the save menu",
-               run=run)
+        if not _press_row(page, page.locator(menu_css), css=menu_css,
+                          what="the statement's save menu", guard=is_save_menu,
+                          expect=_row_label_date(iso_date), step="open the save menu", run=run):
+            if trace is not None:
+                trace.append({"note": "the save menu is turned off"})
+            return False
         waited = 0
         while True:
             check_signed_in(page)
@@ -1578,10 +1709,17 @@ def _catch_statement(page, run: Run, dl_dir, n: int, iso_date: str, out_path: Pa
         start = len(run.downloads)
         try:
             with page.expect_download(timeout=DOWNLOAD_WAIT_MS) as info:
-                _press(page, page.locator(pdf_css), css=pdf_css,
-                       what="Save as PDF in the statement's save menu",
-                       guard=is_save_as_pdf, step="save the statement", run=run)
+                if not _press_row(page, page.locator(pdf_css), css=pdf_css,
+                                  what="Save as PDF in the statement's save menu",
+                                  guard=is_save_as_pdf, step="save the statement", run=run):
+                    # Raised to leave the wait at once: a wait left by an
+                    # exception is called off rather than waited out.
+                    raise _LeftTurnedOff()
             dl = info.value
+        except _LeftTurnedOff:
+            if trace is not None:
+                trace.append({"note": "save as pdf is turned off"})
+            return False
         except (SessionExpired, ListStopped):
             raise
         except Exception as e:
@@ -1627,7 +1765,10 @@ def download_statement(page, run: Run, dl_dir, out_path, *, account_ref: str, do
     opened, its year chosen, and the record bound to exactly one answered
     statement and one shown row before anything is pressed on the row.
     False, with nothing pressed on the row, when any of that does not hold.
-    SessionExpired and a stop of the run propagate."""
+    False too when a control on the row is turned off, and when the PDF that
+    came does not print the account's last four, since rows do not name
+    their account. Such a PDF is not kept. SessionExpired and a stop of the
+    run propagate."""
     out_path = Path(out_path)
     # The documentId is not required: Chase mints it anew each session, so
     # a record keeps none (see bind).
@@ -1637,8 +1778,8 @@ def download_statement(page, run: Run, dl_dir, out_path, *, account_ref: str, do
             trace.append({"note": "the record does not name one statement"})
         return False
     try:
-        n = _reach_row(page, run, account_ref, document_id, iso_date, doc_type, int(page_count),
-                       trace)
+        n, tail = _reach_row(page, run, account_ref, document_id, iso_date, doc_type,
+                             int(page_count), trace)
     except ListStopped as stop:
         log.info("the list stopped while looking for the statement dated %s: %s", iso_date, stop)
         if trace is not None:
@@ -1647,7 +1788,8 @@ def download_statement(page, run: Run, dl_dir, out_path, *, account_ref: str, do
     if n < 0:
         return False
     try:
-        return _catch_statement(page, run, dl_dir, n, iso_date, out_path, trace)
+        if not _catch_statement(page, run, dl_dir, n, iso_date, out_path, trace):
+            return False
     except ListStopped as stop:
         # A control on the row the guard refused, or not one control: it
         # was not pressed, and the statement is left for review.
@@ -1655,6 +1797,27 @@ def download_statement(page, run: Run, dl_dir, out_path, *, account_ref: str, do
         if trace is not None:
             trace.append({"note": "the row's control was not pressed", "why": str(stop)})
         return False
+    if not names_tail(_pdf_text(out_path), tail):
+        log.info("the statement dated %s does not print its account's last four, so it is "
+                 "not kept", iso_date)
+        if trace is not None:
+            trace.append({"note": "the pdf does not print the account's last four"})
+        try:
+            out_path.unlink()
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def names_tail(text: str, tail: str) -> bool:
+    """Whether a statement's text prints these four digits as the end of a
+    number, the way a statement prints its account number in full or
+    masked ("XXXX1234", "...1234"). Four digits are needed, and text with
+    no such number never names them."""
+    if not re.fullmatch(r"\d{4}", tail or ""):
+        return False
+    return bool(re.search(r"%s(?![0-9])" % tail, text or ""))
 
 
 # ---------------------------------------------------------------------------
@@ -1662,7 +1825,7 @@ def download_statement(page, run: Run, dl_dir, out_path, *, account_ref: str, do
 # ---------------------------------------------------------------------------
 
 def collect_documents(page) -> List[RawDoc]:
-    """The statement rows drawn now, by shape only (date, type, pages);
+    """The statement rows drawn now, by shape only (date, type, pages),
     nothing that names an account."""
     try:
         state = _read(page)

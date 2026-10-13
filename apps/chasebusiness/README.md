@@ -20,9 +20,11 @@ Chase credit cards use the [`chase`](../chase) app instead.
 
 Chase signs an idle session out after a few minutes. A run stops on its
 own six minutes after its first click, and whenever Chase shows its
-"Your session is about to end" dialog or signs you out; everything saved
-is kept, and Resume carries on from there. The app never presses "Stay
-signed in".
+"Your session is about to end" dialog or signs you out. Everything saved
+is kept, and Resume carries on from there. The six minutes are counted for
+the whole run, Discover's clicks included, not for each account, so a
+profile with many accounts and years may take a Resume or two to finish.
+The app never presses "Stay signed in".
 
 ## How it works
 
@@ -43,11 +45,19 @@ sign-out are never touched.
 Statements are filed by date with the account's class, Business Checking,
 Business Card or Business Debit, read from the product word in the menu.
 An account's name and number are kept out of every file name, log and
-diagnostic file. A menu entry that is a cardholder's name, with no such
-word, is skipped.
+diagnostic file. A menu entry with no such word is passed over only when
+it shows the last four of an account that has one, which is how Chase
+lists a card's cardholder. Any other entry without one, a card whose name
+has no product word say, stops the list, and the Diagnose file counts
+such entries.
 
-A list the app cannot read whole stops rather than being called complete,
-and a statement is saved only when exactly one row matches it.
+A list the app cannot read whole stops rather than being called complete.
+The account menu is read twice and both readings must agree, and the
+year picker's oldest year must say it ends the menu. A statement is saved
+only when exactly one row matches it, and kept only when its PDF prints
+the account's last four, since the rows do not name their account. A
+statement whose save menu or Save as PDF Chase has turned off is left
+for review, and the run goes on to the next one.
 
 ## Validation status
 
@@ -56,8 +66,16 @@ Built from the account owner's survey of a signed-in business profile on
 Pilot and Run All saved them all, and every PDF opened. Not yet seen or
 known:
 
-- An empty year before any year with statements in the same run, which
-  stops the list rather than being read as no statements.
+- An empty year read before any year with statements, every account's
+  current year in January say, is held until a year with statements in
+  the same run shows what Chase answers on success. A run in which every
+  year is empty stops rather than calling the list read.
+- Whether Chase keeps an account's id the same from one sign-in to the
+  next. A statement's record holds a digest of it, so if the id changed,
+  each sign-in would list every statement as new and save it again. Run
+  Discover after a fresh sign-in and check that it finds no new statements.
+- Two statements of one account on one date stop the list on every run,
+  since nothing on a row tells them apart. None has been seen.
 - The business card's statements: the card showed no statements in the
   document center when it was surveyed, and whether they appear there is
   still an open question.
