@@ -1818,11 +1818,25 @@ def names_tail(text: str, tail: str) -> bool:
     owner saved prints its account number whole on a line of its own,
     apart from its "Account Number:" label, so no label is asked for. A
     phone number, a check number or a date ending in the same digits is not
-    such a number. Four digits are needed."""
+    such a number. Four digits are needed.
+
+    Each run of digits and marks is found once, whole, and its groups are
+    judged here, so a long run that ends in other digits is read in one
+    pass rather than tried every way a pattern could split it."""
     if not re.fullmatch(r"\d{4}", tail or ""):
         return False
-    return bool(re.search(r"(?<![0-9A-Za-z])(?:[0-9Xx*\u2022]{4,}[ -]?)+%s(?![0-9])" % tail,
-                          text or ""))
+    for run in _NUMBER_RUN_RE.finditer(text or ""):
+        groups = re.split(r"[ -]", run.group(0))
+        if all(len(g) >= 4 for g in groups) and groups[-1].endswith(tail) \
+                and len("".join(groups)) >= 8:
+            return True
+    return False
+
+
+# A run of digits and masking marks, in groups a single space or dash
+# parts. A separator must come between groups, so the run is matched in one
+# pass whatever its length.
+_NUMBER_RUN_RE = re.compile(r"(?<![0-9A-Za-z])[0-9Xx*\u2022]+(?:[ -][0-9Xx*\u2022]+)*")
 
 
 # ---------------------------------------------------------------------------

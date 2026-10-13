@@ -1485,6 +1485,18 @@ def test_the_last_four_must_end_an_account_number():
     assert not site.names_tail("Account Number: 4321", "")
 
 
+def test_a_long_run_that_names_no_tail_is_read_in_one_pass():
+    """A long run of marks ending in other digits once took a second for
+    fifty-two marks, and each mark more doubled it. It is read in one pass
+    now, so runs a hundred times longer answer, and answer no, well inside
+    a second of the processor's own time."""
+    import time as _time
+    started = _time.process_time()
+    assert not site.names_tail("X" * 5000 + "4320", "4321")
+    assert not site.names_tail(("XXXX " * 2000) + "4320", "4321")
+    assert _time.process_time() - started < 1.0
+
+
 def _options_state(labels):
     return {"options": [{"id": "container-%d-filterstyledselect-0" % i, "labels": [t], "shown": True}
                         for i, t in enumerate(labels)]}
