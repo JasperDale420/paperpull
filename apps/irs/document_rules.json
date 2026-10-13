@@ -1,0 +1,28 @@
+{
+  "_comment": "Editable rules mapping IRS Online Account document titles to filename summaries. irs_site.py titles a transcript 'IRS <Type> Transcript <tax period>'; each matches a tax rule below. Notices are not listed yet (the notices page stops the run when it shows one); when they are, a notice matches none of these and is filed as an Other Document named by its IRS code (irs_docs.notice_summary).",
+  "tax_rules": [
+    {
+      "pattern": "\\bwage\\s+(and|&)\\s+income\\s+transcript\\b",
+      "summary": "Wage and Income Transcript"
+    },
+    {
+      "pattern": "\\brecord\\s+of\\s+account\\s+transcript\\b",
+      "summary": "Record of Account Transcript"
+    },
+    {
+      "pattern": "\\breturn\\s+transcript\\b",
+      "summary": "Return Transcript"
+    },
+    {
+      "pattern": "\\baccount\\s+transcript\\b",
+      "summary": "Account Transcript"
+    }
+  ],
+  "insurance_rules": [],
+  "statement_rules": [],
+  "skip_patterns": [
+    "verification\\s+of\\s+non-?filing",
+    "payment\\s+plan",
+    "payment\\s+activity"
+  ]
+}

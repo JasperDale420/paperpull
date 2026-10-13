@@ -7,6 +7,24 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Added
+- **IRS Online Account, tax transcripts (untested).** The app is built to
+  save your account, return, wage and income, and record of account
+  transcripts from your IRS Individual Online Account, reading the same
+  list the transcript page asks for and fetching each PDF by its own
+  address with your signed-in session. Nothing on the site is clicked, and
+  payments, payment plans, IP PINs, authorizations and your address are
+  never touched. You sign in yourself through ID.me; if the tab is on ID.me
+  or the account signs you out, the run stops and keeps what it saved.
+  Your name and SSN are kept out of every log, record and file name. Two
+  transcripts of one type and period are named apart by their form or
+  MFT. Built from a read-only survey of one account and run in full on
+  it, 22 transcripts saved, all valid PDFs. Notices are not read yet: a
+  notices page that lists one stops the run rather than being guessed at.
+  Run Diagnose and attach the file to help.
+
 ## [0.51.0] - 2026-10-14
 
 Alpaca arrives, statements and trade confirmations from a Live brokerage
