@@ -72,6 +72,7 @@
     "usaa": {"gets": "Statements", "group": "banks"},
     "usbank": {"gets": "Credit card statements", "group": "banks"},
     "vanguard": {"gets": "Statements for every account, a 401(k) included", "group": "investing"},
+    "venmo": {"gets": "Monthly account statements, printed from the statement page", "group": "banks", "note": "Run on one personal account so far"},
     "verizon": {"gets": "Fios bill statements", "group": "bills"},
     "verizonmobile": {"gets": "Wireless monthly bills", "group": "bills", "tested": false},
     "walmart": {"gets": "Receipts", "group": "shopping"},

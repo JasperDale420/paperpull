@@ -7,6 +7,23 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Added
+- **Venmo monthly statements.** Venmo
+  has no PDF statement on the web, only a statement page per month and a
+  CSV. The app opens each finished month's statement page by its own
+  address, presses its own "Show more" until every transaction is drawn,
+  checks the page shows that month in full, and prints it to PDF
+  as `<month end> Venmo Statement.pdf`, back to your start date or two
+  years. Nothing else on the site is clicked, months with no transactions
+  and the month still under way are skipped, and the CSV is never taken. It never sends, requests or
+  transfers money and never touches banks, cards, crypto, business
+  profiles or settings, and your profile id, username, name, email and
+  phone stay out of every log and diagnostic file. Built and run on one
+  account: 24 statements, the two busy months expanded in full. A page
+  that is not what it expects stops the run rather than being guessed at.
+
 ## [0.51.0] - 2026-10-14
 
 Alpaca arrives, statements and trade confirmations from a Live brokerage

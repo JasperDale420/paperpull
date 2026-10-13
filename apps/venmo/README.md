@@ -1,0 +1,135 @@
+# Venmo monthly statements
+
+**Built and run on one account.** On 2026-10-13 a full run on one personal
+account saved 24 monthly statements, October 2024 to September 2026, two
+of them busy months whose "Show more" was pressed until every transaction
+was drawn. Every point not yet seen on a second account is marked
+`UNCONFIRMED` in `venmo_site.py`, where the app stops rather than guesses.
+
+Venmo has **no PDF statement** on the web. Its Statements page shows one
+month's account statement as a web page, with a "Download CSV" button.
+This app opens each finished month's statement page by its own address and
+prints it to PDF, filed as `<month end> Venmo Statement.pdf`, for example
+`2026-09-30 Venmo Statement.pdf`. Read-only, delete-safe, part of
+[PaperPull](../../README.md).
+
+## Help test it, no programming needed
+
+1. Install PaperPull from the [latest release](https://github.com/rheeloaded/paperpull/releases/latest)
+   and open the control panel.
+2. Click **add a provider** and tick **Venmo**. Pick it in the App list.
+3. Click **Login**. Your own Edge or Chrome opens with a separate profile.
+   Sign in yourself, answer the code Venmo texts or emails you, and leave
+   the window open. Then open **Statements** from the menu on the left.
+4. Click **more** under the buttons, then **Diagnose**. It opens the
+   Statements page, and the last two finished months by their own
+   addresses, and writes `Diagnostics\diagnose-documents.json` in the
+   Venmo folder. It saves no statement, clicks nothing, takes no
+   screenshot, and writes any word that is not on PaperPull's fixed list
+   as its shape. Addresses are written as their path and the names of
+   their fields, never the values, so your profile id is not in it.
+5. Click **Record**, in the same **more** menu. Go back to the browser window
+   and click your way to last month's statement the way you normally
+   would (do not press Download CSV or Send to email), then come back here and click **Stop recording**. It writes
+   `Diagnostics\recording.json`, which is the path you actually took rather
+   than a guess at it. It records nothing you type and reads no cookies, and
+   it refuses to start before you are signed in. The whole walkthrough, written
+   for someone who has never done this, is
+   [Testing a provider](../../docs/testing-a-provider.md).
+6. Open each file in Notepad and look through it. It should hold page
+   headings, the names of buttons and links, and month names, no
+   usernames, names, amounts or notes. If anything in it looks personal,
+   delete that line.
+   A recording also has a long `structure` block on each step. It holds
+   only element kinds, attribute names and counts, so there is nothing
+   in it to edit.
+7. Attach both files to a
+   [provider request](https://github.com/rheeloaded/paperpull/issues/new/choose)
+   for Venmo, with a sentence about how you choose a month on the
+   Statements page.
+8. Click **Pilot**. It saves last month's statement as a PDF in
+   `Statements\`. Open it and say whether it shows the whole month, then
+   attach a fresh Diagnose file.
+
+**If a run stops early, send the file it wrote.** Every failed run leaves a
+`failure-*.json` in the `Diagnostics` folder and prints where it put it. It
+says which step broke and what the page looked like at the time, as counts and
+states, with no text from your account in it. Attach it to the issue the same
+way.
+
+## Setup, for a checkout
+
+1. Run `setup.command` (macOS) or `setup.bat` (Windows).
+2. Copy `config.example.json` to `config.json` and set your local output folder.
+3. Run `login.command` / `login.bat` and sign in yourself on port 9295.
+   Leave the window open.
+4. Run `paperpull venmo diagnose`, then, once the site layer is confirmed,
+   `paperpull venmo pilot` (one statement).
+5. Check the downloaded statement before using `paperpull venmo all`.
+
+## How it works
+
+The app opens Statements by its address, which
+Venmo settles on your profile's own statement address, and reads your
+profile from it (the profile id is kept out of every file and log). Then,
+newest first, it opens each finished month by that address with the month
+and year changed, back to your start date or two years. A month is listed,
+and later printed, only when the address still names that month, the
+month picker shows exactly that month, an "Account Statement" heading is
+drawn, nothing is still loading, and either the month's transaction rows
+or Venmo's own "No transactions yet for this month" are drawn, the same on
+two reads in a row. When the page's own request for the month's
+transactions is heard, an answer that says more are to come stops the
+month, and one that says signed out stops the run. The
+month still under way is left out, since its statement is not final yet,
+and so is a month with no transactions (counted only in the log). A busy
+month draws ten transactions at a time; before printing, the app presses
+that month's own "Show more", and nothing else, until every transaction is
+drawn, each press required to draw more and at most 60 presses. The
+number of transactions printed is kept in the month's record.
+Each statement remembers a one-way tag of the profile it was listed on;
+if the browser is later signed in to another Venmo profile, the run stops
+and prints nothing.
+
+A page the app cannot read whole stops the run rather than being called
+complete: a month the page will not show as asked, a "Load more" control
+on a month, a business profile, or a month that never finishes drawing. If Venmo
+answers as signed out, the run stops and keeps what it saved. Sign in
+again and run Resume.
+
+## Validation status
+
+Built 2026-10-13 from a read-only survey of a signed-in account, then run
+on that account: Discover listed 24 months, Pilot saved one, and a full
+run saved the other 23 (a Chrome tab crash midway was carried on with
+Resume). Every PDF holds the whole statement; the two busy months printed
+12 and 11 transactions with no "Show more" left. Not yet seen:
+
+- How far back Venmo's statements go past two years. A month before the
+  account opened shows the same "No transactions yet" as an empty month,
+  so it is skipped; the walk stops at your start date or two years.
+- A month busy enough to need many "Show more" presses (at most 60 are
+  made, and each must draw more).
+- What a signed-out visit or answer looks like.
+- Tax documents (1099-K) are not listed: the surveyed account had none.
+- A business profile, which is not listed.
+
+**The CSV is never taken.** No PaperPull app keeps a CSV: the core's
+download capture, file names, checks and Rename all take a PDF, so
+keeping the CSV would be a change to the core first.
+
+Never touched are paying, requesting, sending, splitting or transferring
+money, Transfer balance, adding money, banks and cards, crypto, business
+profiles, Send to email, Go paperless, privacy, notifications and
+settings, and Log out. Your profile id, username, display name, email and
+phone are kept out of every log and diagnostic file. The printed PDF is
+your own statement and holds what it holds.
+
+## Tests
+
+```
+python -m pytest tests -q
+```
+
+Run from this folder with PaperPull's bundled Python. They use invented
+values only and need no browser.

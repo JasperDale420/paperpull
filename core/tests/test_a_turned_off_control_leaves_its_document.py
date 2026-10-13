@@ -95,6 +95,10 @@ STOPS = {
     ("vanguard", "show_more", "click", "show more of the list"): (1,
         "a control of the whole list, read as turned on before it is pressed, and a "
         "list shown in full leaves only the statement not shown"),
+    ("venmo", "show_all", "click", "show more of the month"): (1,
+        "the month's own Show more pager, pressed only to draw the rest of the month's "
+        "transactions before it is printed; a turned off pager would leave the month "
+        "partly drawn, and nothing is printed for it"),
 }
 
 # The presses that catch TurnedOff and leave their document, by app, before

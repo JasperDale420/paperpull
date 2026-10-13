@@ -132,6 +132,7 @@ test them ([#27](https://github.com/rheeloaded/paperpull/issues/27),
 | [`usaa`](apps/usaa) | USAA | Statements | JSON-API enumeration |
 | [`usbank`](apps/usbank) | U.S. Bank | Credit-card statements | Ported by [@davidrudnick](https://github.com/davidrudnick); fresh live pilot pending |
 | [`vanguard`](apps/vanguard) | Vanguard | Account statements | **Contributed by [@tylerverry](https://github.com/tylerverry), 135 statements across five accounts.** The statements page's own list, read while its year picker is walked, then each statement's own download control, pressed through the guard |
+| [`venmo`](apps/venmo) | Venmo | Monthly account statements | **Built and run on one account, 24 statements.** Venmo has no PDF statement, so each month's statement page is opened by its own address and printed to PDF; only the month's own "Show more" is pressed, and the CSV is not taken |
 | [`verizon`](apps/verizon) | Verizon (Fios) | Bill statements | Real Edge (bot block); dropdown + CDP download |
 | [`verizonmobile`](apps/verizonmobile) | Verizon Mobile (wireless) | Monthly bills | **Untested, built without an account. Have one? [Help test it](apps/verizonmobile/README.md#help-test-it-no-programming-needed)** |
 | [`walmart`](apps/walmart) | Walmart | Receipts | Hardened against bot detection |
