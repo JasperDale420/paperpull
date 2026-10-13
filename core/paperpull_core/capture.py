@@ -318,7 +318,9 @@ def take_download(download, dl_dir, before, out_path, *, zip_ok: bool = False) -
         download.save_as(str(out_path))
         saved = True
     except Exception as e:
-        log.info("saving the download event failed: %s", e)
+        # The exception's text can carry the browser's suggested file name,
+        # which can hold the account's tail, so only its kind is logged.
+        log.info("saving the download event failed: %s", type(e).__name__)
     if saved and _starts_like(out_path, zip_ok):
         return "event"
     # An empty file under a document's name is the one thing a failed
@@ -355,7 +357,7 @@ def take_download(download, dl_dir, before, out_path, *, zip_ok: bool = False) -
             out_path.unlink()
         shutil.move(str(src), str(out_path))
     except OSError as e:
-        log.info("could not move the downloaded file: %s", e)
+        log.info("could not move the downloaded file: %s", type(e).__name__)
         return ""
     return "folder"
 

@@ -74,6 +74,10 @@ STOPS = {
     ("amex", "download_document", "click", "press the dialog download"): (1,
         "the dialog's own Download, once the row's Download opened the dialog, so a "
         "press was made for the document already"),
+    ("chasebusiness", "_press", "click", ""): (1,
+        "one press site serves all six controls, the account menu, Statements, the "
+        "year picker and its year, the row's save menu and its Save as PDF, and a "
+        "turned off control there fails closed by stopping the run"),
     ("coinbase", "_press_load_more", "click", "load more of the list"): (1,
         "a control of the whole list, read as showing and turned on before it is pressed, "
         "and a list shown in full leaves only the statement not shown"),

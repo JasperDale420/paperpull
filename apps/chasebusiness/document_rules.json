@@ -1,0 +1,12 @@
+{
+  "_comment": "Editable rules mapping Chase business document titles to filename summaries. Checked in order: tax (unused, tax documents are not collected yet), then insurance (unused), then statement. Every statement is titled '<account class> Statement' by chasebusiness_site.py, the class being Business Checking, Business Card or Business Debit; the class is added to the file name by chasebusiness_docs.py.",
+  "tax_rules": [],
+  "insurance_rules": [],
+  "statement_rules": [
+    {
+      "pattern": "\\bstatement\\b",
+      "summary": "Bank Statement"
+    }
+  ],
+  "skip_patterns": []
+}

@@ -1,0 +1,1711 @@
+"""ALL Chase business document-center selectors, URLs and page behavior live
+here.
+
+When Chase changes its business document center, repair this file only.
+
+STATUS: built from the account owner's survey of a signed-in business
+profile on 2026-10-12 and run live on it on 2026-10-13 (10 statements,
+Discover, Pilot and Run All, every PDF opened).
+
+WHAT THE SURVEY ESTABLISHED
+  * Everything is on one host, https://secure.chase.com. The document center
+    is the dashboard's route #/dashboard/documents/myDocs/index, opened here
+    by its address and proven ready by what it draws (_open).
+  * The page is an ACCOUNT MENU plus ONE ACCORDION PER DOCUMENT TYPE for the
+    account the menu has selected. A menu entry is `a[id^="bottom-"]`, its
+    id `bottom-<accountId>`, its label "<NAME> (...1234)", and the selected
+    one also reads ", current selection". Statements are the accordion
+    `#button-accountsAccordian-STATEMENTS` (sic).
+  * Choosing an account, opening the accordion and choosing a year in the
+    "View:" picker each make the page itself POST
+        /svc/rr/documents/secure/idal/v2/docref/list
+        accountFilter=<accountId>&dateFilter.idalDateFilterType=CURRENT_YEAR[_MINUS_n]
+    and draw the answer's idaldocRefs as rows of #accountsTable-STATEMENTS,
+    "Sep 30, 2026 | Statement | 2 pages". An empty year leaves idaldocRefs
+    out. Rows do NOT name the account, so a statement's account is the menu
+    entry proven current before its list was read.
+  * Saving is a two-step menu on the row: "<date> Opens menu to save
+    document" opens it, and "Save as PDF" makes the browser download the PDF
+    from secure.chase.com. Its address carries a per-click key and a csrf
+    token, so it is never built here; the press is made and the download
+    taken.
+
+THE SIX PRESSES. Nothing else is ever pressed, and each goes through one
+place, _press, which reads every label the control carries, asks this
+module's own predicate for that kind of control, and only then hands the
+press to the core (pressing.click), which presses nothing that something
+covers and stops the run instead:
+  1. an account menu entry (is_account_entry)
+  2. the STATEMENTS accordion, only while it is closed (is_statements_accordion)
+  3. the "View:" year picker (is_year_picker)
+  4. one year's option in it, never the year already selected (is_year_option)
+  5. the bound row's save menu (is_save_menu)
+  6. its "Save as PDF", never the accessible variant (is_save_as_pdf)
+Every press that changes the list is made while the page's own answer is
+awaited (page.expect_response) and counted (_Heard): exactly one answer for
+that account and that year, or the list stops. Nothing here closes a dialog,
+presses "Stay signed in", types, scrolls, or selects.
+
+SAFETY (a business bank account that can pay, wire, collect and approve):
+  This module is strictly READ-ONLY. FORBIDDEN_CONTROL_RE and the core's
+  settings and sign-in guards refuse any label that could pay, transfer,
+  wire, send, collect, deposit, approve, order, enroll, change a setting or
+  sign out. A control must also match one of the six anchored shapes above,
+  whole, on every label it carries.
+
+PRIVACY: every menu label, element id and account id is registered as a
+private word as soon as the menu is read, before any press, and every
+documentId as soon as an answer is read. None of them, nor a request body,
+an answer, or an address with its query, is ever logged or said. A
+statement's account is written down only as its class, "Business Checking",
+"Business Card" or "Business Debit", read from the product noun in its
+label. An entry with no such noun, a cardholder's name, is skipped.
+
+SIGNED OUT: the session-timeout dialog drawn open, a sign-in address, a
+password field, or a 401, 403 or redirect answering the list call, checked
+before and after every wait and press, raises SessionExpired. The run saves,
+says so and stops; nothing is recorded for review.
+
+KNOWN CEILINGS (ponytail: left until a live run shows otherwise)
+  * The document center must open with its account menu and at least one
+    document accordion drawn; Statements itself is asked of each account in
+    turn (a debit account showed only ATM receipts live).
+  * An empty year is accepted only once a non-empty answer in the same run
+    has shown the success code; before that it stops the list.
+  * Tax documents, notices, ATM receipts, check images and branch documents
+    are never opened. The business card's statements were not in the center
+    when it was surveyed; the card is listed like any account.
+  * Only rows typed "Statement" are read; any other type stops the list.
+"""
+from __future__ import annotations
+
+import logging
+import re
+import sys
+import time
+from dataclasses import dataclass
+from datetime import date as _date
+from pathlib import Path
+from typing import Callable, List, Optional, Tuple
+from urllib.parse import parse_qs, urlsplit
+
+from paperpull_core import pressing
+from paperpull_core.controls import SETTINGS_CONTROL_RE, AUTH_CONTROL_RE
+from paperpull_core.redact import private_words, redact, set_private_words  # noqa: F401  (re-exported)
+from paperpull_core.urls import is_safe_url as _host_allows
+from paperpull_core.dates import last_day as _last_day
+from paperpull_core.dates import checked as _checked_date
+# re-exported: the docs module calls it as site.set_download_dir
+from paperpull_core.capture import set_download_dir  # noqa: F401
+from paperpull_core.capture import snapshot as _snapshot
+from paperpull_core.capture import take_download as _take_download
+from paperpull_core.capture import clear_copies as _clear_copies
+from paperpull_core.words import words_for as _words_for
+
+log = logging.getLogger("chasebusiness_docs.site")
+
+
+def _words():
+    """This app's own words for paperpull_core.words."""
+    return _words_for("Chase Business", sys.modules[__name__])
+
+
+# ---------------------------------------------------------------------------
+# Addresses
+# ---------------------------------------------------------------------------
+BASE = "https://secure.chase.com"
+PUBLIC = "https://www.chase.com"
+DOCUMENTS_ROUTE = "#/dashboard/documents/myDocs/index"
+DOCUMENTS_URL = f"{BASE}/web/auth/dashboard{DOCUMENTS_ROUTE}"
+DOCREF_PATH = "/svc/rr/documents/secure/idal/v2/docref/list"
+STATEMENTS_URL = DOCUMENTS_URL
+BILLING_URL = DOCUMENTS_URL
+URLS = {
+    "home": f"{BASE}/",
+    # The account holder signs in on www.chase.com, which lands on the
+    # dashboard at secure.chase.com. www.chase.com is never a document host.
+    "login": f"{PUBLIC}/",
+    "documents": DOCUMENTS_URL,
+    "statements": DOCUMENTS_URL,
+}
+
+LOGIN_URL_MARKERS = ["/logon", "/login", "/signin"]
+
+# ---------------------------------------------------------------------------
+# HARD SAFETY GUARD. The personal Chase app's list, and the business words
+# the survey saw on this profile's menus.
+# ---------------------------------------------------------------------------
+FORBIDDEN_CONTROL_RE = re.compile(
+    # money movement
+    r"(transfer|deposit|withdraw|wire\b|wires\b|move\s+money|send\s+money|zelle|"
+    r"\bpay\b|payment|pay\s+bills?|bill\s*pay|autopay|auto-?pay|schedule\s+payment|"
+    r"pay\s+card|make\s+a\s+payment|pay\s+vendors?|payroll|invoice|"
+    r"\bach\b|collections?\b|chase\s+collect|quick\s*accept|quick\s*deposit|"
+    r"merchant\s+services|accept\s+card\s+payments|payment\s+center|positive\s+pay|"
+    r"stop\s+payment|order\s+checks|deposit\s+checks|"
+    # card and account products and offers
+    r"balance\s+transfer|cash\s+advance|credit\s+line|credit\s+limit|"
+    r"redeem|rewards?\b|points\b|miles\b|offers?\b|chase\s+offers|"
+    r"employee\s+card|\bcatalog\b|"
+    # applications, approvals and account changes
+    r"apply|open\s+(a|an|another|new)\b[\w\s]{0,24}\baccount\b|"
+    r"open\s+\w{0,12}\s*account\b|get\s+(a\s+)?(quote|started|loan|card)|"
+    r"add\s+(funds|card|authorized|user|employee)|authorized\s+user|"
+    r"pending\s+approvals?|\bapprov|"
+    r"dispute|report\s+(a\s+)?(problem|fraud|lost|stolen)|"
+    r"lock\s+card|unlock\s+card|freeze|activate|replace\s+card|close\s+account|"
+    r"request\b|increase\b|"
+    # administration and settings
+    r"access\s*(&|and)\s*security|\busers?\b|sub-?users?|entitlements?|"
+    r"link\s+relationship|linked\s+accounts|account\s+management|account\s+analysis|"
+    r"show\s+or\s+hide|stay\s+signed\s+in|profile\s*(&|and)\s*settings|"
+    r"\bchang(e|es|ed|ing)\b|\bedit(s|ed|ing)?\b|\bupdat(e|es|ed|ing)\b|"
+    r"\bset\s+up\b|\benabl|\bdisabl|\bdelet|\bremov(e|es|ed|ing|al)\b|"
+    r"^\s*save\s*$|\bsave\s+(changes?|settings?|preferences?|profile)\b|"
+    r"appl(y|ies|ied|ication)|\boptions?\b|\bsettings?\b|"
+    r"\bpreferences?\b|manage|turn\s+(on|off)|opt\s*(in|out)|"
+    r"beneficiar|payee|contact\s+info|password|username|"
+    r"paperless|delivery\s+preference|alerts?\s+settings|"
+    # the variants of a document control this app never presses
+    r"accessible|opens\s+document\s+menu|\bprint\b|"
+    # anything that commits or leaves
+    r"send\b|submit|confirm|continue|next|agree|accept|sign\b|sign\s*out|"
+    r"log\s*(out|off)|authorize)", re.I)
+
+# A verb an account menu entry must never carry. A menu entry is a product
+# name, which can hold "REWARDS" or "POINTS", so it is judged on actions as
+# the personal app judges a card header, plus this profile's business words.
+ACCOUNT_ACTION_RE = re.compile(
+    r"\bpay\b|\bpayment|transfer|redeem|activat|\block\b|unlock|replace|"
+    r"dispute|\bclose\b|appl(y|ies|ied|ication)\b|request|increase|advance|"
+    r"authorized\s+user|set\s+up|\bchang(e|es|ed|ing)\b|\bupdat(e|es|ed|ing)\b|"
+    r"\bmanage\b|autopay|auto-?pay|zelle|\bwires?\b|deposit|withdraw|\bsend\b|"
+    r"enroll|\bopen\b|\bcancel\b|\bsettings?\b|\bpreferences?\b|"
+    r"\bach\b|collect|quick\s*accept|merchant|approv|\busers?\b|catalog|"
+    r"employee|offers?\b|paperless|sign\s*out|stay\s+signed|continue|show\s+or\s+hide",
+    re.I)
+
+_MONTH = (r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)")
+_ROW_DATE = rf"{_MONTH}\s+\d{{1,2}},\s+\d{{4}}"
+
+# The six controls this app presses, each anchored whole.
+ACCOUNT_ENTRY_RE = re.compile(
+    r"[A-Za-z0-9 .&'-]+ \(\.\.\.\d{4}\)(, current selection)?", re.I)
+STATEMENTS_ACCORDION_RE = re.compile(r"statements", re.I)
+# The picker's aria-label reads " View:: 2026" live, two colons and a space.
+YEAR_PICKER_RE = re.compile(r"(view:{0,2}\s*)?(\d{4})?", re.I)
+# The last year reads "2019 , you've reached the end of the menu" live: a
+# space before the comma, and "menu" where the survey had seen "list".
+YEAR_OPTION_RE = re.compile(r"(\d{4})(\s*,\s*you[’']ve reached the end of the (?:list|menu))?", re.I)
+SAVE_MENU_RE = re.compile(rf"({_ROW_DATE}) opens menu to save document", re.I)
+# Live, the option reads "Save as PDF 1 of 2 items": the menu adds the
+# item's place to its name. That tail alone is allowed.
+SAVE_AS_PDF_RE = re.compile(r"save as pdf(\s*\d{1,2} of \d{1,2} items?)?", re.I)
+
+# What the general guard takes, for the survey and the repo-wide tests: the
+# six shapes, and the rules' own summary under a document verb. Nothing on
+# the document center reads like the last one.
+SAFE_DOC_CONTROL_RES = (
+    ACCOUNT_ENTRY_RE, STATEMENTS_ACCORDION_RE, YEAR_OPTION_RE, SAVE_MENU_RE,
+    SAVE_AS_PDF_RE,
+    re.compile(r"view:?(\s*\d{4})?", re.I),
+    re.compile(r"((view|download)\s+)?(bank\s+)?statements?", re.I),
+)
+
+SECURITY_CHALLENGE_MARKERS = [
+    "enter the code we sent", "enter your verification code", "verification code",
+    "one-time", "one time passcode", "security code", "we sent a code",
+    "two-factor", "two-step", "authenticator", "confirm your identity",
+    "verify your identity", "we need to verify", "unusual activity",
+    "are you a robot", "captcha", "unable to verify", "trouble verifying",
+    "your session has expired", "please log in again", "you've been logged out",
+    "for your security, we signed you out",
+]
+
+RATE_LIMIT_MARKERS = [
+    "too many requests", "rate limit", "try again later",
+    "temporarily unavailable", "http error 429", "unusual traffic",
+]
+
+# Selectors, also what --diagnose counts.
+MENU_ENTRY = 'a[id^="bottom-"]'
+ACCORDION = 'button[id^="button-accountsAccordian-"]'
+STATEMENTS_ACCORDION_ID = "button-accountsAccordian-STATEMENTS"
+YEAR_PICKER_ID = "header-filterstyledselect-0"
+YEAR_OPTION = '[id^="container-"][id$="-filterstyledselect-0"]'
+STATEMENT_ROW = 'tr[id^="accountsTable-STATEMENTS-row"]'
+TIMEOUT_DIALOG = "mds-dialog#octagonSessionTimeoutDialogue"
+# The dialog is in the page all the time, hidden, with no open attribute and
+# a box of nothing. It is drawn open only when it carries open (not "false")
+# and has a box on screen, its own or that of something in its shadow root,
+# that is neither hidden nor transparent. Its words are never read: they are
+# in the hidden DOM all the time.
+_DIALOG_OPEN_JS = r"""() => Array.from(document.querySelectorAll('mds-dialog#octagonSessionTimeoutDialogue'))
+  .some(d => {
+    if (!d.hasAttribute('open') || /^false$/i.test(d.getAttribute('open') || '')) return false;
+    const st = getComputedStyle(d);
+    if (st.visibility === 'hidden' || st.display === 'none' || parseFloat(st.opacity) === 0) return false;
+    const drawn = el => {
+      const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+      return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'
+             && parseFloat(s.opacity) > 0;
+    };
+    if (drawn(d)) return true;
+    return !!d.shadowRoot && Array.from(d.shadowRoot.querySelectorAll('*')).some(drawn);
+  })"""
+FALLBACK = {
+    "doc_row": STATEMENT_ROW,
+    "doc_link": '[id$="-downloadPDFOption"]',
+    "download_control": 'a[id^="header-"][id$="-cell3-downloadDocumentDropdown"]',
+    # Live, a wrapper div carries the same id without the header- prefix; the
+    # anchor is the control.
+    "page_ready": f"{MENU_ENTRY}, #{STATEMENTS_ACCORDION_ID}",
+    "account_select": MENU_ENTRY,
+}
+
+# How long each wait is given.
+READY_WAIT_MS = 30000
+ACCOUNT_WAIT_MS = 15000
+LIST_WAIT_MS = 20000
+ROWS_WAIT_MS = 10000
+MENU_WAIT_MS = 5000
+SETTLE_MS = 1500
+DOWNLOAD_WAIT_MS = 60000
+SECOND_DOWNLOAD_WAIT_MS = 2000
+POLL_MS = 250
+# A run stops taking documents this long after its first press. Chase signs
+# an idle session out after a few minutes, with a one-minute warning.
+DEADLINE_S = 6 * 60
+
+# ---------------------------------------------------------------------------
+# Date parsing (the orchestrator's period reading, unchanged in shape)
+# ---------------------------------------------------------------------------
+DATE_PATTERNS = [
+    (re.compile(r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+                r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
+                r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
+    (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
+]
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
+MONTH_YEAR_RE = re.compile(
+    r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
+    r"Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+    r"\s+(\d{4})", re.I)
+YEAR_RE = re.compile(r"\b(19|20)(\d{2})\b")
+
+
+def _parse_date_from_page(text: str) -> Optional[str]:
+    if not text:
+        return None
+    for pattern, kind in DATE_PATTERNS:
+        m = pattern.search(text)
+        if not m:
+            continue
+        try:
+            if kind == "mdY":
+                return f"{int(m.group(3)):04d}-{_MONTHS[m.group(1)[:3].lower()]:02d}-{int(m.group(2)):02d}"
+            if kind == "mdy_slash":
+                return f"{int(m.group(3)):04d}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+            if kind == "iso":
+                return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+        except (KeyError, ValueError):
+            continue
+    return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD, or None for
+    a day that does not exist."""
+    return _checked_date(_parse_date_from_page(text), None)
+
+
+def parse_period_date(text: str) -> Tuple[Optional[str], str]:
+    text = text or ""
+    exact = parse_date(text)
+    if exact:
+        return exact, ""
+    m = MONTH_YEAR_RE.search(text)
+    if m:
+        month = _MONTHS[m.group(1)[:3].lower()]
+        year = int(m.group(2))
+        return f"{year:04d}-{month:02d}-{_last_day(year, month):02d}", m.group(0)
+    m = YEAR_RE.search(text)
+    if m:
+        year = int(m.group(1) + m.group(2))
+        return f"{year:04d}-12-31", str(year)
+    return None, ""
+
+
+_ROW_DATE_RE = re.compile(r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),\s+(\d{4})")
+
+
+def row_date(text) -> Optional[str]:
+    """A statement row's date cell, "Sep 30, 2026", as YYYY-MM-DD, or None.
+    The whole cell must be the date and the day must exist."""
+    m = _ROW_DATE_RE.fullmatch(re.sub(r"\s+", " ", str(text or "")).strip())
+    if not m:
+        return None
+    try:
+        return _date(int(m.group(3)), _MONTHS[m.group(1).lower()], int(m.group(2))).isoformat()
+    except ValueError:
+        return None
+
+
+def answer_date(value) -> Optional[str]:
+    """An answer's documentDate, YYYYMMDD or YYYY-MM-DD, as YYYY-MM-DD, or
+    None. Nothing else is read as a date."""
+    text = str(value or "").strip() if isinstance(value, (str, int)) else ""
+    m = re.fullmatch(r"(\d{4})-?(\d{2})-?(\d{2})", text)
+    if not m:
+        return None
+    try:
+        return _date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
+    except ValueError:
+        return None
+
+
+def _row_label_date(iso: str) -> str:
+    """How a row's save menu writes a date, "Sep 30, 2026"."""
+    d = _date.fromisoformat(iso)
+    return "%s %02d, %d" % (("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep",
+                             "Oct", "Nov", "Dec")[d.month - 1], d.day, d.year)
+
+
+# ---------------------------------------------------------------------------
+# Session / safety
+# ---------------------------------------------------------------------------
+
+class SessionExpired(Exception):
+    """Chase answered as a signed-out session: its timeout dialog drawn
+    open, its sign-in page, a password field, or a 401, 403 or redirect
+    answering the list call. The run stops for the account holder."""
+
+
+class ListStopped(Exception):
+    """The list has a part this could not read, so what was read is not all
+    of it. `docs` holds what was read before it stopped. Its words are this
+    module's own, never the page's."""
+
+    def __init__(self, why: str, docs=None):
+        super().__init__(why)
+        self.docs = list(docs or [])
+
+
+def looks_signed_out(page) -> bool:
+    """The sign-in page by its address or a password field. A page whose
+    address cannot be read raises, and is never called signed in."""
+    url = (page.url or "").lower()
+    if any(m in url for m in LOGIN_URL_MARKERS):
+        return True
+    try:
+        if page.locator("input[type='password']").count() > 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _timeout_dialog_open(page) -> bool:
+    """Chase's "Your session is about to end" dialog, drawn open. It is in
+    the page all the time and shows when its open attribute is set. Its
+    buttons are never pressed."""
+    try:
+        return page.evaluate(_DIALOG_OPEN_JS) is True
+    except Exception:
+        return False
+
+
+def check_signed_in(page) -> None:
+    """Raise SessionExpired when the page shows Chase signing the session
+    out. Asked before and after every wait and every press."""
+    if _timeout_dialog_open(page):
+        raise SessionExpired("Chase is showing its session timeout dialog")
+    if looks_signed_out(page):
+        raise SessionExpired("Chase showed its sign-in page")
+
+
+def detect_security_challenge(page) -> Optional[str]:
+    """Names the passcode, CAPTCHA or throttling prompt on screen, or None.
+    A page that shows a statement row is not a challenge."""
+    try:
+        if page.locator(FALLBACK["doc_row"]).count() > 0:
+            return None
+    except Exception:
+        pass
+    try:
+        title = (page.title() or "").lower()
+    except Exception:
+        title = ""
+    try:
+        body = page.locator("body").inner_text(timeout=5000).lower()
+    except Exception:
+        body = ""
+    hay = title + "\n" + body[:1500]
+    for m in SECURITY_CHALLENGE_MARKERS:
+        if m in hay:
+            return f"Security challenge detected: '{m}'"
+    for m in RATE_LIMIT_MARKERS:
+        if m in hay:
+            return f"Possible rate limiting detected: '{m}'"
+    return None
+
+
+def _tidy(name) -> str:
+    return re.sub(r"\s+", " ", str(name or "")).strip()
+
+
+def _refused(name: str) -> bool:
+    return bool(FORBIDDEN_CONTROL_RE.search(name) or SETTINGS_CONTROL_RE.search(name)
+                or AUTH_CONTROL_RE.search(name))
+
+
+def is_safe_control(name: str) -> bool:
+    """Deny by default: an unreadable label is refused, then this app's
+    blocklist, then the shared core guards, and only then the anchored
+    shapes, whole."""
+    name = _tidy(name)
+    if not name or _refused(name):
+        return False
+    return any(rx.fullmatch(name) for rx in SAFE_DOC_CONTROL_RES)
+
+
+# -- the six predicates, one for each control this app presses ---------------
+
+def is_account_entry(label: str) -> bool:
+    """An account menu entry, "BUS COMPLETE CHK (...1234)", with or without
+    ", current selection". Judged on action verbs, not product words."""
+    label = _tidy(label)
+    if not label or ACCOUNT_ACTION_RE.search(label) or SETTINGS_CONTROL_RE.search(label) \
+            or AUTH_CONTROL_RE.search(label):
+        return False
+    return bool(ACCOUNT_ENTRY_RE.fullmatch(label))
+
+
+def is_statements_accordion(label: str) -> bool:
+    """The Statements accordion's header."""
+    label = _tidy(label)
+    return bool(label) and not _refused(label) and bool(STATEMENTS_ACCORDION_RE.fullmatch(label))
+
+
+def is_year_picker(label: str) -> bool:
+    """The "View:" year picker, by its label or the year it shows."""
+    label = _tidy(label)
+    return bool(label) and not _refused(label) and bool(YEAR_PICKER_RE.fullmatch(label))
+
+
+def is_year_option(label: str) -> bool:
+    """One year in the picker's list. The year already selected reads ",
+    current selection" (a space may come before the comma) and is never
+    pressed, so it is refused here."""
+    label = _tidy(label)
+    return bool(label) and not _refused(label) and bool(YEAR_OPTION_RE.fullmatch(label))
+
+
+def is_save_menu(label: str, row_date_label: str = "") -> bool:
+    """The bound row's "<date> Opens menu to save document", for that date
+    only when one is given."""
+    label = _tidy(label)
+    if not label or _refused(label):
+        return False
+    m = SAVE_MENU_RE.fullmatch(label)
+    if not m:
+        return False
+    return not row_date_label or row_date(m.group(1)) == row_date(row_date_label)
+
+
+def is_save_as_pdf(label: str) -> bool:
+    """"Save as PDF", with or without the menu's "1 of 2 items" place hint,
+    and nothing else; the accessible variant is refused."""
+    label = _tidy(label)
+    return bool(label) and not _refused(label) and bool(SAVE_AS_PDF_RE.fullmatch(label))
+
+
+PRESS_GUARDS = (is_account_entry, is_statements_accordion, is_year_picker,
+                is_year_option, is_save_menu, is_save_as_pdf)
+
+
+# ---------------------------------------------------------------------------
+# Hosts. Exact, parsed, no subdomain wildcard.
+# ---------------------------------------------------------------------------
+ALLOWED_HOSTS = {"secure.chase.com"}
+_PDF_PATH_RE = re.compile(r"/svc/rr/documents/secure/idal/v[0-9]+/pdfdoc/star/list")
+
+
+def is_safe_url(url: str) -> bool:
+    """True only for an https URL on exactly secure.chase.com."""
+    return _host_allows(url, ALLOWED_HOSTS, subdomains=False)
+
+
+def is_documents_url(url: str) -> bool:
+    """The document center itself: secure.chase.com's dashboard with the
+    documents route, as the address or with an account chosen in it."""
+    if not is_safe_url(url):
+        return False
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return parts.path == "/web/auth/dashboard" and \
+        (parts.fragment or "").startswith(DOCUMENTS_ROUTE[1:])
+
+
+def is_docref_url(url: str) -> bool:
+    """The statements list call, exactly: secure.chase.com and its path."""
+    if not is_safe_url(url):
+        return False
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return parts.path == DOCREF_PATH and not parts.fragment
+
+
+def is_download_url(url: str) -> bool:
+    """Where a statement's PDF comes from: secure.chase.com's PDF path."""
+    if not is_safe_url(url):
+        return False
+    try:
+        return bool(_PDF_PATH_RE.fullmatch(urlsplit(url).path))
+    except ValueError:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# The run
+# ---------------------------------------------------------------------------
+
+class Run:
+    """What one run carries between presses: when its first press was made,
+    for the deadline, and the code the first non-empty list answered with,
+    which is what an empty year is checked against. The App owns one."""
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic,
+                 limit_s: float = DEADLINE_S, today: Callable[[], _date] = _date.today):
+        self.clock = clock
+        self.limit_s = limit_s
+        self.today = today
+        self.first_press: Optional[float] = None
+        self.success_code = None
+        # Every download any watched tab raises for the whole run, and how
+        # many of them a Save as PDF took. One more than were taken is a
+        # download no press of this run is known to have made, and nothing
+        # more is pressed while one is there.
+        self.downloads: list = []
+        self.taken = 0
+        self._watched: list = []
+
+    def watch(self, page) -> None:
+        """Listen for downloads on this tab for the rest of the run."""
+        if any(p is page for p in self._watched):
+            return
+        page.on("download", self._on_download)
+        self._watched.append(page)
+
+    def _on_download(self, dl) -> None:
+        self.downloads.append(dl)
+
+    def untied(self) -> int:
+        """Downloads that came and that no Save as PDF of this run took."""
+        return len(self.downloads) - self.taken
+
+    def pressed(self) -> None:
+        if self.first_press is None:
+            self.first_press = self.clock()
+
+    def past_deadline(self) -> bool:
+        return self.first_press is not None and self.clock() - self.first_press >= self.limit_s
+
+
+@dataclass
+class RawDoc:
+    title: str
+    account: str = ""
+    date_text: str = ""
+    href: str = ""
+    text: str = ""
+    row_index: int = -1
+    kind: str = "doc"
+    # documentId from the list answer. Private: never logged or in a name.
+    document_id: str = ""
+    # The menu entry's element id, bottom-<accountId>. Private, and only
+    # what re-selects the account when the statement is taken.
+    account_ref: str = ""
+    doc_type: str = ""
+    page_count: int = 0
+
+
+@dataclass(frozen=True)
+class Item:
+    """One statement as the list answer gives it."""
+    document_id: str
+    date: str
+    doc_type: str
+    pages: int
+
+    @property
+    def shape(self) -> tuple:
+        return (self.date, self.doc_type, self.pages)
+
+
+@dataclass(frozen=True)
+class Account:
+    ref: str          # bottom-<accountId>
+    account_id: str
+    klass: str
+
+
+# ---------------------------------------------------------------------------
+# Reading the page. Read only; nothing on the page is changed.
+# ---------------------------------------------------------------------------
+_STATE_JS = r"""() => {
+  const tidy = s => (s || '').replace(/\s+/g, ' ').trim();
+  const shown = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+                      && getComputedStyle(el).visibility !== 'hidden';
+  const labels = el => [tidy(el.innerText), tidy(el.getAttribute('aria-label')),
+                        tidy(el.getAttribute('title'))].filter(Boolean);
+  const out = {menu: [], accordions: [], picker: null, options: [], rows: [],
+               dialog: (__DIALOG__)(),
+               password: !!document.querySelector("input[type='password']")};
+  for (const a of document.querySelectorAll('a[id^="bottom-"]'))
+    out.menu.push({id: a.id, labels: labels(a), all: tidy(a.textContent), shown: shown(a)});
+  for (const b of document.querySelectorAll('button[id^="button-accountsAccordian-"]'))
+    out.accordions.push({id: b.id, expanded: b.getAttribute('aria-expanded') || '',
+                         labels: labels(b), shown: shown(b)});
+  const p = document.getElementById('header-filterstyledselect-0');
+  if (p) out.picker = {labels: labels(p), value: tidy(p.value || p.getAttribute('value')), shown: shown(p)};
+  for (const o of document.querySelectorAll('[id^="container-"][id$="-filterstyledselect-0"]'))
+    out.options.push({id: o.id, labels: labels(o), shown: shown(o)});
+  for (const tr of document.querySelectorAll('tr[id^="accountsTable-STATEMENTS-row"]')) {
+    if (!/^accountsTable-STATEMENTS-row[0-9]+$/.test(tr.id)) continue;
+    out.rows.push({id: tr.id, shown: shown(tr),
+                   cells: Array.from(tr.querySelectorAll('th, td')).map(c => tidy(c.innerText))});
+  }
+  return out;
+}"""
+
+# One reading of the timeout dialog for both places that ask.
+_STATE_JS = _STATE_JS.replace("__DIALOG__", _DIALOG_OPEN_JS)
+
+_LABELS_JS = r"""el => [el.innerText, el.getAttribute('aria-label'), el.getAttribute('title')]
+  .map(s => (s || '').replace(/\s+/g, ' ').trim()).filter(Boolean)"""
+
+
+def _read(page) -> dict:
+    """What the document center shows now. A page that cannot be read
+    stops the list."""
+    try:
+        state = page.evaluate(_STATE_JS)
+    except Exception as e:
+        raise ListStopped("the document center could not be read (%s)" % type(e).__name__)
+    if not isinstance(state, dict):
+        raise ListStopped("the document center could not be read")
+    if state.get("dialog"):
+        raise SessionExpired("Chase is showing its session timeout dialog")
+    return state
+
+
+def _wait_for(page, ready: Callable[[dict], bool], timeout_ms: int) -> Optional[dict]:
+    """Read the page until `ready` holds, or None once `timeout_ms` has
+    gone. The session is asked before and after every wait."""
+    waited = 0
+    while True:
+        check_signed_in(page)
+        state = _read(page)
+        if ready(state):
+            return state
+        if waited >= timeout_ms:
+            return None
+        page.wait_for_timeout(POLL_MS)
+        waited += POLL_MS
+        check_signed_in(page)
+
+
+_ACCOUNT_REF_RE = re.compile(r"bottom-([A-Za-z0-9_-]{1,80})")
+_CLASSES = ((re.compile(r"\b(CHK|CHECKING)\b", re.I), "Business Checking"),
+            (re.compile(r"\bCARD\b", re.I), "Business Card"),
+            (re.compile(r"\bDEBIT\b", re.I), "Business Debit"))
+_TAIL_RE = re.compile(r"\s*\(\.\.\.\d{4}\)(, current selection)?\s*$", re.I)
+
+
+def account_class(label: str) -> str:
+    """The class of account a menu label names, from its product noun
+    alone: "Business Checking" (CHK, CHECKING), "Business Card" (CARD) or
+    "Business Debit" (DEBIT). "" for a label with none of them, or more than
+    one, which is a cardholder's name or a label this cannot read."""
+    name = _TAIL_RE.sub("", _tidy(label))
+    found = {klass for rx, klass in _CLASSES if rx.search(name)}
+    return found.pop() if len(found) == 1 else ""
+
+
+def _is_current(entry: dict) -> bool:
+    return any(re.search(r",\s*current selection\s*$", t or "", re.I)
+               for t in list(entry.get("labels") or []) + [entry.get("all") or ""])
+
+
+def guard_menu(state: dict) -> None:
+    """Register every menu label, element id and account id as private
+    words, in every part, before anything is pressed, logged or raised."""
+    new = []
+    for e in state.get("menu") or []:
+        ident = str(e.get("id") or "")
+        new.append(ident)
+        m = _ACCOUNT_REF_RE.fullmatch(ident)
+        if m:
+            new.append(m.group(1))
+        for text in list(e.get("labels") or []) + [e.get("all") or ""]:
+            text = str(text or "")
+            new.append(text)
+            new.extend(re.findall(r"\d{4,}", text))
+    have = set(private_words())
+    add = [w for w in new if w and w not in have]
+    if add:
+        set_private_words(private_words() + add)
+
+
+def _guard_ids(ids) -> None:
+    have = set(private_words())
+    add = [i for i in ids if i not in have]
+    if add:
+        set_private_words(private_words() + add)
+
+
+def accounts_of(state: dict) -> List[Account]:
+    """The menu entries this app lists, in menu order: each with a well-formed
+    element id, a label its predicate takes on every reading, and a class.
+    A cardholder's entry, with no product noun, is skipped. One element id
+    twice stops the list."""
+    out, seen = [], set()
+    for e in state.get("menu") or []:
+        ref = str(e.get("id") or "")
+        m = _ACCOUNT_REF_RE.fullmatch(ref)
+        if not m:
+            raise ListStopped("an account menu entry has an id this cannot read")
+        if ref in seen:
+            raise ListStopped("two account menu entries carry one id")
+        seen.add(ref)
+        if not e.get("shown"):
+            log.info("an account menu entry is not shown; skipped")
+            continue
+        labels = list(e.get("labels") or [])
+        klass = account_class(labels[0]) if labels else ""
+        if not klass:
+            log.info("an account menu entry names no business account class; skipped")
+            continue
+        if any(account_class(t) != klass for t in labels):
+            raise ListStopped("an account menu entry's labels name different accounts")
+        out.append(Account(ref=ref, account_id=m.group(1), klass=klass))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The page's own list answers
+# ---------------------------------------------------------------------------
+
+def _form(request) -> Optional[dict]:
+    try:
+        body = request.post_data or ""
+    except Exception:
+        return None
+    try:
+        return parse_qs(body, keep_blank_values=True, strict_parsing=bool(body))
+    except ValueError:
+        return None
+
+
+def is_docref_post(response) -> bool:
+    """A POST to exactly the statements list call."""
+    try:
+        return response.request.method == "POST" and is_docref_url(response.url)
+    except Exception:
+        return False
+
+
+def answers(response, account_id: str, filter_type: str) -> bool:
+    """Whether this response is the statements list for this account and
+    this year: a POST to exactly the list call whose form body names the
+    account and the year's filter, each once."""
+    if not is_docref_post(response):
+        return False
+    form = _form(response.request)
+    return bool(form) and form.get("accountFilter") == [account_id] \
+        and form.get("dateFilter.idalDateFilterType") == [filter_type]
+
+
+def filter_for(current_year: int, year: int) -> str:
+    """The filter the page sends for `year` while `current_year` is the
+    picker's current year."""
+    n = current_year - year
+    if n < 0:
+        raise ListStopped("a year after the current one was asked for")
+    return "CURRENT_YEAR" if n == 0 else "CURRENT_YEAR_MINUS_%d" % n
+
+
+def _signed_out_answer(response) -> bool:
+    try:
+        status = int(response.status)
+    except Exception:
+        return False
+    return status in (401, 403) or 300 <= status < 400
+
+
+class _Heard:
+    """The page's own statements-list answers while armed: those for one
+    account and one year, and whether any list answer said signed out."""
+
+    def __init__(self, page, account_id: Optional[str] = None, filter_type: Optional[str] = None):
+        self.page = page
+        self.account_id, self.filter_type = account_id, filter_type
+        self.all: list = []
+        self.signed_out = False
+
+    def _on(self, response):
+        try:
+            if not is_docref_post(response):
+                return
+            if _signed_out_answer(response):
+                self.signed_out = True
+                return
+            self.all.append(response)
+        except Exception:
+            pass
+
+    def matching(self, account_id: str, filter_type: str) -> list:
+        return [r for r in self.all if answers(r, account_id, filter_type)]
+
+    def raise_if_signed_out(self) -> None:
+        if self.signed_out:
+            raise SessionExpired("the statements list answered as signed out")
+
+    def __enter__(self):
+        self.page.on("response", self._on)
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            self.page.remove_listener("response", self._on)
+        except Exception:
+            pass
+        return False
+
+
+def _await_answers(page, account_id: str, filter_type: str, press: Callable[[], None],
+                   timeout_ms: int) -> list:
+    """Make `press` while the page's answer for this account and year is
+    awaited, then let the page settle and say every such answer that came.
+    None coming in `timeout_ms` is not an error here; the caller decides."""
+    with _Heard(page) as heard:
+        try:
+            with page.expect_response(lambda r: answers(r, account_id, filter_type),
+                                      timeout=timeout_ms):
+                press()
+        except (SessionExpired, ListStopped):
+            raise
+        except Exception as e:
+            log.info("no list answer came within the wait (%s)", type(e).__name__)
+        check_signed_in(page)
+        heard.raise_if_signed_out()
+        page.wait_for_timeout(SETTLE_MS)
+        check_signed_in(page)
+        heard.raise_if_signed_out()
+        return heard.matching(account_id, filter_type)
+
+
+_DOCUMENT_ID_RE = re.compile(r"[A-Za-z0-9_.:+/=-]{4,200}")
+
+
+def read_answer(response, run: Run, year: int) -> List[Item]:
+    """The statements of one list answer, every one dated in `year`.
+
+    An answer must be 200 JSON with a code. idaldocRefs present must be a
+    non-empty list of well-formed statements, and the first such answer in
+    the run sets the success code. idaldocRefs absent is an empty year only
+    once that code is known and this answer carries it; before then, or
+    with another code, the list stops. Nothing of the answer is logged."""
+    try:
+        status = int(response.status)
+    except Exception:
+        raise ListStopped("the list answer could not be read")
+    if _signed_out_answer(response):
+        raise SessionExpired("the statements list answered as signed out")
+    if status != 200:
+        raise ListStopped("the list answered with status %d" % status)
+    try:
+        data = response.json()
+    except Exception:
+        raise ListStopped("the list answer is not JSON")
+    if not isinstance(data, dict):
+        raise ListStopped("the list answer is not the shape this reads")
+    code = data.get("code")
+    if code is None or isinstance(code, (bool, dict, list)) or str(code).strip() == "":
+        raise ListStopped("the list answer carries no code")
+    if "idaldocRefs" not in data:
+        if run.success_code is None:
+            raise ListStopped("an empty year came before any list showed what success looks like")
+        if code != run.success_code:
+            raise ListStopped("an empty year came with another code than the lists before it")
+        return []
+    refs = data.get("idaldocRefs")
+    if not isinstance(refs, list) or not refs:
+        raise ListStopped("the list answer's statements are not the shape this reads")
+    ids = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            raise ListStopped("a statement in the list answer is not the shape this reads")
+        doc_id = ref.get("documentId")
+        if not isinstance(doc_id, str) or not _DOCUMENT_ID_RE.fullmatch(doc_id):
+            raise ListStopped("a statement's id is not one this can read")
+        ids.append(doc_id)
+    # Private before anything below can say anything.
+    _guard_ids(ids)
+    out = []
+    for ref in refs:
+        iso = answer_date(ref.get("documentDate"))
+        if not iso:
+            raise ListStopped("a statement's date is not a calendar date")
+        if int(iso[:4]) != year:
+            raise ListStopped("a statement is dated outside the year asked for")
+        kind = _tidy(ref.get("documentTypeDesc")) if isinstance(ref.get("documentTypeDesc"), str) else ""
+        if kind.lower() != "statement":
+            raise ListStopped("a document of a type other than Statement is in the list")
+        pages = ref.get("pageCount")
+        if isinstance(pages, str) and pages.strip().isdigit():
+            pages = int(pages.strip())
+        if isinstance(pages, bool) or not isinstance(pages, int) or pages <= 0:
+            raise ListStopped("a statement's page count is not one this can read")
+        out.append(Item(document_id=ref["documentId"], date=iso, doc_type="Statement", pages=pages))
+    if len({i.document_id for i in out}) != len(out):
+        raise ListStopped("two statements in one answer carry one id")
+    if run.success_code is None:
+        run.success_code = code
+    elif code != run.success_code:
+        raise ListStopped("a list came with another code than the lists before it")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The rows the page draws, checked against the answer
+# ---------------------------------------------------------------------------
+
+def row_shape(cells) -> Optional[tuple]:
+    """(date, type, pages) of a row's Date, Type and Size cells, or None
+    when any of them cannot be read."""
+    cells = list(cells or [])
+    if len(cells) < 3:
+        return None
+    iso = row_date(cells[0])
+    kind = _tidy(cells[1])
+    m = re.fullmatch(r"(\d+) pages?", _tidy(cells[2]), re.I)
+    if not iso or not kind or not m or int(m.group(1)) <= 0:
+        return None
+    return (iso, "Statement" if kind.lower() == "statement" else kind, int(m.group(1)))
+
+
+def _row_number(row_id: str) -> int:
+    m = re.fullmatch(r"accountsTable-STATEMENTS-row([0-9]+)", row_id or "")
+    return int(m.group(1)) if m else -1
+
+
+def rows_match(items: List[Item], rows: list) -> bool:
+    """Whether the rows drawn are exactly the statements answered, as
+    multisets of (date, type, pages). An unreadable row never matches."""
+    from collections import Counter
+    shapes = []
+    for r in rows:
+        shape = row_shape(r.get("cells"))
+        if shape is None:
+            return False
+        shapes.append(shape)
+    return Counter(shapes) == Counter(i.shape for i in items)
+
+
+def _cross_check(page, items: List[Item]) -> dict:
+    """Wait for the rows to be the answer's statements, or stop the list."""
+    state = _wait_for(page, lambda s: rows_match(items, s.get("rows") or []), ROWS_WAIT_MS)
+    if state is None:
+        raise ListStopped("the rows on the page are not the statements the page was sent")
+    return state
+
+
+# ---------------------------------------------------------------------------
+# Pressing. Every press goes through _press, with one of the six predicates.
+# ---------------------------------------------------------------------------
+
+def _labels_of(locator) -> List[str]:
+    try:
+        labels = locator.evaluate(_LABELS_JS)
+    except Exception:
+        return []
+    return [str(x) for x in labels or [] if str(x or "").strip()]
+
+
+def _press(page, locator, *, css: str, what: str, guard, step: str, run: Run,
+           expect: Optional[str] = None) -> None:
+    """Press one control, once, through the core, after every label it
+    carries has passed `guard`, one of PRESS_GUARDS. A control that is not
+    exactly one shown element, or a label refused, stops the list and
+    nothing is pressed."""
+    if guard not in PRESS_GUARDS:
+        raise ListStopped("a press was asked for with no guard of this app's own")
+    check_signed_in(page)
+    try:
+        if locator.count() != 1 or not locator.is_visible():
+            raise ListStopped("%s is not one control on the page" % what)
+    except ListStopped:
+        raise
+    except Exception as e:
+        raise ListStopped("%s could not be read (%s)" % (what, type(e).__name__))
+    labels = _labels_of(locator)
+    ok = bool(labels) and all(guard(t) if expect is None else guard(t, expect) for t in labels)
+    if not ok:
+        raise ListStopped("the guard refused %s" % what)
+    run.pressed()
+    pressing.click(page, locator, css=css, what=what, words=_words(), step=step)
+    check_signed_in(page)
+
+
+# ---------------------------------------------------------------------------
+# The document center
+# ---------------------------------------------------------------------------
+
+class Opened:
+    """The document center as it opened, and the list answers its own load
+    made, which hold the current year of the account it opened on."""
+
+    def __init__(self, state: dict, heard: list):
+        self.state = state
+        self.heard = heard
+
+
+def _statements(state: dict):
+    """The Statements accordion: None when the page draws none, the one
+    node when exactly one shows, and "" for a hidden or a doubled node,
+    which this cannot read."""
+    nodes = [a for a in state.get("accordions") or [] if a.get("id") == STATEMENTS_ACCORDION_ID]
+    if not nodes:
+        return None
+    if len(nodes) != 1 or not nodes[0].get("shown"):
+        return ""
+    return nodes[0]
+
+
+def _ready(state: dict) -> bool:
+    """The document center drawn: its account menu and at least one document
+    accordion. Statements itself is asked of each account in turn, since an
+    account the page opens on may be one that has none (a debit card shows
+    only ATM receipts)."""
+    return any(e.get("shown") for e in state.get("menu") or []) and \
+        any(a.get("shown") for a in state.get("accordions") or [])
+
+
+def _open(page) -> Opened:
+    """Open the document center by its address and wait for it to be ready:
+    the account menu and the Statements accordion drawn, on its own route.
+    Every menu label and id is private from here on. Raises SessionExpired
+    for a signed-out page and ListStopped for one that did not open. The
+    list answers the load itself makes are kept. Nothing is pressed."""
+    with _Heard(page) as heard:
+        try:
+            page.goto(DOCUMENTS_URL, wait_until="domcontentloaded", timeout=60000)
+        except Exception as e:
+            log.info("opening the document center failed (%s)", type(e).__name__)
+            check_signed_in(page)
+            heard.raise_if_signed_out()
+            raise ListStopped("the document center did not open")
+        check_signed_in(page)
+        if not is_documents_url(page.url or ""):
+            raise ListStopped("the document center settled off its own address")
+        state = _wait_for(page, _ready, READY_WAIT_MS)
+        heard.raise_if_signed_out()
+        if state is None:
+            seen = _read(page)
+            guard_menu(seen)
+            raise ListStopped("the document center did not show its account menu and Statements")
+        guard_menu(state)
+        if not is_documents_url(page.url or ""):
+            raise ListStopped("the document center settled off its own address")
+        page.wait_for_timeout(SETTLE_MS)
+        check_signed_in(page)
+        heard.raise_if_signed_out()
+        return Opened(state, list(heard.all))
+
+
+def _entry(state: dict, ref: str) -> Optional[dict]:
+    """The one shown menu entry with this id, or None for none, a hidden
+    one, or the id on two nodes."""
+    hits = [e for e in state.get("menu") or [] if e.get("id") == ref]
+    return hits[0] if len(hits) == 1 and hits[0].get("shown") else None
+
+
+def _picker_year(state: dict) -> Optional[int]:
+    p = state.get("picker") or {}
+    for text in [p.get("value") or ""] + list(p.get("labels") or []):
+        m = YEAR_PICKER_RE.fullmatch(_tidy(text))
+        if m and m.group(2):
+            return int(m.group(2))
+    return None
+
+
+def _arrive(page, run: Run, opened: Opened, acct: Account):
+    """Make `acct` the current account and read its current year's list.
+
+    Returns (items, current_year), or None for an account that shows no
+    Statements accordion once it is proven current. The account's entry is
+    pressed only when it is not the current selection already; the load's
+    own answers hold its list then. The accordion is pressed only while
+    closed. Exactly one answer for this account's current year, from these
+    transitions together, or the list stops."""
+    entry = _entry(opened.state, acct.ref)
+    if entry is None:
+        raise ListStopped("the account is not in the menu once")
+    cur_filter = "CURRENT_YEAR"
+    matches: list = []
+    if _is_current(entry):
+        matches = [r for r in opened.heard if answers(r, acct.account_id, cur_filter)]
+    else:
+        css = "#" + acct.ref
+        matches = _await_answers(
+            page, acct.account_id, cur_filter,
+            lambda: _press(page, page.locator(css), css=css, what="an account in the menu",
+                           guard=is_account_entry, step="choose an account", run=run),
+            ACCOUNT_WAIT_MS)
+    state = _wait_for(page, lambda s: _entry(s, acct.ref) is not None
+                      and _is_current(_entry(s, acct.ref))
+                      and bool(s.get("accordions")), LIST_WAIT_MS)
+    if state is None:
+        raise ListStopped("the account chosen does not show as the current selection")
+    stmt = _statements(state)
+    if stmt == "":
+        raise ListStopped("the Statements accordion is hidden or drawn twice")
+    if stmt is None:
+        if matches:
+            raise ListStopped("a statements list came for an account with no Statements")
+        return None
+    if (stmt.get("expanded") or "").lower() != "true":
+        css = "#" + STATEMENTS_ACCORDION_ID
+        matches = matches + _await_answers(
+            page, acct.account_id, cur_filter,
+            lambda: _press(page, page.locator(css), css=css, what="the Statements accordion",
+                           guard=is_statements_accordion, step="open the statements", run=run),
+            LIST_WAIT_MS)
+    if not matches and _is_current(entry) and (stmt.get("expanded") or "").lower() == "true":
+        # The page opened on this account with its statements already drawn,
+        # so nothing this run pressed fetched the current year's list and the
+        # load's own answer came before this run was listening. Choosing
+        # another year and then the current one again, two presses the
+        # picker allows, brings the current year's answer in this run's
+        # hearing. Re-choosing the current year straight off fetches nothing.
+        state = _read(page)
+        shown = _picker_year(state)
+        if shown is None:
+            raise ListStopped("the year picker shows no year")
+        year_now = run.today().year
+        if shown != year_now:
+            # A run before this one left the picker on another year. Choosing
+            # this year brings its answer, which is what is wanted here.
+            options = _open_picker(page, run)
+            items = _choose_year(page, run, acct, year_now, year_now, options)
+            return items, year_now
+        options = _open_picker(page, run)
+        others = sorted((y for y, _css, _cur in options if y != year_now), reverse=True)
+        if not others:
+            raise ListStopped("the picker offers no other year to come back from")
+        _choose_year(page, run, acct, year_now, others[0], options)
+        options = _open_picker(page, run)
+        items = _choose_year(page, run, acct, year_now, year_now, options)
+        return items, year_now
+    if len(matches) != 1:
+        raise ListStopped("%d list answers came for the account's current year" % len(matches))
+    state = _read(page)
+    year = _picker_year(state)
+    if year is None:
+        raise ListStopped("the year picker shows no year")
+    if year != run.today().year:
+        raise ListStopped("the year picker's current year is not this year")
+    items = read_answer(matches[0], run, year)
+    _cross_check(page, items)
+    return items, year
+
+
+def _options(state: dict) -> List[Tuple[int, str, bool]]:
+    """(year, css, current) for each shown year option. An option that
+    cannot be read stops the list."""
+    out = []
+    for o in state.get("options") or []:
+        # Live, each year is drawn as container-<n>-... with inner
+        # container-primary-<n>-... and container-secondary-<n>-... parts, the
+        # last with no words. Only the year's own node is read.
+        if not re.fullmatch(r"container-[0-9]+-filterstyledselect-0", o.get("id") or ""):
+            continue
+        if not o.get("shown"):
+            continue
+        labels = [_tidy(t) for t in o.get("labels") or []]
+        years = set()
+        current = False
+        for t in labels:
+            if re.fullmatch(r"\d{4}\s*,\s*current selection", t, re.I):
+                current = True
+                years.add(int(t[:4]))
+                continue
+            m = YEAR_OPTION_RE.fullmatch(t)
+            if not m:
+                raise ListStopped("a year in the picker reads in a way this cannot read")
+            years.add(int(m.group(1)))
+        if len(years) != 1 or not re.fullmatch(r"container-[0-9]+-filterstyledselect-0", o.get("id") or ""):
+            raise ListStopped("a year in the picker reads in a way this cannot read")
+        out.append((years.pop(), "#" + o["id"], current))
+    if len({y for y, _c, _cur in out}) != len(out):
+        raise ListStopped("the picker offers one year twice")
+    return out
+
+
+def _open_picker(page, run: Run) -> List[Tuple[int, str, bool]]:
+    """Open the "View:" picker, unless its years show already, and read
+    them."""
+    state = _read(page)
+    if not any(o.get("shown") for o in state.get("options") or []):
+        css = "#" + YEAR_PICKER_ID
+        _press(page, page.locator(css), css=css, what="the year picker",
+               guard=is_year_picker, step="open the year picker", run=run)
+        state = _wait_for(page, lambda s: any(o.get("shown") for o in s.get("options") or []),
+                          MENU_WAIT_MS)
+        if state is None:
+            raise ListStopped("the year picker showed no years")
+    return _options(state)
+
+
+def _choose_year(page, run: Run, acct: Account, current_year: int, year: int,
+                 options: List[Tuple[int, str, bool]]) -> List[Item]:
+    """Choose `year` in the picker and read its list: exactly one answer for
+    this account and that year's filter, rows checked against it."""
+    hits = [(css, cur) for y, css, cur in options if y == year]
+    if len(hits) != 1:
+        raise ListStopped("the picker does not offer the year once")
+    css, cur = hits[0]
+    if cur:
+        raise ListStopped("the year is the current selection already")
+    filt = filter_for(current_year, year)
+    matches = _await_answers(
+        page, acct.account_id, filt,
+        lambda: _press(page, page.locator(css), css=css, what="a year in the picker",
+                       guard=is_year_option, step="choose a year", run=run),
+        LIST_WAIT_MS)
+    if len(matches) != 1:
+        raise ListStopped("%d list answers came for the year chosen" % len(matches))
+    if _picker_year(_read(page)) != year:
+        raise ListStopped("the picker does not show the year chosen")
+    items = read_answer(matches[0], run, year)
+    _cross_check(page, items)
+    return items
+
+
+def _rawdocs(acct: Account, items: List[Item]) -> List[RawDoc]:
+    title = "%s Statement" % acct.klass
+    return [RawDoc(title=title, account=acct.klass, date_text=i.date, href="", text=title,
+                   kind="statement", document_id="", account_ref=acct.ref,
+                   doc_type=i.doc_type, page_count=i.pages) for i in items]
+
+
+def _account_docs(page, run: Run, acct: Account) -> List[RawDoc]:
+    """Every statement of one account, each year the picker offers."""
+    opened = _open(page)
+    arrived = _arrive(page, run, opened, acct)
+    if arrived is None:
+        log.info("a %s account shows no Statements", acct.klass)
+        return []
+    items, current_year = arrived
+    docs = _rawdocs(acct, items)
+    log.info("%s %d: %d statement(s)", acct.klass, current_year, len(items))
+    years = [y for y, _css, _cur in _open_picker(page, run)]
+    if current_year not in years:
+        raise ListStopped("the picker does not offer the current year", docs)
+    for year in sorted((y for y in years if y != current_year), reverse=True):
+        try:
+            options = _open_picker(page, run)
+            if sorted(y for y, _c, _cur in options) != sorted(years):
+                raise ListStopped("the picker offers other years than before")
+            items = _choose_year(page, run, acct, current_year, year, options)
+        except ListStopped as stop:
+            raise ListStopped(str(stop), docs)
+        docs.extend(_rawdocs(acct, items))
+        log.info("%s %d: %d statement(s)", acct.klass, year, len(items))
+    return docs
+
+
+def collect_download_docs(page, run: Optional[Run] = None) -> List[RawDoc]:
+    """Every statement of every business account in the menu. Raises
+    ListStopped holding what was read when any part cannot be read, and
+    SessionExpired for a signed-out session."""
+    run = run or Run()
+    opened = _open(page)
+    accounts = accounts_of(opened.state)
+    if not accounts:
+        raise ListStopped("the account menu names no business account this app reads")
+    docs: List[RawDoc] = []
+    for acct in accounts:
+        try:
+            docs.extend(_account_docs(page, run, acct))
+        except ListStopped as stop:
+            raise ListStopped(str(stop), docs + stop.docs)
+    # A statement is its account, date and type (Chase mints its documentId
+    # anew each session), so two listed alike would share one record and no
+    # download could tell them apart.
+    seen = set()
+    for d in docs:
+        ident = (d.account_ref, d.date_text, d.doc_type)
+        if ident in seen:
+            raise ListStopped("one statement is listed twice", docs)
+        seen.add(ident)
+    return docs
+
+
+def goto_documents(page) -> bool:
+    """Open the document center by its address and prove it ready. False
+    when it showed the sign-in page or did not open. Nothing is pressed."""
+    try:
+        _open(page)
+        return True
+    except (SessionExpired, ListStopped) as e:
+        log.info("the document center did not open: %s", e)
+        return False
+
+
+def scroll_full_page(page, rounds: int = 0, delay_ms: int = 0) -> None:
+    """Nothing to scroll: every statement of a year is one table."""
+    return None
+
+
+def expand_all(page) -> None:
+    """Nothing to press beyond the six controls in the module docstring."""
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Download
+# ---------------------------------------------------------------------------
+
+def bind(items: List[Item], rows: list, document_id: str, iso_date: str, doc_type: str,
+         pages: int) -> int:
+    """The row number of the one statement to save, or -1.
+
+    Exactly one answered statement must have the record's date, type and
+    page count; exactly one shown row must read that same date, type and
+    page count. The documentId is not compared (see below)."""
+    # Chase mints a statement's documentId anew each session, so it names
+    # nothing across runs: the record is its account, date, type and page
+    # count, and exactly one answered statement must carry that shape.
+    want = (iso_date, doc_type, int(pages or 0))
+    api = [i for i in items if i.shape == want]
+    if len(api) != 1:
+        return -1
+    hits = [r for r in rows if r.get("shown") and row_shape(r.get("cells")) == want]
+    if len(hits) != 1:
+        return -1
+    return _row_number(hits[0].get("id") or "")
+
+
+def _reach_row(page, run: Run, account_ref: str, document_id: str, iso_date: str,
+               doc_type: str, pages: int, trace: Optional[list]) -> int:
+    """Open the document center afresh, choose the record's account, open
+    Statements, choose the record's year and bind the record to one row.
+    The row's number, or -1 with nothing pressed past the list."""
+    opened = _open(page)
+    accts = [a for a in accounts_of(opened.state) if a.ref == account_ref]
+    if len(accts) != 1:
+        if trace is not None:
+            trace.append({"note": "the account is not in the menu once"})
+        return -1
+    acct = accts[0]
+    arrived = _arrive(page, run, opened, acct)
+    if arrived is None:
+        if trace is not None:
+            trace.append({"note": "the account shows no statements"})
+        return -1
+    items, current_year = arrived
+    year = int(iso_date[:4])
+    if year != current_year:
+        items = _choose_year(page, run, acct, current_year, year, _open_picker(page, run))
+    n = bind(items, _read(page).get("rows") or [], document_id, iso_date, doc_type, pages)
+    if n < 0 and trace is not None:
+        trace.append({"note": "no single statement and row match the record"})
+    return n
+
+
+def _unfinished(dl_dir) -> bool:
+    try:
+        return any(p.name.lower().endswith((".crdownload", ".part", ".download", ".tmp"))
+                   for p in Path(dl_dir).iterdir())
+    except OSError:
+        return False
+
+
+def _cancel_all(downloads: list) -> None:
+    for dl in downloads:
+        try:
+            dl.cancel()
+        except Exception:
+            pass
+
+
+def _stop(said: str, reason: str):
+    return pressing.no_answer("save the statement", reason, said)
+
+
+# Which "Save as PDF" the bound row's save menu shows, read only. The option
+# must be inside the bound row itself, or inside the menu its save control
+# names as its own (aria-controls or aria-owns), and it must be the only
+# shown "Save as PDF" anywhere on the page, so no detached or other row's
+# option can stand in for it.
+_MENU_JS = r"""(args) => {
+  // Every row's save menu is in the DOM, closed ones included, and a closed
+  // one's Save as PDF has a box but no words; only an option drawn with its
+  // words, in an open menu, is shown.
+  const shown = el => {
+    if (!el) return false;
+    const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'
+           && parseFloat(s.opacity || '1') > 0 && (el.innerText || '').trim().length > 0;
+  };
+  const out = {controls: 0, option: false, shownOptions: 0, inRow: false, menuId: '',
+               triggerId: '', expandedSelf: false, expandedOthers: 0};
+  const row = document.getElementById(args.row);
+  if (!row) return out;
+  const controls = Array.from(row.querySelectorAll(args.control));
+  out.controls = controls.length;
+  // The option is an anchor, item-0-<N>-…; the span inside it, itemLink-0-<N>-…,
+  // ends the same way and is not a second option.
+  out.shownOptions = Array.from(document.querySelectorAll('a[id^="item-"][id$="-downloadPDFOption"]')).filter(shown).length;
+  const opt = document.getElementById(args.option);
+  out.option = shown(opt);
+  if (!opt || controls.length !== 1) return out;
+  out.inRow = row.contains(opt);
+  const trigger = controls[0];
+  out.triggerId = trigger.id || '';
+  out.expandedSelf = (trigger.getAttribute('aria-expanded') || '').toLowerCase() === 'true';
+  out.expandedOthers = Array.from(document.querySelectorAll('a[id^="header-"][id$="-cell3-downloadDocumentDropdown"]'))
+    .filter(t => t !== trigger && (t.getAttribute('aria-expanded') || '').toLowerCase() === 'true').length;
+  const ids = ((controls[0].getAttribute('aria-controls') || '') + ' ' +
+               (controls[0].getAttribute('aria-owns') || '')).split(/\s+/).filter(Boolean);
+  const menus = ids.map(i => document.getElementById(i)).filter(m => m && m.contains(opt));
+  if (menus.length === 1) out.menuId = menus[0].id || '';
+  return out;
+}"""
+
+_MENU_ID_RE = re.compile(r"[A-Za-z0-9_:.-]{1,100}")
+
+
+def _own_pdf_option(page, n: int) -> str:
+    """The selector of the bound row's own "Save as PDF", or "" while it is
+    not proven to be that.
+
+    The row's save control must be exactly
+    header-accountsTable-STATEMENTS-row<N>-cell3-downloadDocumentDropdown and
+    the option item-0-<N>-downloadPDFOption, the same N, as the survey found
+    them; no other row's save control may be expanded; and the option must
+    be the only shown Save as PDF on the page. It is then taken inside the
+    row itself, or inside the one menu the control names (aria-controls or
+    aria-owns) only while this control is the one expanded, since such a
+    popup can be shared by every row."""
+    row = "accountsTable-STATEMENTS-row%d" % n
+    option = "item-0-%d-downloadPDFOption" % n
+    try:
+        seen = page.evaluate(_MENU_JS, {"row": row, "option": option,
+                                        "control": 'a[id^="header-"][id$="-row%d-cell3-downloadDocumentDropdown"]' % n})
+    except Exception:
+        return ""
+    if not isinstance(seen, dict) or seen.get("controls") != 1 or not seen.get("option") \
+            or seen.get("shownOptions") != 1 or seen.get("expandedOthers") != 0 \
+            or seen.get("triggerId") != "header-%s-cell3-downloadDocumentDropdown" % row:
+        return ""
+    # Either way the bound control itself must read expanded: an option drawn
+    # inside a row whose menu is closed is stale, not this press's.
+    if seen.get("expandedSelf") is not True:
+        return ""
+    if seen.get("inRow"):
+        return "#%s #%s" % (row, option)
+    menu = str(seen.get("menuId") or "")
+    if _MENU_ID_RE.fullmatch(menu):
+        return '[id="%s"] #%s' % (menu, option)
+    return ""
+
+
+def _catch_statement(page, run: Run, dl_dir, n: int, iso_date: str, out_path: Path,
+                     trace: Optional[list]) -> bool:
+    """Press row `n`'s save menu and then its own Save as PDF, once each,
+    and take the one download that brings, through the core.
+
+    A download already on its way or one no press of this run took, a Save
+    as PDF that is not the bound menu's own, none in time, a second
+    download, one from anywhere but Chase's PDF path, or one that is not a
+    PDF stops the run: nothing more is pressed for this or any later
+    statement. The run listens for downloads from its first save to its
+    end (Run.watch), so a second download that comes late still stops the
+    next statement before anything is pressed for it."""
+    out_path = Path(out_path)
+    row_css = "#accountsTable-STATEMENTS-row%d" % n
+    # The one exact anchor the survey found, named before the press: a
+    # lookalike with the same words and a longer id is never pressed.
+    menu_css = "%s a#header-accountsTable-STATEMENTS-row%d-cell3-downloadDocumentDropdown" % (row_css, n)
+    run.watch(page)
+    before = _snapshot(dl_dir)
+    try:
+        if _unfinished(dl_dir):
+            raise _stop("A download was still arriving before this statement was saved, "
+                        "so nothing was pressed.", "a download was pending")
+        if run.untied():
+            raise _stop("A download came that no Save as PDF of this run took, so nothing "
+                        "more is pressed.", "a download came that no press took")
+        _press(page, page.locator(menu_css), css=menu_css, what="the statement's save menu",
+               guard=is_save_menu, expect=_row_label_date(iso_date), step="open the save menu",
+               run=run)
+        waited = 0
+        while True:
+            check_signed_in(page)
+            pdf_css = _own_pdf_option(page, n)
+            if pdf_css:
+                break
+            if waited >= MENU_WAIT_MS:
+                raise _stop("The statement's save menu did not show its own Save as PDF, "
+                            "alone, so nothing more was pressed.",
+                            "the save menu showed no save as pdf of its own")
+            page.wait_for_timeout(POLL_MS)
+            waited += POLL_MS
+        if run.untied() or _unfinished(dl_dir):
+            _cancel_all(run.downloads[run.taken:])
+            raise _stop("A download came before Save as PDF was pressed, so it was not pressed.",
+                        "a download came before the press")
+        start = len(run.downloads)
+        try:
+            with page.expect_download(timeout=DOWNLOAD_WAIT_MS) as info:
+                _press(page, page.locator(pdf_css), css=pdf_css,
+                       what="Save as PDF in the statement's save menu",
+                       guard=is_save_as_pdf, step="save the statement", run=run)
+            dl = info.value
+        except (SessionExpired, ListStopped):
+            raise
+        except Exception as e:
+            check_signed_in(page)
+            if trace is not None:
+                trace.append({"note": "no download came", "error": type(e).__name__})
+            raise _stop("Save as PDF was pressed and no download came.", "no download came")
+        check_signed_in(page)
+        page.wait_for_timeout(SECOND_DOWNLOAD_WAIT_MS)
+        check_signed_in(page)
+        came = run.downloads[start:]
+        if len(came) != 1:
+            _cancel_all(came)
+            raise _stop("More than one download came after one Save as PDF, so none was taken.",
+                        "more than one download came")
+        run.taken = len(run.downloads)
+        if not is_download_url(getattr(dl, "url", "") or ""):
+            _cancel_all([dl])
+            raise _stop("The download did not come from Chase's statement address, so it was "
+                        "not taken.", "the download came from elsewhere")
+        how = _take_download(dl, dl_dir, before, out_path)
+        if trace is not None:
+            trace.append({"note": "download taken" if how else "download not taken", "how": how})
+        if not how or not out_path.exists() or out_path.read_bytes()[:5] != b"%PDF-":
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
+            raise _stop("The download was not a PDF, so it was not kept.", "the download was not a pdf")
+        return True
+    finally:
+        try:
+            _clear_copies(dl_dir, before, out_path)
+        except Exception:
+            pass
+
+
+def download_statement(page, run: Run, dl_dir, out_path, *, account_ref: str, document_id: str,
+                       iso_date: str, doc_type: str, page_count: int,
+                       trace: Optional[list] = None) -> bool:
+    """Save the statement discovery recorded. The document center is opened
+    afresh, the record's account chosen and proven current, Statements
+    opened, its year chosen, and the record bound to exactly one answered
+    statement and one shown row before anything is pressed on the row.
+    False, with nothing pressed on the row, when any of that does not hold.
+    SessionExpired and a stop of the run propagate."""
+    out_path = Path(out_path)
+    # The documentId is not required: Chase mints it anew each session, so
+    # a record keeps none (see bind).
+    if not (_ACCOUNT_REF_RE.fullmatch(account_ref or "")
+            and answer_date(iso_date) == iso_date and doc_type == "Statement" and int(page_count or 0) > 0):
+        if trace is not None:
+            trace.append({"note": "the record does not name one statement"})
+        return False
+    try:
+        n = _reach_row(page, run, account_ref, document_id, iso_date, doc_type, int(page_count),
+                       trace)
+    except ListStopped as stop:
+        log.info("the list stopped while looking for the statement dated %s: %s", iso_date, stop)
+        if trace is not None:
+            trace.append({"note": "the list stopped", "why": str(stop)})
+        return False
+    if n < 0:
+        return False
+    try:
+        return _catch_statement(page, run, dl_dir, n, iso_date, out_path, trace)
+    except ListStopped as stop:
+        # A control on the row the guard refused, or not one control: it
+        # was not pressed, and the statement is left for review.
+        log.info("the statement dated %s was not saved: %s", iso_date, stop)
+        if trace is not None:
+            trace.append({"note": "the row's control was not pressed", "why": str(stop)})
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Diagnose. Reads only, presses nothing. No screenshot.
+# ---------------------------------------------------------------------------
+
+def collect_documents(page) -> List[RawDoc]:
+    """The statement rows drawn now, by shape only (date, type, pages);
+    nothing that names an account."""
+    try:
+        state = _read(page)
+    except (ListStopped, SessionExpired):
+        return []
+    out = []
+    for r in state.get("rows") or []:
+        shape = row_shape(r.get("cells"))
+        if shape:
+            out.append(RawDoc(title="Statement", date_text=shape[0], text="%s %d pages" % (shape[1], shape[2]),
+                              row_index=_row_number(r.get("id") or ""), kind="statement"))
+    return out
+
+
+def survey(page, dwell_ms: int = 4000, max_follow: int = 0) -> dict:
+    """What the signed-in document center shows, by counts and the guard's
+    verdicts, without a label of the page's. Presses nothing."""
+    page.wait_for_timeout(dwell_ms)
+    try:
+        state = _read(page)
+    except (ListStopped, SessionExpired) as e:
+        return {"pages": [], "error": type(e).__name__}
+    guard_menu(state)
+    menu = state.get("menu") or []
+    return {"pages": [{
+        "url": redact(page.url or ""),
+        "documents_route": is_documents_url(page.url or ""),
+        "menu_entries": len(menu),
+        "menu_entries_the_guard_takes": sum(1 for e in menu
+                                            if (e.get("labels") or [""])
+                                            and all(is_account_entry(t) for t in e.get("labels") or [""])),
+        "menu_entries_by_class": {k: sum(1 for e in menu
+                                         if account_class((e.get("labels") or [""])[0]) == k)
+                                  for k in ("Business Checking", "Business Card", "Business Debit", "")},
+        "current_entries": sum(1 for e in menu if _is_current(e)),
+        "accordions": [re.sub(r"^button-accountsAccordian-", "", a.get("id") or "")[:30]
+                       for a in state.get("accordions") or []
+                       if re.fullmatch(r"button-accountsAccordian-[A-Z_]{1,30}", a.get("id") or "")],
+        "statements_open": any(a.get("id") == STATEMENTS_ACCORDION_ID
+                               and (a.get("expanded") or "").lower() == "true"
+                               for a in state.get("accordions") or []),
+        "picker_year": _picker_year(state),
+        "rows": len(state.get("rows") or []),
+        "rows_readable": sum(1 for r in state.get("rows") or [] if row_shape(r.get("cells"))),
+        "timeout_dialog_open": bool(state.get("dialog")),
+    }]}

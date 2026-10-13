@@ -207,6 +207,15 @@ PROVIDER_UNFINISHED_FIELDS = {"Apple": ("refused_runs", "not_asked_runs")}
 KEY_FIELDS = ("category", "doc_type", "date", "title", "account", "listed_account",
               "occurrence", "document_id")
 
+# Fields one provider keeps only for this computer's runs, left out of every
+# export, full or --minimal. Chase Business keeps its document center's
+# account reference and each statement's documentId to reach the statement
+# again, and both are private: its key holds a digest of the id, never the
+# id, so a moved history still skips the statement without them
+# (chasebusiness_docs.Document.key). Checked by
+# core/tests/test_migrate_tool.py.
+PROVIDER_PRIVATE_FIELDS = {"Chase Business": ("account_ref", "document_id")}
+
 # Chase has kept an account's last four in its key since 0.17.1 whatever its
 # length, where the other apps keep it only past forty characters, so its
 # own move takes a short account's record off an old key too
@@ -561,9 +570,13 @@ def build(root: Path, minimal: bool = False):
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for place in places:
             recs = place["records"]
+            reader = _reader(place, places)
             if minimal:
-                reader = _reader(place, places)
                 recs = {k: dict(_skip_fields(v, reader), **_key_fields(k, v, reader))
+                        for k, v in recs.items()}
+            private = PROVIDER_PRIVATE_FIELDS.get(reader, ())
+            if private:
+                recs = {k: {f: x for f, x in v.items() if f not in private}
                         for k, v in recs.items()}
             name, n = place["folder"], 2
             while name.lower() in used:

@@ -740,3 +740,32 @@ def test_one_history_named_for_several_places_is_refused(tmp_path):
         z.writestr("apps/0/progress.json", json.dumps({"id:1": _rec()}))
     with pytest.raises(migrate.NotAnExport):
         migrate.read(archive)
+
+
+@pytest.mark.parametrize("minimal", [False, True])
+def test_chase_business_ids_never_leave_this_computer(tmp_path, minimal):
+    """Chase Business keeps its document center's account reference and a
+    statement's documentId only to reach the statement again. Neither is in
+    any export, full or --minimal, and a moved history still skips the
+    statement, which its key, a digest of the id, says on its own."""
+    ref, doc_id = "ACCTREFQX0042", "DOCIDQX987654"
+    rec = _rec()
+    rec.update({"account_ref": ref, "document_id": doc_id, "category": "Statement",
+                "account": "Business Checking"})
+    key = "id:Business Checking:0a1b2c3d4e5f60718293a4b5"
+    old = tmp_path / "old"
+    _install(old, "Chase Business Statements", "Chase Business", {key: rec})
+    archive = tmp_path / "h.ppz"
+    assert migrate.export(old, archive, minimal=minimal) == 0
+
+    with zipfile.ZipFile(archive) as z:
+        blob = b" ".join(z.read(n) for n in z.namelist()).decode("utf-8", "ignore")
+    assert ref not in blob and doc_id not in blob
+    assert "account_ref" not in blob and "document_id" not in blob
+
+    new = tmp_path / "new"
+    _install(new, "Chase Business Statements", "Chase Business", {})
+    assert migrate.do_import(archive, new, assume_yes=True) == 0
+    got = json.loads((new / "Chase Business Statements" / "progress.json")
+                     .read_text(encoding="utf-8"))
+    assert list(got) == [key] and got[key]["downloaded_ok"] is True

@@ -24,6 +24,7 @@
     "bestbuy": {"gets": "Receipts for online and store purchases and returns, back to 2015", "group": "shopping"},
     "capitalone": {"gets": "Bank and card statements, tax forms, letters", "group": "banks"},
     "chase": {"gets": "Credit card statements", "group": "banks"},
+    "chasebusiness": {"gets": "Business checking and business card statements, up to seven years", "group": "banks", "note": "Tested on one profile, checking only"},
     "citi": {"gets": "Credit card statements, about two years online", "group": "banks"},
     "coinbase": {"gets": "Monthly statements and tax documents", "group": "investing"},
     "costco": {"gets": "Warehouse, gas, pharmacy and costco.com receipts", "group": "shopping", "note": "Tested on one membership so far"},

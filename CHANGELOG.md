@@ -144,6 +144,19 @@ to the Capital One app, so Discover counts as supported.
   receipt already saved, asking nothing of Costco, and a preview leaves
   every record as it was. Food court, pharmacy and tire center receipts are
   Warehouse until a member's receipts show how to tell them apart.
+- **Chase Business statements from the business document center.** A new
+  `chasebusiness` app saves the monthly statements of the business accounts
+  on a Chase business profile, up to the seven years Chase keeps online,
+  filed as Business Checking, Business Card or Business Debit. It chooses
+  each account in the document center's menu, opens Statements, picks each
+  year and saves a statement through its row's own save menu and Save as
+  PDF. Those six kinds of control are the only ones it ever presses;
+  payments, transfers, wires, Zelle, settings and sign-out are never
+  touched. A run stops on its own when Chase shows its session timeout or
+  signs you out, and keeps what it saved. Account names and numbers stay
+  out of every file name, log and diagnostic file, and Chase's account and
+  statement ids never leave your computer in an exported history. Verified
+  on one profile, where it saved 10 checking statements on a full run.
 - **SDG&E (San Diego Gas & Electric) bills from My Energy Center.** The app
   reads the bills Billing History lists, about two years of them, and saves
   each bill's PDF, fetched by its own address with your signed-in session.

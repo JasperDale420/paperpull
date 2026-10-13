@@ -531,7 +531,46 @@ def test_alpaca_removes_a_download_that_comes_after_it_stopped_waiting(
     assert not (tmp_path / "Statements" / "2026-08-31 Statement.pdf").exists()
 
 
-DRIVEN_ELSEWHERE_HERE = {"verizon", "vanguard", "ibkr", "coinbase", "alpaca"}
+# A statement row as Chase Business's document center draws it, every word
+# made up: the row's save menu, which opens to the row's own Save as PDF.
+CHASEBUSINESS_PAGE = (
+    b"<!doctype html><meta charset='utf-8'><table><tr id='accountsTable-STATEMENTS-row1'>"
+    b"<td>Sep 30, 2026</td><td>Statement</td><td>4 pages</td><td>"
+    b"<a id='header-accountsTable-STATEMENTS-row1-cell3-downloadDocumentDropdown'"
+    b" href='javascript:void(0)' aria-label='Sep 30, 2026 Opens menu to save document'"
+    b" aria-expanded='false' style='display:inline-block;width:40px;height:20px'"
+    b" onclick=\"this.setAttribute('aria-expanded','true');"
+    b"document.getElementById('item-0-1-downloadPDFOption').style.display='block'\">"
+    b"</a>"
+    b"<a id='item-0-1-downloadPDFOption' href='javascript:void(0)' style='display:none'"
+    b" onclick=\"location.href='/doc'\">Save as PDF</a>"
+    b"</td></tr></table>")
+
+
+@pytest.mark.parametrize("left", [False, True], ids=["empty folder", "same name already there"])
+def test_chasebusiness_takes_its_statement_from_the_folder(left, browser_context, provider,
+                                                          tmp_path, monkeypatch):
+    """Chase Business presses the bound row's save menu and then its own
+    Save as PDF, through the guard, and takes the one download that brings
+    through the core. Only Chase's PDF address is stood in for, by the
+    test's provider, and the walk to the row (account, Statements, year) is
+    this page already open."""
+    site = site_of(REPO / "apps" / "chasebusiness")
+    monkeypatch.setattr(site, "is_download_url", lambda url: url.startswith(provider.base + "/"))
+    provider.pages["/chasebusiness"] = CHASEBUSINESS_PAGE
+    pg = browser_context.new_page()
+    try:
+        pg.goto(provider.base + "/chasebusiness")
+        staging, out = folder_for(tmp_path, "chasebusiness", left)
+        site.set_download_dir(pg, staging)
+        provider.reset()
+        got = site._catch_statement(pg, site.Run(), staging, 1, "2026-09-30", out, trace=[])
+        check("chasebusiness", got, provider, out, staging)
+    finally:
+        pg.close()
+
+
+DRIVEN_ELSEWHERE_HERE = {"verizon", "vanguard", "ibkr", "coinbase", "alpaca", "chasebusiness"}
 
 # Apps that point the browser at a folder and take nothing from it, so
 # there is no capture here to drive, and why. Each is held to that below.
