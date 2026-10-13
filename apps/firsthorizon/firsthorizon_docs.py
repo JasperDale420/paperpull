@@ -54,6 +54,8 @@ from paperpull_core import capture
 from paperpull_core import doc_types, receipt_pdf
 from paperpull_core import browser as browser_launcher
 import firsthorizon_site as site
+# The record's identity, bound once, so it never depends on a page or a run.
+from firsthorizon_site import record_hash as _record_hash
 from paperpull_core.models import State
 from paperpull_core.keys import account_component as _account_component
 from paperpull_core.words import Fixed, shape_tree, words_for, write_shaped
@@ -159,16 +161,13 @@ class Document:
 
     @property
     def key(self) -> str:
-        """Stable identity: the account's product and a hash of the private
-        (account id, document id) pair, so the same document id in two
-        accounts is two records and neither id is written into the key. A
-        record without an account id keys on its document id, and one with
-        neither on category, date and title. Never printed or logged."""
-        if self.document_id and self.account_id:
-            return "id:%s:%s" % (self.account, site.record_hash(self.account_id, self.document_id)[:20])
+        """Stable identity: a hash of the private (account id, document id)
+        pair alone, so the same document id in two accounts is two records,
+        neither id is written into the key, and a product the bank renames
+        changes no key. A record with no document id keys on category, date
+        and title. Never printed or logged."""
         if self.document_id:
-            return f"id:{self.account}:{self.document_id}" if self.account \
-                else f"id:{self.document_id}"
+            return "id:%s" % _record_hash(self.account_id, self.document_id)[:20]
         acct = _account_component(sanitize_component(self.account or ""))
         return f"{self.category}:{self.date}:{sanitize_component(self.title)[:60]}:{acct}"
 
@@ -192,7 +191,7 @@ def told_apart_by(record: dict) -> str:
     doc_id = str(record.get("document_id") or "").strip()
     if not doc_id:
         return ""
-    return site.record_hash(str(record.get("account_id") or "").strip(), doc_id)[:6]
+    return _record_hash(str(record.get("account_id") or "").strip(), doc_id)[:6]
 
 
 class App:
@@ -670,11 +669,18 @@ class App:
                                         trace=trace)
         if saved is None:
             # The page has turned this statement's Download PDF off. Nothing
-            # was pressed and nothing is recorded, so the next run asks for
-            # it again; the run goes on to the next statement.
+            # was pressed and no new record is written, so the next run asks
+            # for it again, and the run goes on to the next statement. A
+            # statement saved before only has a note added, below.
             log.info("the statement dated %s is turned off on the page; left for the next run",
                      doc.date)
             print("  Its Download PDF is turned off on the page - left for the next run.")
+            if saved_copy.holding(self, doc.key):
+                # A Download again of a statement saved before. Its record
+                # stands as it was, and its notes say this attempt saved
+                # nothing (paperpull_core.saved_copy).
+                self._record(doc, State.NEEDS_MANUAL_REVIEW,
+                             notes="Its Download PDF is turned off on the page")
             return
         # A capture that failed must not leave a convincing empty file behind.
         if out_path.exists() and (

@@ -223,13 +223,18 @@ class Loc:
 
 
 class Bank:
-    """Accounts: dicts of id, title, statements [(date, docId)], and open
-    (expanded when the page loads). `download` says what the Download PDF
-    button does."""
+    """Accounts: dicts of id, title, statements [(date, docId)], open
+    (expanded when the page loads), appear_at (ms after load before the
+    panel is drawn, for the last accounts only), title_at (ms after load
+    before the title's balance is drawn) and hidden_at (ms after load from
+    which the page hides the panel). `download` says what the Download
+    PDF button does. `single_open` makes the accordion keep one panel open."""
 
-    def __init__(self, accounts, download="popup"):
+    def __init__(self, accounts, download="popup", single_open=False):
         self.accounts = accounts
         self.download = download
+        self.single_open = single_open
+        self.loaded_at = 0
         self.url = f"https://{HOST}/#accounts"
         self.context = Context(self)
         self.context.pages.append(self)
@@ -280,6 +285,7 @@ class Bank:
     def goto(self, url, **kw):
         self.gotos.append(url)
         self.url = url
+        self.loaded_at = self.time
         self.reset()
         if self.on_goto:
             self.on_goto(self)
@@ -302,6 +308,8 @@ class Bank:
         if loc.kind == "panel":
             i = loc.at["n"]
             self.presses.append(("panel", i))
+            if self.single_open:
+                self.open = [False] * len(self.open)
             self.open[i] = True
             self.answer(i)
         elif loc.kind == "button":
@@ -400,15 +408,21 @@ class Bank:
     def answered_now(self, i):
         return self.time >= self.load_delay
 
+    def drawn(self, a, key):
+        return self.time - self.loaded_at >= a.get(key, 0)
+
     def state(self):
         panels = []
         for i, a in enumerate(self.accounts):
-            panels.append({"index": i, "title": a["title"], "labels": [a["title"]],
+            if not self.drawn(a, "appear_at"):
+                continue
+            title = a["title"] if self.drawn(a, "title_at") else a["title"].rsplit(" $", 1)[0]
+            panels.append({"index": i, "title": title, "labels": [title],
                            "expanded": "true" if self.open[i] else "false",
                            "region": a.get("region", "accordion-%d" % i),
                            "cards": [{"label": "Monthly statement for " + mdy(d), "shown": True,
                                       "buttons": 1} for d in self.cards(i)],
-                           "shown": True})
+                           "shown": "hidden_at" not in a or not self.drawn(a, "hidden_at")})
         return {"heading": True, "tab": True, "panels": panels, "password": self.password}
 
     def labels_of(self, loc):
@@ -628,6 +642,43 @@ def test_an_answer_that_comes_after_the_page_is_ready_is_still_bound():
     assert {d.account_id for d in got} == {ACCT1, ACCT2}
 
 
+def test_a_panel_drawn_after_the_panels_were_read_stops_the_list():
+    bank = Bank([acct1(), acct2(appear_at=2500)])
+    with pytest.raises(site.ListStopped) as stop:
+        site.collect_download_docs(bank, run_on(bank))
+    assert [d.account_id for d in stop.value.docs] == [ACCT1, ACCT1], "what was read is kept"
+    assert bank.presses == [("panel", 0)]
+
+
+def test_a_panel_open_on_load_takes_the_product_of_its_settled_title():
+    bank = Bank([acct1(open=True, title_at=1000), acct2()])
+    got = site.collect_download_docs(bank, run_on(bank))
+    assert {(d.account, d.account_id) for d in got} == {
+        ("Express Checking", ACCT1), ("Statement Savings", ACCT2)}
+    assert bank.presses == [("panel", 1)]
+
+
+@pytest.mark.parametrize("hidden_at", [0, 2000], ids=["on load", "after the walk"])
+def test_a_hidden_panel_stops_the_list(hidden_at):
+    bank = Bank([acct1(open=True, hidden_at=hidden_at), acct2(open=True)])
+    with pytest.raises(site.ListStopped):
+        site.collect_download_docs(bank, run_on(bank))
+    assert bank.presses == []
+
+
+def test_a_panel_drawn_late_is_private_before_it_is_pressed(monkeypatch):
+    bank = Bank([acct1(), acct2(appear_at=1000)])
+    asked = []
+
+    def click(page, locator, *, css, what, words, step="press a control", **kw):
+        asked.append(NICK2 in site.private_words() and "9753" in site.private_words())
+        page.click(locator)
+    monkeypatch.setattr(site.pressing, "click", click)
+    got = site.collect_download_docs(bank, run_on(bank))
+    assert {d.account_id for d in got} == {ACCT1, ACCT2}
+    assert asked == [True, True]
+
+
 def test_two_open_panels_that_cannot_be_told_apart_stop_the_list():
     same = [("2026-09-16", DOC5)]
     bank = Bank([acct1(open=True, statements=[("2026-09-16", DOC1)]), acct3(open=True, statements=same)])
@@ -756,7 +807,7 @@ def test_same_document_id_in_two_accounts_is_two_records(tmp_path):
     assert ok
 
 
-@pytest.mark.parametrize("change", ["account gone", "statement gone", "two cards", "other date",
+@pytest.mark.parametrize("change", ["account gone", "statement gone", "other date",
                                     "bad record", "other product"])
 def test_no_single_match_means_no_card_is_pressed(tmp_path, change):
     kw = {}
@@ -766,8 +817,6 @@ def test_no_single_match_means_no_card_is_pressed(tmp_path, change):
         bank = Bank([acct2()])
     elif change == "statement gone":
         bank = Bank([acct1(statements=[("2026-08-15", DOC2)])])
-    elif change == "two cards":
-        bank.cards_override = {ACCT1: ["2026-09-16", "2026-09-16", "2026-08-15"]}
     elif change == "other date":
         kw = {"date": "2026-09-15"}
     elif change == "bad record":
@@ -778,6 +827,41 @@ def test_no_single_match_means_no_card_is_pressed(tmp_path, change):
     assert not ok
     assert not [p for p in bank.presses if p[0] == "download"]
     assert not out.exists()
+
+
+@pytest.mark.parametrize("change", ["two cards", "panel off", "page off address"])
+def test_a_page_that_stops_the_list_stops_the_run_while_a_statement_is_sought(monkeypatch, tmp_path,
+                                                                            change):
+    bank = Bank([acct1(), acct2()])
+    if change == "two cards":
+        bank.cards_override = {ACCT1: ["2026-09-16", "2026-09-16", "2026-08-15"]}
+    elif change == "panel off":
+        turned_off(monkeypatch, site.PANEL)
+    else:
+        bank.on_goto = lambda b: setattr(b, "url", f"https://{HOST}/#accounts")
+    with pytest.raises(site.pressing.Stop) as stop:
+        take(bank, tmp_path)
+    assert stop.value.reason == "the statements page stopped"
+    assert not [p for p in bank.presses if p[0] == "download"]
+    assert not (tmp_path / "o.pdf").exists()
+
+
+def test_one_product_on_a_single_open_accordion_opens_only_up_to_the_account(tmp_path):
+    bank = Bank([acct1(), acct3()], single_open=True)
+    ok, _out, _ = take(bank, tmp_path)
+    assert ok
+    assert bank.presses == [("panel", 0), ("download", 0, "2026-09-16")]
+    bank = Bank([acct1(), acct3()], single_open=True)
+    ok, _out, _ = take(bank, tmp_path, acct=ACCT3, doc=DOC5)
+    assert ok
+    assert bank.presses == [("panel", 0), ("panel", 1), ("download", 1, "2026-09-16")]
+
+
+def test_a_panel_open_on_load_is_looked_at_before_any_panel_is_pressed(tmp_path):
+    bank = Bank([acct1(), acct3(open=True)], single_open=True)
+    ok, _out, _ = take(bank, tmp_path, acct=ACCT3, doc=DOC5)
+    assert ok
+    assert bank.presses == [("download", 1, "2026-09-16")]
 
 
 @pytest.mark.parametrize("how,reason", [("two", "more than one"), ("none", "no download"),
@@ -943,6 +1027,34 @@ def test_a_turned_off_statement_records_nothing_and_the_run_goes_on(monkeypatch,
     assert not (app.paths.diagnostics / "download-attempt.json").exists()
     assert not list(app.paths.root.rglob("*.pdf"))
     assert not [p for p in bank.presses if p[0] == "download"]
+
+
+def test_a_turned_off_panel_while_a_statement_is_sought_stops_the_run(monkeypatch, tmp_path):
+    app = make_app(tmp_path, "--all")
+    bank = Bank([acct1()])
+    wire(app, bank, tmp_path)
+    with redirect_stdout(io.StringIO()):
+        app.cmd_discover()
+    app.check_session = lambda page: None
+    turned_off(monkeypatch, site.PANEL)
+    with redirect_stdout(io.StringIO()), pytest.raises(site.pressing.Stop):
+        app.process(app._select())
+    assert app.progress.data == {}, "nothing is marked for review"
+    assert app.stats["manual_review"] + app.stats["failed"] == 0
+    assert bank.presses == [("panel", 0)], "the panel pressed in discovery only"
+
+
+def test_the_record_key_is_the_hash_alone():
+    one = docs.Document(title="Bank Statement", account="Express Checking", account_id=ACCT1,
+                        document_id=DOC1, date="2026-09-16")
+    renamed = docs.Document(title="Bank Statement", account="Everyday Checking", account_id=ACCT1,
+                            document_id=DOC1, date="2026-09-16")
+    other = docs.Document(title="Bank Statement", account="Express Checking", account_id=ACCT3,
+                          document_id=DOC1, date="2026-09-16")
+    assert one.key == renamed.key == "id:" + site.record_hash(ACCT1, DOC1)[:20]
+    assert one.key != other.key
+    for w in (ACCT1, DOC1, "Checking"):
+        assert w not in one.key
 
 
 def test_a_panel_already_open_is_never_pressed():

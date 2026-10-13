@@ -18,12 +18,14 @@ All notable changes to PaperPull are recorded here. Versioning follows
   address and is a PDF. Nothing that pays, transfers, enrolls or changes
   statement delivery is ever pressed. If a statement's Download PDF is
   turned off on the page, nothing is pressed for it, the run goes on, and
-  the statement is left for the next run. If the bank signs you out, or the
-  run nears the bank's ten-minute session limit, the run stops, keeps what
-  it saved, and asks you to sign in again and Resume. Account nicknames,
+  the statement is left for the next run. A panel the page hides, turns
+  off or draws late stops the list, or the run, rather than being skipped.
+  If the bank signs you out, or the run nears the bank's ten-minute session
+  limit, the run stops, keeps what it saved, and asks you to sign in again
+  and Resume. Account nicknames,
   numbers and balances are kept out of every log, diagnostic file and file
-  name. Built from the account owner's survey of one checking account; a
-  full live run is still to come.
+  name. A full run on a contributor's checking account saved all 24
+  statements online, one in Pilot and 23 in Run All.
 
 ## [0.51.0] - 2026-10-14
 

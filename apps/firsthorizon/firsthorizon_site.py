@@ -3,7 +3,9 @@
 When First Horizon changes its digital banking, repair this file only.
 
 STATUS: built from the account owner's survey of a signed-in account on
-2026-10-12 and one live probe. No full run has been made with this code.
+2026-10-12 and one live probe, then run in full on that account the same
+day, one checking account with 24 statements: Pilot saved one and Run All
+the other 23. More than one account on one sign-in has not been seen.
 
 WHAT THE SURVEY AND THE PROBE ESTABLISHED
   * Everything is on one host, https://digital.firsthorizon.com, an NCR D3
@@ -38,9 +40,10 @@ module's own predicate, and only then hands the press to the core
      (is_download_button)
 "View Online", "Manage Statement Delivery", the STATEMENTS tab, Enroll, the
 session-timeout dialog, Log Out and everything else are refused.
-A control the page has turned off is never pressed: a turned-off panel
-stops the list, and a turned-off Download PDF leaves that one statement for
-the next run, with no record against it, while the run goes on.
+A control the page has turned off is never pressed. A turned-off panel
+stops the list in Discover and stops the run while a statement is sought,
+and a turned-off Download PDF leaves that one statement for the next run,
+with no record against it, while the run goes on.
 
 SAFETY (a bank account that can pay, transfer and send money):
   READ-ONLY. FORBIDDEN_CONTROL_RE and the core's settings and sign-in guards
@@ -66,6 +69,8 @@ KNOWN CEILINGS (left until a live run shows otherwise)
   * A panel's cards are read inside the element its aria-controls names.
     A panel without one, or with an id that is not a plain CSS name, stops
     the list.
+  * A panel the page hides, or draws only after the list is read, stops
+    the list, so a hidden account is never listed.
   * A panel expanded when the page loads is bound to its answer only when
     the dates make the pairing unique; otherwise the list stops. A panel is
     never collapsed to recover.
@@ -209,8 +214,8 @@ POLL_MS = 250
 DEADLINE_S = 8 * 60
 
 # ---------------------------------------------------------------------------
-# Date parsing (verbatim from the Nelnet app; the statements use
-# statement_date below, which reads one shape only)
+# Date parsing, the same general reader the other apps carry. The
+# statements themselves use statement_date below, which reads one shape only.
 # ---------------------------------------------------------------------------
 DATE_PATTERNS = [
     (re.compile(r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
@@ -1095,9 +1100,19 @@ def _bind_loaded(page, run: Run, opened: Opened) -> dict:
     found.clear()
     if not ready(_read(page)):
         raise ListStopped("another documents answer came after the page settled")
-    return {i: Bound(i, product_of(_panel(opened.state, i).get("title")), acct, st,
-                     _panel(opened.state, i).get("region") or "")
+    # No product yet: the title read on load may not have drawn its balance,
+    # so the product is taken from the settled title (_from_load).
+    return {i: Bound(i, "", acct, st, _panel(opened.state, i).get("region") or "")
             for i, (acct, st) in found.items()}
+
+
+def _from_load(b: Bound, panel: dict) -> Bound:
+    """A panel the page opened by itself, bound in _bind_loaded, given the
+    product of its settled title. The settled panel must sit in the region
+    it was bound in, or the list stops."""
+    if (panel.get("region") or "") != b.region:
+        raise ListStopped("an account's panel moved while its title drew")
+    return Bound(b.index, product_of(panel.get("title")), b.account_id, b.statements, b.region)
 
 
 def _expand(page, run: Run, i: int) -> Bound:
@@ -1139,23 +1154,37 @@ def _rawdocs(b: Bound) -> List[RawDoc]:
 def _settled_panels(page, run: Run, opened: Opened) -> list:
     """The page's account panels once their titles have finished drawing. A
     title comes in two steps, the balance last, so each is given its time to
-    reach the surveyed shape before any is judged; one still not of that
-    shape after the wait is left to the caller, which skips it."""
+    reach the surveyed shape before any is judged, and one still not of that
+    shape after the wait is left to the caller, which skips it. Every title
+    read here is private before it is returned, a panel drawn late among
+    them, and a panel the page hides stops the list."""
     settled = _wait_for(page, run, lambda s: bool(s.get("panels")) and all(
         product_of(p.get("title")) for p in s.get("panels") or []), LIST_WAIT_MS)
     if settled is None:
         # One title never reached the shape: the panels are read once more
         # as they are now, so the ones that did finish drawing are kept.
         settled = _read(page)
-    return settled.get("panels") or []
+    _guard_titles(settled)
+    panels = settled.get("panels") or []
+    if not all(p.get("shown") for p in panels):
+        raise ListStopped("an account's panel is hidden on the page")
+    return panels
+
+
+def _shape(panels: list) -> list:
+    return [(p.get("index"), p.get("region") or "", product_of(p.get("title")), bool(p.get("shown")))
+            for p in panels]
 
 
 def collect_download_docs(page, run: Optional[Run] = None) -> List[RawDoc]:
     """Every statement of every account panel. Panels the page opened by
-    itself are read from the answers heard as it loaded; each closed one is
-    pressed open once. A title not of the surveyed shape is skipped and the
-    list is then not called whole. Raises ListStopped holding what was read,
-    SessionExpired for a signed-out session and DeadlineReached."""
+    itself are read from the answers heard as it loaded, and each closed one
+    is pressed open once. A title not of the surveyed shape is skipped and
+    the list is then not called whole. Once the walk is done the page is
+    read again after it settles, and a panel that is not one of the panels
+    walked, as one the page drew late, stops the list. Raises ListStopped
+    holding what was read, SessionExpired for a signed-out session and
+    DeadlineReached."""
     run = run or Run()
     opened = _open(page, run)
     docs: List[RawDoc] = []
@@ -1170,12 +1199,17 @@ def collect_download_docs(page, run: Optional[Run] = None) -> List[RawDoc]:
                 skipped += 1
                 log.info("an account's panel title is not one this app reads; it is skipped")
                 continue
-            b = loaded.get(i) or _expand(page, run, i)
+            b = _from_load(loaded[i], p) if i in loaded else _expand(page, run, i)
             if b.account_id in seen:
                 raise ListStopped("two panels carry one account")
             seen.add(b.account_id)
             docs.extend(_rawdocs(b))
             log.info("%s: %d statement(s)", b.product, len(b.statements))
+        _settle(page, run)
+        now = _read(page)
+        _guard_titles(now)
+        if _shape(now.get("panels") or []) != _shape(panels):
+            raise ListStopped("the account panels changed while the list was read")
     except ListStopped as stop:
         raise ListStopped(str(stop), docs)
     if skipped:
@@ -1220,31 +1254,38 @@ _REGION_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
 
 def _reach_card(page, run: Run, account_id: str, product: str, document_id: str,
                 iso_date: str, trace: Optional[list]) -> Optional[Target]:
-    """Open the statements page afresh, bind every panel of the record's
-    product, and find the record's statement: exactly one panel whose answer
-    names the record's account, exactly one statement there with the
-    record's date and document id, and exactly one card of that date in that
-    panel. None, with nothing pressed past the panels, when any of that does
-    not hold."""
+    """Open the statements page afresh and find the record's statement: the
+    panel of the record's product whose answer names the record's account,
+    exactly one statement there with the record's date and document id, and
+    exactly one card of that date in that panel. The panels the page opened
+    by itself are looked at first, then each closed panel of the product is
+    pressed open in turn until the account is found, and no further, so on
+    an accordion that keeps one panel open the account's own panel is the
+    last one opened. None, with nothing pressed past the panels, when the
+    statement is not there. ListStopped when the page does not hold still
+    while it is read."""
     opened = _open(page, run)
     loaded = _bind_loaded(page, run, opened)
-    bound = []
-    for p in _settled_panels(page, run, opened):
-        if product_of(p.get("title")) != product:
-            continue
-        bound.append(loaded.get(p["index"]) or _expand(page, run, p["index"]))
-    hits = [b for b in bound if b.account_id == account_id]
-    if len(hits) != 1:
+    mine = [p for p in _settled_panels(page, run, opened) if product_of(p.get("title")) == product]
+    b = None
+    for p in [p for p in mine if p["index"] in loaded] + [p for p in mine if p["index"] not in loaded]:
+        got = _from_load(loaded[p["index"]], p) if p["index"] in loaded else _expand(page, run, p["index"])
+        if got.account_id == account_id:
+            b = got
+            break
+    if b is None:
         if trace is not None:
-            trace.append({"note": "the account is not on the page once", "matches": len(hits)})
+            trace.append({"note": "the account is not on the page"})
         return None
-    b = hits[0]
     st = [s for s in b.statements if s.date == iso_date and s.doc_id == document_id]
     if len(st) != 1:
         if trace is not None:
             trace.append({"note": "no single statement matches the record", "matches": len(st)})
         return None
-    cards = [n for n, c in enumerate(_panel(_read(page), b.index).get("cards") or [])
+    panel = _panel(_read(page), b.index)
+    if panel.get("expanded") != "true" or (panel.get("region") or "") != b.region:
+        raise ListStopped("the account's panel closed or moved before its card was read")
+    cards = [n for n, c in enumerate(panel.get("cards") or [])
              if _card_date(c.get("label")) == iso_date]
     if len(cards) != 1 or not _REGION_RE.fullmatch(b.region or ""):
         if trace is not None:
@@ -1518,10 +1559,13 @@ def download_statement(page, run: Run, dl_dir, out_path, *, account_id: str, pro
     afresh, the record's account found by its own answer, the statement
     bound to exactly one answer entry and one card, and only then is that
     card's Download PDF pressed. False, with nothing pressed on a card, when
-    any of that does not hold. None when the card's Download PDF is turned
+    the statement is not there. None when the card's Download PDF is turned
     off on the page: nothing was pressed on it, and the statement is left
-    for the next run. SessionExpired, DeadlineReached and a stop of the run
-    propagate."""
+    for the next run. A page that stops the list on the way (it does not
+    open, the session probe fails, a panel is turned off, hidden or changes)
+    stops the run with pressing.Stop, since the next statement would meet
+    the same page. SessionExpired, DeadlineReached and every other stop of
+    the run propagate."""
     out_path = Path(out_path)
     if not (account_id and product and _DOCUMENT_ID_RE.fullmatch(document_id or "")
             and _no_dots(document_id) and statement_date(iso_date) == iso_date):
@@ -1534,7 +1578,7 @@ def download_statement(page, run: Run, dl_dir, out_path, *, account_id: str, pro
         log.info("the list stopped while looking for the statement dated %s: %s", iso_date, stop)
         if trace is not None:
             trace.append({"note": "the list stopped"})
-        return False
+        raise _page_stopped(stop)
     if target is None:
         return False
     try:
@@ -1543,7 +1587,18 @@ def download_statement(page, run: Run, dl_dir, out_path, *, account_id: str, pro
         log.info("the statement dated %s was not saved: %s", iso_date, stop)
         if trace is not None:
             trace.append({"note": "the card's control was not pressed"})
-        return False
+        raise _page_stopped(stop)
+
+
+def _page_stopped(stop: ListStopped) -> pressing.Stop:
+    """A stop of the statements page while a statement was sought, as a stop
+    of the run. Its words are this app's own, never the page's. A panel may
+    have been pressed on the way, so it counts as a stop after a press."""
+    return pressing.Stop("find the statement", "the statements page stopped", [
+        "The statements page stopped before this statement was saved, since %s." % stop,
+        "Nothing more was pressed, and the run stops here rather than meet the same page "
+        "for the next statement.",
+        pressing.AGAIN], after_a_press=True)
 
 
 def record_hash(account_id: str, document_id: str) -> str:
