@@ -103,7 +103,7 @@ STOPS = {
 LEAVES = {
     ("alpaca", "_press"), ("amex", "download_document"),
     ("amfam", "_catch_pdf"), ("applecard", "_catch_pdf"), ("att", "_catch_pdf"),
-    ("coinbase", "_catch_statement"),
+    ("coinbase", "_catch_statement"), ("firsthorizon", "_press"),
     ("etrade", "_catch_pdf"), ("golden1", "_catch_pdf"), ("nelnet", "_catch_pdf"),
     ("newrez", "_catch_pdf"), ("pge", "_press_once"), ("sba", "_catch_pdf"),
     ("smud", "_catch_pdf"), ("statefarm", "_catch_pdf"), ("vanguard", "download_document"),
@@ -556,6 +556,23 @@ def _pge_link(off: bool) -> str:
             'View Bill PDF</a>' % (' aria-disabled="true"' if off else ""))
 
 
+def _firsthorizon(site, page, out, staging, trace):
+    """First Horizon's capture on the bound card, the only card on the page.
+    Its one press site, _press, serves the card's Download PDF here."""
+    run = site.Run()
+    run.attach(page.context)
+    return site._catch_statement(page, run, staging, site.Target("acc", 0, "/statement.pdf"),
+                                 "2026-06-30", out, trace)
+
+
+def _firsthorizon_card(off: bool) -> str:
+    return ('<div id="acc"><div class="card edocs-item-card" '
+            'aria-label="Monthly statement for 06/30/2026"><button id="get" type="button" '
+            'class="ctl edocs-download-btn" aria-label="Open New Tab to Download PDF for '
+            '06/30/2026 statement"%s onclick="window.presses++; fetch(\'/statement.pdf\');">'
+            'Download PDF</button></div></div>' % (" disabled" if off else ""))
+
+
 def _how(app: str, function: str, monkeypatch):
     """The app's own press path, the page that shows its control, and the
     row it sits in, for each press that leaves its document."""
@@ -571,6 +588,8 @@ def _how(app: str, function: str, monkeypatch):
             "%s</td><td>08/31/2026" % VG_ACCOUNT
     if (app, function) == ("coinbase", "_catch_statement"):
         return "coinbase_site", _coinbase, _coinbase_button, "June 2026"
+    if (app, function) == ("firsthorizon", "_press"):
+        return "firsthorizon_site", _firsthorizon, _firsthorizon_card, "06/30/2026"
     if (app, function) == ("pge", "_press_once"):
         return "pge_site", _pge, _pge_link, "June 30, 2026"
     if (app, function) == ("shelbycounty", "_press_for_blob"):

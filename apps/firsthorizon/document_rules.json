@@ -1,0 +1,12 @@
+{
+  "_comment": "Editable rules mapping First Horizon Bank document titles to filename summaries. Checked in order: tax (unused: no tax forms are online until the holder enrolls, which this app never does), then insurance (unused), then statement. Every statement is titled 'Bank Statement <date>' by firsthorizon_site.py.",
+  "tax_rules": [],
+  "insurance_rules": [],
+  "statement_rules": [
+    {
+      "pattern": "\\bstatement\\b",
+      "summary": "Bank Statement"
+    }
+  ],
+  "skip_patterns": []
+}

@@ -7,6 +7,24 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Added
+- **First Horizon Bank checking statements.** The app saves the monthly
+  statements First Horizon keeps online, about two years of them, from the
+  Statements page of digital banking. It presses only two things: an
+  account's panel, to open it, and one statement's own Download PDF, once,
+  and it keeps the download only when it comes from that statement's own
+  address and is a PDF. Nothing that pays, transfers, enrolls or changes
+  statement delivery is ever pressed. If a statement's Download PDF is
+  turned off on the page, nothing is pressed for it, the run goes on, and
+  the statement is left for the next run. If the bank signs you out, or the
+  run nears the bank's ten-minute session limit, the run stops, keeps what
+  it saved, and asks you to sign in again and Resume. Account nicknames,
+  numbers and balances are kept out of every log, diagnostic file and file
+  name. Built from the account owner's survey of one checking account; a
+  full live run is still to come.
+
 ## [0.51.0] - 2026-10-14
 
 Alpaca arrives, statements and trade confirmations from a Live brokerage

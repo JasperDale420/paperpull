@@ -531,7 +531,46 @@ def test_alpaca_removes_a_download_that_comes_after_it_stopped_waiting(
     assert not (tmp_path / "Statements" / "2026-08-31 Statement.pdf").exists()
 
 
-DRIVEN_ELSEWHERE_HERE = {"verizon", "vanguard", "ibkr", "coinbase", "alpaca"}
+# First Horizon's Download PDF opens a popup that becomes the download, and
+# Chromium raises that download on the opener, the run's own page. The
+# popup reads as an empty address once it is left.
+FIRSTHORIZON_PAGE = (b"<!doctype html><meta charset='utf-8'><div id='acc'>"
+                     b"<div class='card edocs-item-card' aria-label='Monthly statement for 09/16/2026'>"
+                     b"<button class='edocs-download-btn' aria-label='Open New Tab to Download PDF "
+                     b"for 09/16/2026 statement' onclick=\"window.open('/doc')\">Download PDF</button>"
+                     b"</div></div>")
+
+
+@pytest.mark.parametrize("left", [False, True], ids=["empty folder", "same name already there"])
+def test_firsthorizon_takes_its_statement_from_the_folder(left, browser_context, provider,
+                                                         tmp_path, monkeypatch):
+    """First Horizon presses the bound card's Download PDF, which opens a
+    popup the browser turns into a download fired on the opener, and takes
+    that download through the core, only from the statement's own address.
+    Only the walk to the card is stood in for, since the page is not on the
+    bank's host; the card found is this page's one card, whose address is
+    the test provider's document."""
+    site = site_of(REPO / "apps" / "firsthorizon")
+    monkeypatch.setattr(site, "_reach_card", lambda *a, **k: site.Target(
+        "acc", 0, provider.base + "/doc"))
+    provider.pages["/firsthorizon"] = FIRSTHORIZON_PAGE
+    pg = browser_context.new_page()
+    try:
+        pg.goto(provider.base + "/firsthorizon")
+        staging, out = folder_for(tmp_path, "firsthorizon", left)
+        site.set_download_dir(pg, staging)
+        provider.reset()
+        run = site.Run()
+        run.attach(pg.context)
+        got = site.download_statement(pg, run, staging, out, account_id="AcctExample1",
+                                      product="Express Checking", document_id="DocExample1",
+                                      iso_date="2026-09-16", trace=[])
+        check("firsthorizon", got, provider, out, staging)
+    finally:
+        pg.close()
+
+
+DRIVEN_ELSEWHERE_HERE = {"verizon", "vanguard", "ibkr", "coinbase", "alpaca", "firsthorizon"}
 
 # Apps that point the browser at a folder and take nothing from it, so
 # there is no capture here to drive, and why. Each is held to that below.

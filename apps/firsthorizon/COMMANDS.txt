@@ -1,0 +1,3 @@
+First Horizon Bank statements from digital banking (digital.firsthorizon.com)
+
+See README.md for setup and supervised pilot instructions.
