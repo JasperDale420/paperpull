@@ -1811,13 +1811,18 @@ def download_statement(page, run: Run, dl_dir, out_path, *, account_ref: str, do
 
 
 def names_tail(text: str, tail: str) -> bool:
-    """Whether a statement's text prints these four digits as the end of a
-    number, the way a statement prints its account number in full or
-    masked ("XXXX1234", "...1234"). Four digits are needed, and text with
-    no such number never names them."""
+    """Whether a statement's text prints these four digits as the end of an
+    account number, in full or masked: at least four digits or masking
+    marks before them, in groups a space or a dash may part, as in
+    "000000123451234" or "XXXX XXXX XXXX 1234". A checking statement the
+    owner saved prints its account number whole on a line of its own,
+    apart from its "Account Number:" label, so no label is asked for. A
+    phone number, a check number or a date ending in the same digits is not
+    such a number. Four digits are needed."""
     if not re.fullmatch(r"\d{4}", tail or ""):
         return False
-    return bool(re.search(r"%s(?![0-9])" % tail, text or ""))
+    return bool(re.search(r"(?<![0-9A-Za-z])(?:[0-9Xx*\u2022]{4,}[ -]?)+%s(?![0-9])" % tail,
+                          text or ""))
 
 
 # ---------------------------------------------------------------------------

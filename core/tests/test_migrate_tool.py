@@ -748,7 +748,7 @@ def test_chase_business_ids_never_leave_this_computer(tmp_path, minimal):
     reach a statement's account again, and records documentId empty, since
     Chase mints a new one each session. Neither field is in any export,
     full or --minimal, even on a record that holds an id. A moved history
-    still skips the statement, which its key says on its own, and a full
+    still skips the statement, which its key says on its own, and every
     export keeps the record's account_digest, which Rename reads to tell
     two accounts' files apart."""
     ref, doc_id = "ACCTREFQX0042", "DOCIDQX987654"
@@ -765,7 +765,7 @@ def test_chase_business_ids_never_leave_this_computer(tmp_path, minimal):
         blob = b" ".join(z.read(n) for n in z.namelist()).decode("utf-8", "ignore")
     assert ref not in blob and doc_id not in blob
     assert "account_ref" not in blob and "document_id" not in blob
-    assert ("account_digest" in blob) is not minimal
+    assert "0a1b2c3d4e5f" in blob, "the digest travels, full or --minimal"
 
     new = tmp_path / "new"
     _install(new, "Chase Business Statements", "Chase Business", {})

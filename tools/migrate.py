@@ -167,7 +167,10 @@ PROVIDER_SKIP_FIELDS = {"Robinhood": ("undated_key", "source_url", "category", "
                                       "title", "account", "pdf_sha256", "text_sha256"),
                         "American Family": ("pdf_sha256", "date", "account"),
                         "AT&T": ("category", "date", "account", "pdf_size", "pdf_pages"),
-                        "Target": ("invoices",)}
+                        "Target": ("invoices",),
+                        # Rename tells two accounts' files apart by it, and the
+                        # record's account_ref never travels (PROVIDER_PRIVATE_FIELDS).
+                        "Chase Business": ("account_digest",)}
 
 
 def _optum_form(rec: dict) -> bool:

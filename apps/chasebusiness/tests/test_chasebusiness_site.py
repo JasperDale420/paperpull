@@ -1471,10 +1471,16 @@ def test_a_pdf_that_does_not_print_the_accounts_last_four_is_not_kept(tmp_path):
     assert got is True and out.exists()
 
 
-def test_the_last_four_must_end_a_number():
+def test_the_last_four_must_end_an_account_number():
     assert site.names_tail("Account Number: 000000004321", "4321")
+    assert site.names_tail("Account Number:\n \n 000000004321\nPAGE", "4321")
     assert site.names_tail("Card ending XXXX XXXX XXXX 4321.", "4321")
+    assert site.names_tail("Account ****-****-4321", "4321")
     assert not site.names_tail("Account Number: 000043210", "4321")
+    # The same four digits ending something that is not an account number.
+    for other in ("Call 1-800-555-4321", "Check 4321 paid", "Ref 1234321", "BUS COMPLETE CHK (...4321)",
+                  "Total 12,344,321.00", "ID A1234321"):
+        assert not site.names_tail(other, "4321"), other
     assert not site.names_tail("", "4321")
     assert not site.names_tail("Account Number: 4321", "")
 
