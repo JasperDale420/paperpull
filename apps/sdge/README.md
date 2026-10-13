@@ -19,9 +19,11 @@ Read-only, delete-safe, part of [PaperPull](../../README.md).
 
 ## How it works
 
-Nothing is ever clicked. The app opens Billing History by its address and
-reads the bill rows the page draws, each carrying its invoice id and
-statement date. Each bill is then fetched by its own address,
+Nothing is ever clicked. The app opens Billing History by its address, in
+your My Energy Center tab or, with none open, in a tab of its own, and
+reads the bill rows the page draws, each carrying its invoice id and its
+date from the column headed Statement Date. A tab of another site is never
+used. Each bill is then fetched by its own address,
 `/portal/BillingHistory/DownloadBillPdf`, with the signed-in session, no
 redirect followed, and kept only when it is a PDF. Before each bill the
 list is opened again and the bill is fetched only when exactly one row
@@ -39,6 +41,8 @@ seen:
   never changed. Only the selected account is listed, and the run says so.
 - A Billing History with no bills.
 - Two bills on one statement date, which stop the list.
+- A blank Statement Date, which stops the list rather than taking the Due
+  Date beside it.
 - Solar (NBT) bills, which are fetched the same way and filed as bills.
 
 Never touched are payments, autopay, Text to Pay, bank accounts, payment
@@ -53,4 +57,5 @@ python -m pytest tests -q
 ```
 
 Run from this folder with PaperPull's bundled Python. They use invented
-values only and need no browser.
+values only. The tab tests start PaperPull's bundled Chromium on made-up
+host names, so nothing reaches SDG&E.

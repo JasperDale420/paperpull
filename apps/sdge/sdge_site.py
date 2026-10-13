@@ -10,8 +10,9 @@ CLICKED HERE:
   * Billing History's own script asks the portal for the bill list and
     draws it as #billHistoryTable, one `tr` per bill carrying the bill's
     invoice id ("ISU" and twelve digits) as its `invoiceid` attribute and
-    the statement date, "Sep 12, 2026", in its first cell. The rows are
-    read from the page as drawn; this app sends no list request of its own.
+    the statement date, "Sep 12, 2026", in the column headed Statement
+    Date, after a control column and before Due Date. The rows are read
+    from the page as drawn, and this app sends no list request of its own.
   * A bill's PDF is a plain GET of
     /portal/BillingHistory/DownloadBillPdf?invoiceId=<id> on the same host,
     which the page's own "View Your Detailed Bill PDF" link opens in a new
@@ -51,6 +52,13 @@ KNOWN CEILINGS (left as they are until a run shows otherwise)
     time, so the list stops unless its own count agrees with the rows read.
   * Two bills on one statement date stop the list, since a bill's file is
     named by its date alone. None was seen.
+  * A bill's date is read from the Statement Date column alone, found by
+    its header. The header has been named but its whole text never seen,
+    so the one header cell holding the words statement and date is taken,
+    and Diagnose writes the header cells it read. A table with no single
+    such column, a row that does not line up with the header, or a row
+    whose Statement Date cell is blank stops the list rather than taking
+    the Due Date or any other column's date. None of these was seen.
   * Solar (NBT) bills are fetched by the same address and filed as ordinary
     bills. Solar Billing Plans is never visited.
   * About two years of bills are online; older ones are not offered.
@@ -237,6 +245,10 @@ def parse_period_date(text: str) -> Tuple[Optional[str], str]:
 # A bill row's statement date, exactly as the table writes it: "Sep 12, 2026".
 _STATEMENT_DATE_RE = re.compile(
     r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+([0-9]{1,2}),\s+([0-9]{4})")
+# The words that head the column that date is read from. A header holding
+# both, as "Statement Date" or "Statement Date *" does, and "Due Date" does
+# not, since the live header has only been named, never seen whole.
+STATEMENT_HEAD_WORDS = frozenset({"statement", "date"})
 
 
 def statement_date(text) -> Optional[str]:
@@ -383,15 +395,40 @@ class ListStopped(Exception):
         self.docs = list(docs or [])
 
 
-# Each bill row's invoice id and first cell, and the empty-table cell's
-# text. Read only; nothing on the page is changed.
+# Each bill row's invoice id and cells, the table's header cells, and the
+# empty-table cell's text. Each cell carries the column it starts at, how
+# many it spans and how many rows it is tall, so a row's Statement Date
+# cell is the one under that header (header_layout), wherever the table
+# puts it, and a row that may not line up with the header is known. Read
+# only, and nothing on the page is changed.
 _ROWS_JS = r"""() => {
   const table = document.querySelector('#billHistoryTable');
   if (!table) return null;
+  const text = (cell) => (cell.textContent || '').replace(/\s+/g, ' ').trim();
+  // A header cell's column counts what spans down into its row from above
+  // as well as what is before it, as the table itself lays them out.
+  const heads = [];
+  const taken = new Set();
+  Array.from(table.tHead ? table.tHead.rows : []).forEach((tr, r) => {
+    let at = 0;
+    for (const th of tr.cells) {
+      while (taken.has(r + ':' + at)) at++;
+      const wide = th.colSpan || 1;
+      heads.push({text: text(th), at: at, wide: wide, tall: th.rowSpan});
+      for (let down = 0; down < (th.rowSpan || 1); down++)
+        for (let across = 0; across < wide; across++) taken.add((r + down) + ':' + (at + across));
+      at += wide;
+    }
+  });
   const rows = [];
   for (const tr of table.querySelectorAll('tbody tr[invoiceid]')) {
-    rows.push({id: tr.getAttribute('invoiceid') || '',
-               cells: Array.from(tr.querySelectorAll('td')).map(td => (td.textContent || '').replace(/\s+/g, ' ').trim())});
+    const cells = [];
+    let at = 0;
+    for (const td of tr.cells) {
+      cells.push({text: text(td), at: at, wide: td.colSpan || 1, tall: td.rowSpan});
+      at += td.colSpan || 1;
+    }
+    rows.push({id: tr.getAttribute('invoiceid') || '', cells: cells});
   }
   const empty = table.querySelector('tbody td.dataTables_empty');
   // The table plugin keeps only the page it shows in the DOM, so what it
@@ -408,8 +445,8 @@ _ROWS_JS = r"""() => {
     api = {unreadable: true};
   }
   const line = document.querySelector('#billHistoryTable_info');
-  return {rows: rows, empty: empty ? (empty.textContent || '').replace(/\s+/g, ' ').trim() : '',
-          api: api, info: line ? (line.textContent || '').replace(/\s+/g, ' ').trim() : ''};
+  return {rows: rows, heads: heads, empty: empty ? text(empty) : '',
+          api: api, info: line ? text(line) : ''};
 }"""
 
 # The table plugin's info line, "Showing 1 to 10 of 24 entries", and the
@@ -537,7 +574,7 @@ def _bills(page) -> List[RawDoc]:
         raise ListStopped("Billing History shows no bill table")
     rows = seen.get("rows") or []
     if rows:
-        docs = bills_of(rows)
+        docs = bills_of(rows, seen.get("heads"))
         _whole_table(seen, docs)
         return docs
     if EMPTY_TEXT_RE.fullmatch(seen.get("empty") or ""):
@@ -585,28 +622,87 @@ def _read_rows(page):
     return seen if isinstance(seen, dict) else None
 
 
-def bills_of(rows: list) -> List[RawDoc]:
-    """RawDocs from the bill rows as read, one per invoice id. An id that is
-    not "ISU" and twelve digits, a statement date that is not one, one id on
-    two rows, or two bills on one statement date stops the list, carrying
-    what was read before it. A bill's file is named by its date, and the
-    end of its invoice id is added only when a file of that name is already
-    in the folder (sdge_docs.told_apart_by), so two bills of one date are
-    not filed. The page's own words stay out of what is said,
-    since it is printed and logged."""
+def table_header(page) -> dict:
+    """For Diagnose, the bill table's header cells as read and where the
+    Statement Date column was found in them, None when it was not."""
+    seen = _read_rows(page) or {}
+    heads = seen.get("heads") or []
+    layout = header_layout(heads)
+    return {"cells": [str(h.get("text") or "") for h in heads if isinstance(h, dict)],
+            "statement_date_column": layout[0] if layout else None}
+
+
+def _laid_out(cell) -> bool:
+    """Whether a cell as _ROWS_JS reads it has a column, a width and a
+    height. A rowspan of 0 reads as no height."""
+    return (isinstance(cell, dict)
+            and all(isinstance(cell.get(k), int) for k in ("at", "wide", "tall"))
+            and cell["at"] >= 0 and cell["wide"] >= 1 and cell["tall"] >= 1)
+
+
+def header_layout(heads) -> Optional[Tuple[int, int]]:
+    """The column the table's header names Statement Date, and how many
+    columns the header covers, as _ROWS_JS reads its cells. None when a
+    header cell has no height, which would put the cells of the header rows
+    below it in the wrong columns, or when no header cell holds both words
+    of STATEMENT_HEAD_WORDS, more than one does, or the one that does spans
+    several columns."""
+    heads = list(heads or [])
+    if not heads or not all(_laid_out(h) for h in heads):
+        return None
+    found = [h for h in heads
+             if STATEMENT_HEAD_WORDS <= set(re.findall(r"[a-z]+", str(h.get("text") or "").lower()))]
+    if len(found) != 1 or found[0]["wide"] != 1:
+        return None
+    return found[0]["at"], max(h["at"] + h["wide"] for h in heads)
+
+
+def statement_cell(cells, column: int, width: int) -> Optional[str]:
+    """The text of a row's cell in this column, or None when the row does
+    not line up with the header. Its cells have to sit side by side from
+    the first column to the header's last, each one row tall, since a cell
+    taller than its row moves the next row's cells out of their columns,
+    and the one in this column has to be that column's alone."""
+    at, text = 0, None
+    for c in cells or []:
+        if not _laid_out(c) or c["at"] != at or c["tall"] != 1:
+            return None
+        if at <= column < at + c["wide"]:
+            if c["wide"] != 1:
+                return None
+            text = str(c.get("text") or "")
+        at += c["wide"]
+    return text if at == width else None
+
+
+def bills_of(rows: list, heads: Optional[list]) -> List[RawDoc]:
+    """RawDocs from the bill rows as read, one per invoice id. A table with
+    no single Statement Date column, an id that is not "ISU" and twelve
+    digits, a row that does not line up with the header, a Statement Date
+    cell that is blank or not a calendar date, one id on two rows, or two
+    bills on one statement date stops the list,
+    carrying what was read before it. The date is never taken from another
+    column, since the Due Date beside it is a date too. A bill's file is
+    named by its date, and the end of its invoice id is added only when a
+    file of that name is already in the folder (sdge_docs.told_apart_by),
+    so two bills of one date are not filed. The page's own words stay out
+    of what is said, since it is printed and logged."""
     docs: List[RawDoc] = []
     seen = set()
     dates = set()
+    layout = header_layout(heads)
     for r in rows:
+        if layout is None:
+            raise ListStopped("the bill table's header shows no single Statement Date column", docs)
         inv = str((r or {}).get("id") or "")
         if not INVOICE_ID_RE.fullmatch(inv):
             raise ListStopped("a bill's invoice id is not one this can read", docs)
-        # The row's first cell is a control column; Statement Date is the
-        # first cell that is a calendar date, Due Date the one after it.
-        cells = (r or {}).get("cells")
-        if cells is None:
-            cells = [(r or {}).get("date")]
-        iso = next((d for d in (statement_date(c) for c in cells) if d), None)
+        text = statement_cell((r or {}).get("cells"), *layout)
+        if text is None:
+            raise ListStopped("a bill's row does not line up with the table's header", docs)
+        if not text.strip():
+            raise ListStopped("a bill's Statement Date cell is blank", docs)
+        iso = statement_date(text)
         if not iso:
             raise ListStopped("a bill's statement date is not a calendar date", docs)
         if inv in seen:
