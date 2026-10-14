@@ -161,15 +161,16 @@ def mobile_rows(days=MOBILE_DAYS):
 
 
 def spaced(text):
-    """Letter-spaced, the way the printed heading reads back from pypdf."""
-    return " ".join(text.replace(" ", ""))
+    """Letter-spaced, the way the printed heading reads back from pypdf: one
+    space between letters, two between words."""
+    return "  ".join(" ".join(word) for word in text.split(" "))
 
 
 def mobile_print(page):
     """What printing the Mobile statement page gives, in the shape the live
     print of 2026-10-13 read back: the heading's date letter-spaced and first,
     "Mobile" after it, and no "Statement Details" bar."""
-    return text_pdf([spaced(upper_date(page.mobile_day)) + " Mobile " + spaced("AMOUNT DUE") + " 61.40",
+    return text_pdf([spaced(upper_date(page.mobile_day)), "Mobile", spaced("AMOUNT DUE"), "61.40",
                      "Previous Balance Payments and Credits Remaining Balance",
                      "Unlimited Plus Lines (2) Phone " + MOB_PHONE, "Included Taxes, Fees & Charges"])
 
@@ -1906,6 +1907,28 @@ class MobileTaking(WithFakeClick):
         self.assertIsNone(site.printed_header_day("Statement Details AUGUST 13, 2026 Internet"))
         self.assertIsNone(site.printed_header_day("AUGUST 13, 2026 Phone 555-010-4477 and then Mobile"))
         self.assertIsNone(site.printed_header_day(""))
+
+    def test_the_live_print_as_the_apps_own_pdf_text_reads_it(self):
+        # pdf_text of the live print, 2026-10-14, digits made up.
+        live = ("S E P T E M B E R  1 3,  2 0 2 6\nMobile\nA M O U N T  D U E\n61.40\nYour Auto Pay is "
+                "scheduled for September 30.\nCredit ends April 12, 2027.\n-$10.00")
+        self.assertEqual(site.printed_header_day(live), "2026-09-13")
+        self.assertEqual(site.printed_header_day(live.replace("  ", " ")), "2026-09-13")
+        self.assertEqual(site.printed_header_day(live.replace("\nMobile", " Mobile")), "2026-09-13")
+        self.assertEqual(site.printed_header_day(live.replace("  ", "\u00a0\u00a0").replace("\n", " \n ")),
+                         "2026-09-13")
+        self.assertIsNone(site.printed_header_day(live.replace("\nMobile", "\nAutomobile")))
+        self.assertIsNone(site.printed_header_day(live.replace("\nMobile", "\nMobiles")))
+        later = live.replace("\nMobile", "\nInternet").replace("April 12, 2027.", "April 12, 2027 Mobile.")
+        self.assertIsNone(site.printed_header_day(later), "a later date is never taken for the heading")
+        self.assertIsNone(site.printed_header_day(live.replace("\nMobile", "\nMobile_account")))
+        self.assertEqual(site.printed_header_day(live.replace("S E P T E M B E R", "A U G U S T")), "2026-08-13")
+        out = self.tmp / "y" / "2026-09-13 Spectrum Mobile Statement.pdf"
+        out.parent.mkdir()
+        pdf = text_pdf(live.split("\n"))
+        self.assertEqual(site.printed_header_day(site.pdf_text(pdf)), "2026-09-13")
+        self.assertEqual(site.bind_mobile(pdf, "2026-09-13", out), "")
+        self.assertIn("header", site.bind_mobile(pdf, "2026-04-12", out))
 
     def test_the_live_print_shape(self):
         self.assertEqual(site.printed_header_day(LIVE_PRINT), "2026-09-13")

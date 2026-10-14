@@ -2462,25 +2462,29 @@ def expand_statement(page, day: str, dl_dir, trace=None) -> bool:
 
 # The printed page's header, as pypdf reads it (live print of 2026-10-13):
 # the heading is letter-spaced in print, "S E P T E M B E R 1 3, 2 0 2 6",
-# and comes first, followed by the word "Mobile". The screen's "Statement
-# Details" bar is not printed. So the date is matched with an optional
-# space between any two of its characters, and the very next word must be
-# "Mobile" on its own (never inside a longer word such as "Automobile").
+# and comes first, followed by the word "Mobile". pypdf separates the
+# letter-spaced words with two spaces ("S E P T E M B E R  1 3,  2 0 2 6")
+# and puts "Mobile" on the next line. The screen's "Statement Details" bar
+# is not printed. So white space is collapsed first, the date is matched
+# with any white space between any two of its characters, and the very
+# next word must be "Mobile" on its own (never inside a longer word such as
+# "Automobile").
 def _spaced(word: str) -> str:
-    return r"\s?".join(re.escape(c) for c in word)
+    return r"\s*".join(re.escape(c) for c in word)
 
 
 _PRINTED_DATE_RE = re.compile(
-    r"(?<![a-z0-9])(%s)\s?(\d(?:\s?\d)?)\s?,\s?(\d\s?\d\s?\d\s?\d)(?![0-9])"
+    r"(?<![a-z0-9])(%s)\s*(\d(?:\s*\d)?)\s*,\s*(\d\s*\d\s*\d\s*\d)(?!\s*[0-9])"
     % "|".join(_spaced(m.lower()) for m in _MONTH_WORDS.split("|")), re.I)
-_PRINTED_MOBILE_RE = re.compile(r"\s+(?:mobile|m o b i l e)(?![a-z])", re.I)
+# "Mobile" prints as a plain word (live), so only that spelling is taken.
+_PRINTED_MOBILE_RE = re.compile(r"\s+mobile(?!\w)", re.I)
 
 
 def printed_header_day(text) -> Optional[str]:
     """The date the printed Mobile statement's header reads, as YYYY-MM-DD,
     or None: the first "<MONTH> <D>, <YYYY>" in the text, in any case and
     however letter-spaced, whose very next word is "Mobile"."""
-    flat = str(text or "")
+    flat = re.sub(r"\s+", " ", str(text or ""))
     m = _PRINTED_DATE_RE.search(flat)
     if not m or not _PRINTED_MOBILE_RE.match(flat, m.end()):
         return None
