@@ -38,22 +38,32 @@ STATUS, mapped 2026-09-18 against a signed-in session.
   plan number is not part of any filename.
 
   SEVERAL PLANS, surveyed read-only 2026-10-14 on a login with two
-  employers and four plans. With no plan chosen, the Statements address
-  shows a "Select Account" page instead ("The page you've chosen requires
-  you to select an account."), a select named accountSelect whose options
-  are the plan names, each valued with that plan's own Statements address
-  (OnlineStatement?&client=<digits>&plan=<digits>), and a Go button that
-  only navigates to the chosen value. The app reads the options and never
-  presses Go. The tab never navigates to a plan's address. The address is
-  asked for from inside the page without following a redirect, which is
-  what chooses the plan on the site, and then the Statements address is
-  reloaded and must show that plan's Statements page by its form and its
-  heading. One plan on the surveyed login sent its address to the Fidelity
-  retail sign-in on digital.fidelity.com, so a plan whose address
-  redirects is left for the owner and never followed. The site remembers
-  the plan last chosen, and the statement request makes that plan's
-  statement. The employer chooser and its Continue, which change a saved
-  preference, are never used.
+  employers and four plans, and read live once since. The site remembers
+  the plan last chosen, and the Statements address then shows that plan's
+  Statements page at once, so that address cannot tell a login with one
+  plan from one with several. The "Choose a Plan" page,
+  /mybenefits/definedcontributions/navigation/dc/OnlineStatement?planChooser=yes,
+  lists every plan whatever is remembered, as plain links whose text is
+  the plan's name and whose address is that plan's Statements address
+  (OnlineStatement?plan=<digits>&). It is read first, and a login it shows
+  one plan for goes on exactly as a login with one plan always did. With
+  no such page, the Statements address shows a "Select Account" page when
+  no plan is remembered, a select named accountSelect whose options carry
+  the same addresses with the client too, and that is read instead. Its Go
+  button is never pressed. The plan's name comes from that list and from
+  nowhere else. The statement's own header names whichever employer the
+  site remembers, so it is never used as the plan's name.
+
+  A plan is chosen by asking for its address from inside the page, a
+  same-origin request that the browser refuses to follow to any other
+  host. If the Statements page then shows that plan, by its form and its
+  heading, the plan's name and its number in brackets, the plan is open,
+  and if not it is left for the owner. The tab never loads a plan's own
+  address, since a redirect hop cannot be refused there. A statement is made only while the tab shows the plan it is filed
+  under. One plan on the surveyed login sent its address to the Fidelity
+  retail sign-in on digital.fidelity.com, so a plan whose address leaves
+  this host is left for the owner and never followed. The employer chooser
+  and its Continue, which change a saved preference, are never used.
 
 SAFETY (this is a retirement account):
   Strictly READ-ONLY. NetBenefits can change contributions, move money
@@ -440,10 +450,29 @@ def plan_label(heading: str) -> str:
 
 # -- several plans on one login ------------------------------------------------------
 
-# The only address a plan's option may carry. Relative, so it stays on
-# this host, and nothing after the two ids.
-PLAN_PATH_RE = re.compile(
+# The "Choose a Plan" page. It lists every plan on the login whatever plan
+# the site is remembering, as plain links, and nothing on it is pressed.
+CHOOSER_URL = WPS + "/mybenefits/definedcontributions/navigation/dc/OnlineStatement?planChooser=yes"
+
+# The only addresses a plan may carry. Relative, so they stay on this
+# host, and nothing after the ids. A Choose a Plan link names the plan
+# alone, a Select Account option names the client and the plan.
+_CHOOSER_PATH_RE = re.compile(
+    r"^/mybenefits/(?:DefinedContributions|definedcontributions)/navigation/dc/"
+    r"OnlineStatement\?plan=(\d{1,15})&?$")
+_SELECT_PATH_RE = re.compile(
     r"^/mybenefits/savings2/navigation/dc/OnlineStatement\?&?client=(\d{1,15})&plan=(\d{1,15})$")
+
+
+def plan_ids(path: str) -> Optional[tuple]:
+    """(client, plan) from a plan's own address, client "" for a Choose a
+    Plan link, or None for any other address."""
+    path = (path or "").strip()
+    m = _CHOOSER_PATH_RE.match(path)
+    if m:
+        return ("", m.group(1))
+    m = _SELECT_PATH_RE.match(path)
+    return (m.group(1), m.group(2)) if m else None
 
 OPENED = "open"
 
@@ -472,6 +501,15 @@ class PlanDidNotOpen(RuntimeError):
 # goes back to it and a statement is never made for another one.
 _plan_in_use: dict = {"plan": None}
 
+_READ_CHOOSER_JS = r"""() => {
+  const text = (document.body && document.body.innerText) || '';
+  if (!/choose a plan/i.test(text)) return null;
+  return Array.from(document.querySelectorAll('a[href]'))
+    .filter(a => /[?&]plan=\d/i.test(a.getAttribute('href') || ''))
+    .map(a => ({text: (a.textContent || '').replace(/\s+/g, ' ').trim(),
+                value: a.getAttribute('href') || '', disabled: false}));
+}"""
+
 _READ_CHOICES_JS = r"""() => {
   const sel = document.querySelector("select[name='accountSelect']");
   const text = (document.body && document.body.innerText) || '';
@@ -482,10 +520,11 @@ _READ_CHOICES_JS = r"""() => {
 }"""
 
 # Asks for a plan's address from inside the page, with the session's
-# cookies, as the Go button's navigation would, and that request is what
-# chooses the plan on the site. It refuses to follow a redirect, so an
-# address that sends the browser to another site is seen without going
-# there. Says only what kind of answer came back.
+# cookies, as following the link would, and that request is what chooses
+# the plan on the site. It is a same-origin request, so a redirect within
+# this host is followed and a redirect to any other host is refused by the
+# browser before that host is asked anything. Says only what kind of
+# answer came back.
 _PROBE_JS = r"""async ({path, heading}) => {
   const here = location;
   if (here.protocol !== 'https:' || here.hostname !== 'workplaceservices.fidelity.com') {
@@ -493,9 +532,8 @@ _PROBE_JS = r"""async ({path, heading}) => {
   }
   let r;
   try {
-    r = await fetch(path, {credentials: 'include', redirect: 'manual'});
-  } catch (e) { return {kind: 'unreachable'}; }
-  if (r.type === 'opaqueredirect' || (r.status >= 300 && r.status < 400)) return {kind: 'redirect'};
+    r = await fetch(path, {credentials: 'include', mode: 'same-origin', redirect: 'follow'});
+  } catch (e) { return {kind: 'redirect'}; }
   const html = await r.text();
   const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   return {kind: 'page', status: r.status,
@@ -544,10 +582,12 @@ def option_label(text: str) -> str:
     return " ".join(out)
 
 
-def plan_digest(client: str, plan: str) -> str:
-    """What a plan is known by in this app's records. The whole SHA-256 of
-    its two ids, so two plans never share one and neither id is written."""
-    return hashlib.sha256(("%s:%s" % (client, plan)).encode("ascii")).hexdigest()
+def plan_digest(plan: str) -> str:
+    """What a plan is known by in this app's records, the whole SHA-256 of
+    its plan number, so the id is never written. The plan number alone, since
+    a Choose a Plan link carries no client, and a plan must keep one key
+    whichever list it was read from."""
+    return hashlib.sha256(("plan:%s" % plan).encode("ascii")).hexdigest()
 
 
 def _keep_private(ids) -> None:
@@ -558,25 +598,26 @@ def _keep_private(ids) -> None:
 
 
 def plan_from_option(text: str, value: str) -> Optional[dict]:
-    """One plan from one option of the Select Account page.
+    """One plan from one link of the Choose a Plan page or one option of
+    the Select Account page.
 
-    None for a placeholder, an option with no name or no value. A value that
-    is not this site's own Statements address for a client and a plan makes
-    a plan with no address, which is left for the owner and never opened."""
+    None for a placeholder, one with no name or no address. An address that
+    is not this site's own Statements address for a plan makes a plan with
+    no address, which is left for the owner and never opened."""
     label = option_label(text)
     value = (value or "").strip()
     if not label or not value:
         return None
-    m = PLAN_PATH_RE.match(value)
-    if not m:
+    ids = plan_ids(value)
+    if not ids:
         digest = hashlib.sha256(("label:" + label).encode("utf-8")).hexdigest()
         return {"label": label, "digest": digest, "path": "", "heading": text, "review": LEAVES_THE_SITE}
-    _keep_private(m.groups())
+    _keep_private(ids)
     # A name that carries one of the plan's own numbers loses it, so it
     # never reaches a filename or a log.
-    for number in sorted(set(m.groups()), key=len, reverse=True):
+    for number in sorted({i for i in ids if i}, key=len, reverse=True):
         label = re.sub(r"\s+", " ", label.replace(number, "")).strip(" -")
-    return {"label": label or "Plan", "digest": plan_digest(*m.groups()), "path": value, "heading": text}
+    return {"label": label or "Plan", "digest": plan_digest(ids[1]), "path": value, "heading": text}
 
 
 def checked_plan(rec: dict) -> Optional[dict]:
@@ -592,10 +633,10 @@ def checked_plan(rec: dict) -> Optional[dict]:
     if not path:
         plan["review"] = rec.get("review") or LEAVES_THE_SITE
         return plan
-    m = PLAN_PATH_RE.match(path)
-    if not m or plan_digest(*m.groups()) != rec["digest"]:
+    ids = plan_ids(path)
+    if not ids or plan_digest(ids[1]) != rec["digest"]:
         return None
-    _keep_private(m.groups())
+    _keep_private(ids)
     return plan
 
 
@@ -606,40 +647,60 @@ def _settle(page) -> None:
         page.wait_for_timeout(750)
 
 
-def read_plan_choices(page) -> Optional[List[dict]]:
-    """The plans this login holds, from the Select Account page, or None
-    when the Statements address shows no such page.
-
-    The bare Statements address is always opened afresh, so a page left on
-    some plan from before is not taken for the whole list. Every option is
-    read, nothing is pressed. A placeholder option is skipped and two
-    options for one plan are one plan."""
-    # Whatever plan was open may not be once this page has loaded.
-    _plan_in_use["plan"] = None
-    page.goto(URLS["documents"], wait_until="domcontentloaded", timeout=30000)
+def _read_list(page, url: str, script: str) -> Optional[List[dict]]:
+    """The plans one list page shows, or None when the page is not that list.
+    The page is opened by its address and read with one script."""
+    page.goto(url, wait_until="domcontentloaded", timeout=30000)
     _settle(page)
     if looks_signed_out(page):
         raise SessionExpired("NetBenefits showed its sign-in page, sign in again")
-    raw = page.evaluate(_READ_CHOICES_JS)
+    raw = page.evaluate(script)
     if not isinstance(raw, list):
-        # The script answers a list only on the Select Account page.
+        # The script answers a list only on its own page.
         return None
     plans, seen = [], set()
     for o in raw:
-        if o.get("disabled"):
+        if not isinstance(o, dict) or o.get("disabled"):
             continue
         plan = plan_from_option(o.get("text") or "", o.get("value") or "")
         if plan is None or plan["digest"] in seen:
             continue
         seen.add(plan["digest"])
         plans.append(plan)
-    if not plans:
-        raise PlanListUnavailable("the Select Account page listed no plan")
     names = [p["heading"].upper() for p in plans]
     for p in plans:
         p["shared_name"] = names.count(p["heading"].upper()) > 1
-    log.info("NetBenefits lists %d plan(s), %d left for the owner",
-             len(plans), sum(1 for p in plans if not p["path"]))
+    return plans
+
+
+def read_plan_choices(page) -> Optional[List[dict]]:
+    """The plans of a login with several, or None for a login with one.
+
+    The Choose a Plan page comes first. It lists every plan whatever plan
+    the site is remembering, so a login it shows several plans for is a
+    login with several, and one it shows exactly one plan for is a login
+    with one plan, which goes on exactly as it always did. When it lists
+    nothing, the Statements address is opened afresh and its Select Account
+    page, shown only when the site remembers no plan, is read instead.
+    Every link and option is read, nothing is pressed. The tab ends on the
+    Statements address."""
+    # Whatever plan was open may not be once these pages have loaded.
+    _plan_in_use["plan"] = None
+    chooser = _read_list(page, CHOOSER_URL, _READ_CHOOSER_JS)
+    one_plan = bool(chooser) and len(chooser) == 1 and bool(chooser[0]["path"])
+    select = _read_list(page, URLS["documents"], _READ_CHOICES_JS)
+    if chooser and not one_plan:
+        plans, where = chooser, "Choose a Plan"
+    elif one_plan:
+        return None
+    elif select is None:
+        return None
+    elif not select:
+        raise PlanListUnavailable("the Select Account page listed no plan")
+    else:
+        plans, where = select, "Select Account"
+    log.info("NetBenefits lists %d plan(s) on its %s page, %d left for the owner",
+             len(plans), where, sum(1 for p in plans if not p["path"]))
     return plans
 
 
@@ -651,9 +712,9 @@ def _heading_pattern(plan: dict) -> str:
     name = re.sub(r"\(\s*\d+\s*\)", "", plan.get("heading") or plan["label"])
     name = re.sub(r"\s+", " ", name).strip()
     number = r"\d+"
-    m = PLAN_PATH_RE.match(plan.get("path") or "")
-    if plan.get("shared_name") and m:
-        number = re.escape(m.group(2))
+    ids = plan_ids(plan.get("path") or "")
+    if plan.get("shared_name") and ids:
+        number = re.escape(ids[1])
     return re.escape(name).replace("\\ ", " ") + r"\s*\(\s*" + number + r"\s*\)"
 
 
@@ -678,31 +739,28 @@ def open_plan(page, plan: dict) -> str:
     """Make `plan` the one the next statement is made for. OPENED, or the
     reason it was left for the owner.
 
-    The tab never navigates to the plan's own address. That address is
-    asked for from inside the page, with the session's cookies and without
-    following a redirect, which is the request that chooses the plan on the
-    site. An address that redirects, or that answers with anything but this
-    plan's own Statements page, chooses nothing that is used. If the
-    session itself is gone by then, that is SessionExpired, not a plan to
-    review. Then the tab reloads the Statements address, which stays on
-    this host, and it must show this plan's Statements page by its form
-    and its heading, or the plan is left for the owner. Nothing is pressed.
-    The reason is one of the fixed words above, never an address or an
-    error's text."""
+    The plan's address is first asked for from inside the page, with the
+    session's cookies, as a same-origin request. A redirect to any other
+    host is refused by the browser before that host is asked anything, and
+    such a plan, or one whose address answers with anything but its own
+    Statements page, is left for the owner and never opened. If the session
+    itself is gone by then, that is SessionExpired, not a plan to review.
+    That request is expected to choose the plan on the site, so the tab
+    reloads the Statements address, and that page must show this plan's
+    statement form and its heading, the plan's name and its number in
+    brackets, or the plan is left for the owner and no statement is made.
+    The tab never loads the plan's own address. Nothing is pressed. The reason is one of the fixed words
+    above, never an address or an error's text."""
     if not plan.get("path"):
         return plan.get("review") or LEAVES_THE_SITE
-    if not PLAN_PATH_RE.match(plan["path"]):
+    if not plan_ids(plan["path"]):
         return LEAVES_THE_SITE
     _plan_in_use["plan"] = None
     if not on_documents_page(page):
         _settle(page)
         if not on_documents_page(page):
             raise SessionExpired("not on a signed-in workplaceservices page")
-    try:
-        probe = page.evaluate(_PROBE_JS, {"path": plan["path"], "heading": _heading_pattern(plan)})
-    except Exception as e:
-        log.info("plan %s: the look ahead failed (%s)", plan["label"], type(e).__name__)
-        probe = {"kind": "unreachable"}
+    probe = _look_ahead(page, plan["path"], _heading_pattern(plan), plan["label"])
     if probe.get("kind") == "page" and probe.get("password"):
         raise SessionExpired("NetBenefits answered a plan with its sign-in page")
     if not (probe.get("kind") == "page" and probe.get("status") == 200
@@ -710,27 +768,47 @@ def open_plan(page, plan: dict) -> str:
         if not _signed_in(page):
             raise SessionExpired("NetBenefits signed this session out")
         return REDIRECTS if probe.get("kind") == "redirect" else NOT_ITS_PAGE
-    # The Statements address is asked for the same way before the tab
-    # reloads it, so a day it redirects is seen without following it.
+    # Only the Statements address is ever loaded, never the plan's own.
+    # Playwright cannot refuse a redirect hop, so an address whose answer
+    # could change between the look ahead and the load is not loaded.
+    for address in (urlsplit(URLS["documents"]).path,):
+        # It is asked for the same way first, so a day it redirects is seen
+        # without following it.
+        ahead = _look_ahead(page, address, "$^", plan["label"])
+        if ahead.get("kind") != "page" or ahead.get("status") != 200 or ahead.get("password"):
+            if not _signed_in(page):
+                raise SessionExpired("NetBenefits signed this session out")
+            return REDIRECTS
+        try:
+            page.goto(WPS + address, wait_until="domcontentloaded", timeout=30000)
+        except Exception as e:
+            log.info("plan %s: loading a page failed (%s)", plan["label"], type(e).__name__)
+        _settle(page)
+        if looks_signed_out(page):
+            raise SessionExpired("NetBenefits showed its sign-in page on a plan, sign in again")
+        if not on_documents_page(page):
+            log.warning("plan %s: the tab left the statements site", plan["label"])
+            try:
+                page.goto(URLS["documents"], wait_until="domcontentloaded", timeout=30000)
+                _settle(page)
+            except Exception as e:
+                log.info("going back to the Statements page failed (%s)", type(e).__name__)
+            if looks_signed_out(page) or not on_documents_page(page):
+                raise SessionExpired("NetBenefits did not come back after a plan, sign in again")
+            return LEAVES_THE_SITE
+        if _shows_plan(page, plan):
+            _plan_in_use["plan"] = plan
+            _last_navigation["at"] = time.monotonic()
+            return OPENED
+    return DID_NOT_OPEN
+
+
+def _look_ahead(page, path: str, heading: str, label: str) -> dict:
     try:
-        bare = page.evaluate(_PROBE_JS, {"path": urlsplit(URLS["documents"]).path, "heading": "$^"})
+        return page.evaluate(_PROBE_JS, {"path": path, "heading": heading}) or {}
     except Exception as e:
-        log.info("the look ahead at the Statements page failed (%s)", type(e).__name__)
-        bare = {"kind": "unreachable"}
-    if bare.get("kind") != "page" or bare.get("status") != 200 or bare.get("password"):
-        raise SessionExpired("the Statements address did not answer on its own host, sign in again")
-    try:
-        page.goto(URLS["documents"], wait_until="domcontentloaded", timeout=30000)
-    except Exception as e:
-        log.info("plan %s: reloading the Statements page failed (%s)", plan["label"], type(e).__name__)
-    _settle(page)
-    if looks_signed_out(page) or not on_documents_page(page):
-        raise SessionExpired("NetBenefits did not come back on its Statements page, sign in again")
-    if not _shows_plan(page, plan):
-        return DID_NOT_OPEN
-    _plan_in_use["plan"] = plan
-    _last_navigation["at"] = time.monotonic()
-    return OPENED
+        log.info("plan %s: the look ahead failed (%s)", label, type(e).__name__)
+        return {"kind": "unreachable"}
 
 
 def collect_documents(page, keep=None, config: Optional[dict] = None) -> List[dict]:

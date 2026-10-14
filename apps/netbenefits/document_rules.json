@@ -1,5 +1,5 @@
 {
-  "_comment": "Editable rules mapping NetBenefits statement titles to filename summaries. The app makes each statement itself for a quarter or a month, so the titles are its own, Quarterly Statement and Monthly Statement. The plan's name follows the summary in the filename, the plan named on the statement for a sign-in with one plan, and the plan's name from the Select Account page for a sign-in with several. Plan and employer numbers never appear.",
+  "_comment": "Editable rules mapping NetBenefits statement titles to filename summaries. The app makes each statement itself for a quarter or a month, so the titles are its own, Quarterly Statement and Monthly Statement. The plan's name follows the summary in the filename, the plan named on the statement for a sign-in with one plan, and the plan's name from the site's Choose a Plan or Select Account page for a sign-in with several. Plan and employer numbers never appear.",
   "tax_rules": [],
   "insurance_rules": [],
   "statement_rules": [

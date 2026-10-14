@@ -11,8 +11,9 @@ a second run downloaded nothing.
 
 **Several employers and plans.** One owner's sign-in with two employers and
 four plans was surveyed read-only on 2026-10-14, and the app was changed to
-handle it (below). A live run on that sign-in is still pending, so treat the
-several-plans path as untested against the real site until it is reported.
+handle it (below). A live run of this change on that sign-in is still
+pending, so treat the several-plans path as untested against the real site
+until it is reported.
 
 ## How it reads the site
 
@@ -33,27 +34,32 @@ after a real statement, since a plan has one start date. A run scoped with
 identified by its kind and period end date. The plan's name goes in the
 filename, the plan number never does.
 
-**A sign-in with several plans.** With more than one plan, and none chosen
-yet, the Statements address shows a "Select Account" page listing the
-plans by name, each with its own Statements address. The app reads that
-list, never presses the page's Go button and never uses the employer
-chooser, whose Continue changes a saved preference. The tab never goes to
-a plan's own address. For each plan the app asks for that address from
-inside the page without following a redirect, which chooses the plan on
-the site, then reloads the Statements page and goes on only when it shows
-that plan's Statements page. Then it makes that plan's statements as above
-and files them under the plan's name, as in
-`2026-06-30 NetBenefits Quarterly Statement - ABC 457(b) Plan.pdf`. A plan
-whose address sends you elsewhere (on the surveyed sign-in, one plan's went
-to the Fidelity retail sign-in) is left for you to open yourself, counted
-as needing review, and never followed. If the session is gone when a later
+**A sign-in with several plans.** NetBenefits remembers the plan you last
+looked at, and its Statements page then shows that plan straight away, so
+the app reads the plan list from the site's "Choose a Plan" page first,
+which lists every plan on the sign-in by name, each linking to its own
+Statements page. A sign-in it lists one plan for goes on exactly as before.
+When there is no such page, the "Select Account" page the Statements
+address shows when no plan is remembered is read instead. Nothing on
+either page is pressed, and the employer chooser, whose Continue changes a
+saved preference, is never used.
+
+For each plan the app asks for the plan's address from inside the page, a
+request the browser will not follow to another site. If the Statements
+page then shows that plan, by its heading, the plan's name and its number,
+the plan is open, and if not it is left for you. The tab never opens a
+plan's own address. A statement is made only while the page shows the plan
+it is filed under, and it is filed under the plan's name from the list,
+as in `2026-06-30 NetBenefits Quarterly Statement - ABC 457(b) Plan.pdf`,
+never under the employer the statement's own header names. A plan whose
+address sends you elsewhere (on the surveyed sign-in, one plan's went to
+the Fidelity retail sign-in) is left for you to open yourself, counted as
+needing review, and never followed. If the session is gone when a later
 plan is asked for, the run stops and keeps what it saved. Records are kept
 by a digest of the plan, never its numbers, and the plan list is kept in
-`plans.json` beside the progress file so a later run finds the plans again
-once the site has gone back to remembering one plan. If it cannot, it says
-so and asks you to sign out and in, then Discover, then Resume. A sign-in
-with one plan works exactly as it did, with the same file names and
-records.
+`plans.json` beside the progress file so a later run can find the plans
+even when neither list page shows. If it cannot, it says so and asks you
+to sign out and in, then Discover, then Resume.
 
 `statement_period` in `config.json` is `quarterly` by default, the cadence
 a plan issues on paper. Set it to `monthly` for one per month instead.

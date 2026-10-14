@@ -390,12 +390,12 @@ class App:
     def _plan_list(self, page) -> Optional[list]:
         """The plans of a login with several, or None for a login with one.
 
-        The Select Account page is the list, and what it lists replaces what
-        plans.json held. When the site shows a plan's Statements page at
-        once instead, as it does once a plan has been opened, the plans
-        plans.json holds are the list, each checked again. A login whose
-        records name plans while neither list is there is not taken for a
-        login with one plan, it raises PlanListUnavailable."""
+        The site's Choose a Plan page is the list, or its Select Account
+        page when there is no such page (site.read_plan_choices), and what
+        it lists replaces what plans.json held. When neither list shows,
+        the plans plans.json holds are the list, each checked again. A
+        login whose records name plans while no list is there is not taken
+        for a login with one plan, it raises PlanListUnavailable."""
         choices = site.read_plan_choices(page)
         if choices is not None:
             self.plans.data.clear()
