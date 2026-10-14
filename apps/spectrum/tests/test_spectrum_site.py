@@ -1007,6 +1007,23 @@ class BoundToTheStatement(WithFakeClick):
         data = spectrum_pdf("2026-08-26")
         self.stops(data, before=lambda: (self.tmp / "2026-09-26 Spectrum Internet Statement.pdf").write_bytes(data))
 
+    def test_a_download_again_may_meet_its_own_copy(self):
+        data = spectrum_pdf("2026-08-26")
+        mine = self.tmp / "2026-08-26 Spectrum Internet Statement.pdf"
+        mine.write_bytes(data)
+        (self.tmp / "staging").mkdir()
+        out = self.tmp / "current-2026-08-26.pdf"
+        ok = site.download_bill(Page(), self.tmp / "staging", "2026-08-26", out,
+                                document_id="current:2026-08-26", own_files=[str(mine)])
+        self.assertTrue(ok)
+        self.assertEqual(out.read_bytes(), data)
+        site._KEPT.clear()
+        out.unlink()
+        with self.assertRaises(pressing.Stop):
+            site.download_bill(Page(), self.tmp / "staging", "2026-08-26", out,
+                               document_id="current:2026-08-26",
+                               own_files=[str(self.tmp / "another.pdf")])
+
     def test_bytes_kept_for_another_statement_in_this_run_are_refused(self):
         import hashlib
         data = spectrum_pdf("2026-08-26")
@@ -1282,6 +1299,28 @@ class Orchestrator(WithFakeClick):
         self.assertNotIn("_requests", names)
         app = make_app(self.tmp, "--all")
         self.assertFalse(hasattr(app, "requests"))
+
+    def test_a_download_again_hands_over_the_statements_own_copy(self):
+        app = make_app(self.tmp, "--all", "--redownload")
+        self.listed(app)
+        app._staged = True
+        app._delay = lambda *a, **k: None
+        app._on_its_site = lambda: Page()
+        doc = [d for d in app._select() if d.date == "2026-08-26"][0]
+        app.progress.update(doc.key, {**doc.to_dict(), "pdf_path": "/saved/before.pdf", "downloaded_ok": True})
+        got = {}
+
+        def spy(*a, **k):
+            got.update(k)
+            return False
+        original = site.download_bill
+        site.download_bill = spy
+        try:
+            with redirect_stdout(io.StringIO()):
+                app.download_one(Page(), doc, "x.pdf")
+        finally:
+            site.download_bill = original
+        self.assertEqual(got["own_files"], ["/saved/before.pdf"])
 
     def test_pilot_gate(self):
         from paperpull_core.models import State

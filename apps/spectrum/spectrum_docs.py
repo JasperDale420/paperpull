@@ -683,9 +683,12 @@ class App:
         trace: list = []
         # The folder is handed over only once the browser has accepted it;
         # without one the site layer presses nothing and stops the run.
+        # A Download again may get the very bytes this statement's own copy
+        # holds, which is no copy of another statement.
+        before = (self.progress.get(doc.key) or {}).get("pdf_path") or ""
         saved = site.download_bill(page, self._dl_dir if self._staged else None, doc.date, out_path,
                                    title=doc.title, trace=trace, href=doc.href,
-                                   document_id=doc.document_id)
+                                   document_id=doc.document_id, own_files=[before] if before else [])
         # A capture that failed must not leave a convincing empty file behind.
         if out_path.exists() and (
                 out_path.stat().st_size == 0 or out_path.read_bytes()[:5] != b"%PDF-"):

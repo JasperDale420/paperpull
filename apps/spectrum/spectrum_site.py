@@ -1370,7 +1370,8 @@ def choose_in_page(page, entry: Entry, entries: List[Entry], dl_dir, trace) -> b
 
 
 def take_statement(page, entry: Entry, out_path: Path, dl_dir=None,
-                   trace: Optional[list] = None, entries: Optional[List[Entry]] = None) -> bool:
+                   trace: Optional[list] = None, entries: Optional[List[Entry]] = None,
+                   own_files=()) -> bool:
     """Bring up the statement's own page and press View Printable Statement
     once under the hook. The newest statement's page is opened by its
     address. Every other statement is chosen in page by pressing its row
@@ -1378,7 +1379,9 @@ def take_statement(page, entry: Entry, out_path: Path, dl_dir=None,
     button is not as expected before any press. Once a row was pressed, a
     printable button that is not the one expected stops the run. After the
     printable press anything but exactly one statement, bound to this one,
-    stops the run (refused). SessionExpired and OtpRequired propagate."""
+    stops the run (refused). SessionExpired and OtpRequired propagate.
+    `own_files` are this statement's own copies saved before, which a
+    Download again may meet with the same bytes (bind)."""
     entries = list(entries) if entries else [entry]
     top = newest(entries)
     by_address = top is not None and top.document_id == entry.document_id
@@ -1418,7 +1421,8 @@ def take_statement(page, entry: Entry, out_path: Path, dl_dir=None,
     if not enabled:
         _note(trace, note="the button is turned off")
         return False
-    return _press_for_statement(page, el, entry, entries, out_path, dl_dir, trace, on_page)
+    return _press_for_statement(page, el, entry, entries, out_path, dl_dir, trace, on_page,
+                                own_files=own_files)
 
 
 def _unlisten(page, pairs) -> None:
@@ -1468,14 +1472,16 @@ def rivals_of(entry: Entry, entries: List[Entry]) -> list:
     return rivals
 
 
-def _same_file_in(folder: Path, data: bytes, skip: Path) -> Optional[bool]:
-    """Whether a PDF already in `folder` holds exactly these bytes, None
-    when the folder cannot be read. A folder not made yet holds none."""
+def _same_file_in(folder: Path, data: bytes, skip) -> Optional[bool]:
+    """Whether a PDF already in `folder`, other than those in `skip`, holds
+    exactly these bytes, None when the folder cannot be read. A folder not
+    made yet holds none."""
     if not folder.exists():
         return False
     try:
+        skipped = {Path(x).resolve() for x in skip if x}
         for p in folder.iterdir():
-            if p == skip or p.suffix.lower() != ".pdf" or not p.is_file():
+            if p.resolve() in skipped or p.suffix.lower() != ".pdf" or not p.is_file():
                 continue
             if p.stat().st_size == len(data) and p.read_bytes() == data:
                 return True
@@ -1485,14 +1491,16 @@ def _same_file_in(folder: Path, data: bytes, skip: Path) -> Optional[bool]:
 
 
 def bind(data: bytes, entry: Entry, entries: List[Entry], out_path: Path,
-         trace: Optional[list] = None) -> str:
+         trace: Optional[list] = None, own_files=()) -> str:
     """An empty string when the bytes the press brought are this statement's, beyond
     the page's own request having named it. The PDF's text prints the
     statement's date, it does not print more of a rival statement's own
     facts than of this one's, and it is not the same file as a statement
     kept earlier in this process or a PDF already in the folder it is saved
-    to (where earlier runs kept the newest). Otherwise our own words for
-    what was wrong. Only names and yes or no go into the trace."""
+    to (where earlier runs kept the newest), this statement's own copies
+    from before (`own_files`, for a Download again) apart. Otherwise our
+    own words for what was wrong. Only names and yes or no go into the
+    trace."""
     text = pdf_text(data)
     own = Identity(date=entry.date)
     verdict = verify(None, own, text=text)
@@ -1509,7 +1517,7 @@ def bind(data: bytes, entry: Entry, entries: List[Entry], out_path: Path,
     other = _KEPT.get(digest)
     if other is not None and other != entry.document_id:
         return "the PDF is the same file as another statement kept in this run"
-    same = _same_file_in(out_path.parent, data, out_path)
+    same = _same_file_in(out_path.parent, data, [out_path, *own_files])
     if same is None:
         return "the folder could not be read to compare the PDF with those saved"
     if same:
@@ -1518,7 +1526,7 @@ def bind(data: bytes, entry: Entry, entries: List[Entry], out_path: Path,
 
 
 def _press_for_statement(page, el, entry: Entry, entries: List[Entry], out_path: Path, dl_dir,
-                         trace, on_page) -> bool:
+                         trace, on_page, own_files=()) -> bool:
     if not dl_dir:
         raise no_folder()
     pdf = Watch(page, PDF_OPERATION, entry.statement_id)
@@ -1605,7 +1613,7 @@ def _press_for_statement(page, el, entry: Entry, entries: List[Entry], out_path:
         _note(trace, note="statement accepted" if data else "statement refused", why=why,
               answers=len(decoded), blobs=len(made), tabs=new_pages, downloads=stray)
         if data:
-            why = bind(data, entry, entries, out_path, trace)
+            why = bind(data, entry, entries, out_path, trace, own_files)
             if why:
                 log.info("the PDF the press brought is not bound to the statement dated %s: %s", entry.date, why)
         else:
@@ -1623,7 +1631,7 @@ def _press_for_statement(page, el, entry: Entry, entries: List[Entry], out_path:
 
 def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
                   trace: Optional[list] = None, href: str = "",
-                  document_id: str = "") -> bool:
+                  document_id: str = "", own_files=()) -> bool:
     """Save the statement discovery recorded as `document_id`
     ("current:YYYY-MM-DD" or "prior:YYYY-MM-DD"), dated `iso_date`.
     Statements is read again and exactly one entry there must carry that
@@ -1631,7 +1639,8 @@ def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
     address, any other statement is chosen by pressing its row there.
     False, nothing pressed, when it is not found. SessionExpired and
     OtpRequired propagate to the run, and a press that brought anything but
-    the statement stops it."""
+    the statement stops it. `own_files` are the statement's own copies
+    saved before, as take_statement says."""
     out_path = Path(out_path)
     m = DOCUMENT_ID_RE.fullmatch((document_id or "").strip())
     if not m or m.group(2) != (iso_date or "") or not valid_iso(iso_date):
@@ -1649,7 +1658,7 @@ def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
         log.info("%d entries match the recorded statement dated %s, none taken", len(found), iso_date)
         _note(trace, note="no single entry matches the record", matches=len(found))
         return False
-    return take_statement(page, found[0], out_path, dl_dir, trace, entries)
+    return take_statement(page, found[0], out_path, dl_dir, trace, entries, own_files=own_files)
 
 
 # ---------------------------------------------------------------------------
