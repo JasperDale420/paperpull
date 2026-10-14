@@ -345,7 +345,7 @@ class App:
         else:
             profile = Path(self.config["profile_dir"])
             profile.mkdir(parents=True, exist_ok=True)
-            self._context = self._pw.chromium.launch_persistent_context(
+            self._context = browser_launcher.launch_own_browser(self._pw.chromium, 
                 str(profile), headless=False, accept_downloads=True,
                 viewport={"width": 1400, "height": 950})
             self._cdp_mode = False
