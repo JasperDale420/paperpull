@@ -7,7 +7,15 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
-## [Unreleased]
+## [0.51.0] - 2026-10-14
+
+Alpaca arrives, statements and trade confirmations from a Live brokerage
+account, and the control panel shows PaperPull's Terms of Use once, the
+first time it opens. The release also has Robinhood save the months it
+serves only as HTML, a sign-in and the runs after it use one browser or say
+why not, an app in a source checkout follow the checkout's core again, and
+the transaction export reconcile Navy Federal Visa statements and find
+their statement period.
 
 ### Added
 - **Terms of Use.** TERMS.md, also at paperpull.net/terms.html, says what
