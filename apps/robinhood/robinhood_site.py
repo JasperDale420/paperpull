@@ -886,7 +886,9 @@ _COLLECT_JS = r"""(readYears) => {""" + _PAGE_JS_LIB + r"""
   for (const el of document.querySelectorAll("a[download], a, button, [role=button]")) {
     const own = ((el.innerText||'') + ' ' + (el.getAttribute('aria-label')||'')).trim();
     const hasDlAttr = el.hasAttribute('download');
-    const isPdfBtn = /download\s*pdf/i.test(own);
+    // "Download HTML" is a statement served as a web page, as some months
+    // of an account are. It is listed like a PDF and rendered to one when taken.
+    const isPdfBtn = /download\s*(pdf|html)/i.test(own);
     const isCsvBtn = /download\s*csv/i.test(own);
     let title = '', is_pdf = false;
     if (hasDlAttr && !isCsvBtn && TITLE_RE.test(own)) {
@@ -904,7 +906,7 @@ _COLLECT_JS = r"""(readYears) => {""" + _PAGE_JS_LIB + r"""
     } else {
       continue;  // CSV buttons, plain title links, nav, etc.
     }
-    title = title.replace(/\s+/g, ' ').replace(/\s*Download (PDF|CSV)\s*/gi, ' ').trim();
+    title = title.replace(/\s+/g, ' ').replace(/\s*Download (PDF|CSV|HTML)\s*/gi, ' ').trim();
     if (!title || title.length < 4) continue;
     // On the tax page, a tax form whose name has no year is one document
     // per tax year it is shown under. Everything else, and everything on
@@ -1070,6 +1072,12 @@ def _squash(text: str) -> str:
 
 
 def find_control(page, title: str, year: str = ""):
+    """The download control for `title`, or None (see find_control_with_label)."""
+    found = find_control_with_label(page, title, year)
+    return found[0] if found else None
+
+
+def find_control_with_label(page, title: str, year: str = ""):
     """The download control for `title`, or None. Found in one pass in the
     page and marked there, then checked here against the guard with its
     whole label, never a forbidden label unless the control is a plain
@@ -1111,7 +1119,7 @@ def find_control(page, title: str, year: str = ""):
             return None
     except Exception:
         return None
-    return handle
+    return handle, own
 
 
 def has_control(page, title: str, year: str = "") -> bool:
@@ -1156,12 +1164,13 @@ def download_named(page, title: str, out_path, year: str = "") -> bool:
     pressed when none is."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    control = find_control(page, title, year)
-    if control is None:
+    found = find_control_with_label(page, title, year)
+    if found is None:
         log.info("download control not found for %r%s", title,
                  f" of tax year {year}" if year else "")
         return False
-    return _click_and_capture(page, control, title, out_path)
+    control, label = found
+    return _click_and_capture(page, control, title, out_path, label=label)
 
 
 # Robinhood changed how a statement is served, some time between August and
@@ -1203,7 +1212,7 @@ def is_document_store_url(url: str) -> bool:
     return got.hostname.lower().rstrip(".") in DOCUMENT_STORE_HOSTS
 
 
-def _click_and_capture(page, control, title: str, out_path) -> bool:
+def _click_and_capture(page, control, title: str, out_path, label: str = "") -> bool:
     """Click a download control and take the PDF however Robinhood serves it."""
     import json as _json
     import time as _time
@@ -1314,13 +1323,186 @@ def _click_and_capture(page, control, title: str, out_path) -> bool:
     except Exception as e:
         log.info("fetching the PDF for %r failed: %s", title, e)
         return False
-    if not data or b"%PDF-" not in data[:1024]:
-        log.info("fetched %d bytes for %r but it is not a PDF", len(data), title)
+    return keep_fetched(page, data, title, out_path, label=label)
+
+
+# Robinhood serves some months of an account's statements as HTML only: the
+# row's control reads "Download HTML" and the pre-signed link answers a web
+# page, not a PDF. Those used to be refused as "not a PDF" and sent to manual
+# review every run (three months of an individual account, October 2026). The
+# page is the statement, so it is rendered to PDF through the core's inert
+# print path: active content stripped, drawn in a fresh context with
+# JavaScript off and none of the session's cookies, robinhood.com as its base.
+# It is kept only when what came out is a PDF whose text names the statement's
+# month and year, and written beside the target first so a half-made file is
+# never left in Statements.
+HTML_CONTROL_RE = re.compile(r"\bdownload\s+html\s*$", re.I)
+_MONTH_YEAR_IN_TITLE_RE = re.compile(
+    r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|"
+    r"Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+((?:19|20)\d{2})\b", re.I)
+
+
+def looks_like_html(data: bytes) -> bool:
+    head = (data or b"")[:2048].lstrip().lower()
+    return head.startswith(b"<!doctype html") or head.startswith(b"<html") or b"<html" in head
+
+
+_MONTH_NUMBERS = {m: i + 1 for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
+
+
+_MONTH_FULL = {"jan": "january", "feb": "february", "mar": "march", "apr": "april", "may": "may",
+               "jun": "june", "jul": "july", "aug": "august", "sep": "september", "oct": "october",
+               "nov": "november", "dec": "december"}
+_MONTH_WORD = r"(?:%s|sept)" % "|".join(sorted(
+    set(_MONTH_FULL) | set(_MONTH_FULL.values()), key=len, reverse=True))
+# One printed date: 01/31/2026, 2026-01-31, or January 31, 2026 (Jan. 31st, 2026).
+_DATE = (r"(?:\d{1,2}/\d{1,2}/\d{4}|\d{4}-\d{2}-\d{2}|\b%s\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4})"
+         % _MONTH_WORD)
+# A period's end: the second date of a range printed under the words
+# "period" or "statement", or the date after "period ending" or "statement
+# ended". Never a date alone, nor a range of anything else, which is as often
+# trade dates, an opening balance's day or the day the page was made. The
+# label may sit a line above its dates, but no other label between them.
+_OTHER_LABEL = r"trade|generated|as\s+of|balance|settle|activity|transaction"
+_LABEL_TO_DATE = r"(?:(?!%s)[^\d]){0,40}?" % _OTHER_LABEL
+_PERIOD_END_RE = re.compile(
+    r"\b(?:period|statement)\b%s(?<![\d/])%s\s*(?:-|\u2013|\u2014|to|through|thru)\s*(%s)(?!\d)"
+    r"|\b(?:period|statement)\s+(?:ending|ended)\s*:?\s*(%s)(?!\d)"
+    % (_LABEL_TO_DATE, _DATE, _DATE, _DATE), re.I)
+
+
+def _month_and_year(date: str):
+    """The (month number, year) a printed date (_DATE) names, or None."""
+    date = date.strip()
+    m = re.fullmatch(r"(\d{1,2})/\d{1,2}/(\d{4})", date)
+    if m:
+        return int(m.group(1)), m.group(2)
+    m = re.fullmatch(r"(\d{4})-(\d{2})-\d{2}", date)
+    if m:
+        return int(m.group(2)), m.group(1)
+    m = re.match(r"([a-z]+)\.?\s.*?(\d{4})$", date, re.I)
+    if m:
+        number = _MONTH_NUMBERS.get(m.group(1)[:3].lower())
+        if number:
+            return number, m.group(2)
+    return None
+
+
+# A range printed bare, as Robinhood prints an HTML month's period under its
+# address with no label: "01/01/2026 to 01/31/2026".
+_BARE_RANGE_RE = re.compile(
+    r"(?<![\d/])(\d{1,2})/(\d{1,2})/(\d{4})\s*(?:-|\u2013|\u2014|to)\s*(\d{1,2})/(\d{1,2})/(\d{4})(?!\d)",
+    re.I)
+# A word on the line before a bare range that says it is some other range,
+# read as a word's start so "Transactions" or "Trades" is one too.
+_BARE_LABEL_RE = re.compile(
+    r"\b(?:%s|date|opening|closing|printed|created|issued)" % _OTHER_LABEL, re.I)
+
+
+def _whole_months(text: str) -> set:
+    """The (month, year) of each bare range on its own that spans exactly
+    one calendar month, the 1st to the month's last day, with no label word
+    before it on its line."""
+    import calendar
+    found = set()
+    for m in _BARE_RANGE_RE.finditer(text or ""):
+        line = text[text.rfind("\n", 0, m.start()) + 1:m.start()]
+        if _BARE_LABEL_RE.search(line):
+            continue
+        sm, sd, sy, em, ed, ey = (int(g) for g in m.groups())
+        if not (sy == ey and sm == em and 1 <= sm <= 12 and sd == 1):
+            continue
+        if ed == calendar.monthrange(sy, sm)[1]:
+            found.add((sm, str(sy)))
+    return found
+
+
+def names_month(text: str, month_word: str, year: str) -> bool:
+    """Whether `text` prints a statement period that ends in the month
+    `month_word` of `year`. The end is the second date of a range printed
+    under "period" or "statement", "Statement period 01/01/2026 to
+    01/31/2026" or "Period: January 1, 2026 - January 31, 2026", or the date
+    after "period ending" or "statement ended". A range printed bare, as an
+    HTML month prints its period, counts when it is that whole month, the
+    1st to the last day, with no label word before it on its line, and every
+    such range on the page is that month. A date on its own, or a range under
+    another label, is not read, since a page of February can print trade
+    dates or an opening balance of January, and the day it was made."""
+    number = _MONTH_NUMBERS.get((month_word or "")[:3].lower())
+    if not number:
         return False
+    for m in _PERIOD_END_RE.finditer(text or ""):
+        if _month_and_year(m.group(1) or m.group(2)) == (number, year):
+            return True
+    return _whole_months(text) == {(number, year)}
+
+
+def _first_page_text(path) -> str:
+    """The first page's text, or "" when it cannot be read. A period
+    printed further in, beside a list of trades, is not the statement's own."""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(str(path))
+        return (reader.pages[0].extract_text() or "") if reader.pages else ""
+    except Exception:
+        return ""
+
+
+def rendered_names_statement(path, title: str) -> bool:
+    """Whether the rendered PDF's first page prints a period ending in the
+    month and year the statement's title names (names_month). A title
+    naming no month is not checked."""
+    m = _MONTH_YEAR_IN_TITLE_RE.search(title or "")
+    if not m:
+        return True
+    return names_month(_first_page_text(Path(path)), m.group(1), m.group(2))
+
+
+def keep_fetched(page, data: bytes, title: str, out_path, label: str = "", render=None, check=None) -> bool:
+    """Keep what the pre-signed link answered: a PDF as it is, or, behind a
+    control labelled "Download HTML", the HTML statement rendered to one.
+    Anything else is refused and nothing is left behind. `render` and
+    `check` stand in for the core's print path and the text check in tests."""
     out_path = Path(out_path)
+    if data and b"%PDF-" in data[:1024]:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(data)
+        return True
+    if not data or not (HTML_CONTROL_RE.search(label or "") and looks_like_html(data)):
+        log.info("fetched %d bytes for %r but it is not a PDF", len(data or b""), title)
+        return False
+    if render is None:
+        from paperpull_core import receipt_pdf
+        render = receipt_pdf.print_html_inert_to_pdf
+    check = check or rendered_names_statement
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(data)
-    return True
+    tmp = out_path.with_name(out_path.name + ".rendering")
+    try:
+        try:
+            render(page, data.decode("utf-8", "replace"), tmp)
+        except Exception as e:
+            log.info("rendering the HTML statement for %r failed (%s)", title, type(e).__name__)
+            return False
+        try:
+            ok = tmp.is_file() and tmp.read_bytes()[:5] == b"%PDF-"
+        except OSError:
+            ok = False
+        if not ok:
+            log.info("the HTML statement for %r did not render to a PDF", title)
+            return False
+        if not check(tmp, title):
+            log.info("the rendered PDF for %r does not name the statement's month", title)
+            return False
+        tmp.replace(out_path)
+        log.info("rendered the HTML statement for %r to PDF", title)
+        return True
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------

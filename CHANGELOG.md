@@ -99,6 +99,23 @@ All notable changes to PaperPull are recorded here. Versioning follows
   height, while every line read whole stays exactly as it was, and the
   closing date label now allows a stray space inside a word. Thanks to
   @dertbv for working out what pdfplumber was doing.
+- **Robinhood saves the months it serves only as HTML.** Some months of an
+  account's statements come from Robinhood as a web page, behind a
+  "Download HTML" control, and used to be refused as "not a PDF" and marked
+  for manual review on every run. They are now rendered to PDF through
+  PaperPull's own print path, drawn in a separate browser context with
+  JavaScript off and no connection to anything, and kept only when the PDF's
+  first page prints that month's statement period, labelled or, as an HTML
+  month prints it, bare and spanning the whole month. A record
+  listed under the old title moves under the cleaned one, keeping whichever
+  of two is done, so nothing is downloaded twice. The page is stripped of
+  anything active until nothing more comes out, and refused when a tag
+  rebuilt by the strip is still there. A retirement or crypto page that
+  hands over the individual account's HTML month is still caught, by the
+  digest of the statement's text, since each print of one page is a
+  different file. These months need the signed-in browser (`cdp_url`), and
+  without it go to manual review.
+
 
 ## [0.50.0] - 2026-10-13
 

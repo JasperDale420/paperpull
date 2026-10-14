@@ -334,6 +334,128 @@ def print_html_to_pdf(page, html: str, out_path: Path) -> None:
             pass
 
 
+_ACTIVE_NAMES = r"script|iframe|frame|frameset|object|embed|applet|form|base|link|meta"
+# One active tag, opening or closing. A tag with no ">" runs to the end of the
+# page and goes with it, so no start is ever scanned to the end twice.
+_ACTIVE_TAG_RE = re.compile(r"<\s*(/?)\s*(%s)\b[^>]*+>?" % _ACTIVE_NAMES, re.I)
+# These are taken out with everything up to their closing tag.
+_ACTIVE_ELEMENTS = {"script", "iframe", "frameset", "object", "applet", "form"}
+# Looser than the strip: no closing ">" is needed, so an unclosed "<script"
+# left at the end of the page is still seen.
+_ACTIVE_LEFT_RE = re.compile(r"<\s*/?\s*(%s)\b" % _ACTIVE_NAMES, re.I)
+# A whole tag, a quoted value read as one piece, so a ">" inside quotes does
+# not end it. Possessive, and a tag with no ">" runs to the end of the page,
+# so the scan stays linear on a page of broken tags.
+_TAG_RE = re.compile(r"<[a-zA-Z/!](?:\"[^\"]*+\"|'[^']*+'|[^'\">]++)*+>?")
+# Inside one tag, quoted values first, so a handler is found only where it
+# stands as an attribute: after a space, a slash or a closing quote.
+_IN_TAG_RE = re.compile(r"(\"[^\"]*+\"|'[^']*+')|(?<=[\s/\"'])on[a-z]+\s*=\s*(?:\"[^\"]*+\"|'[^']*+'|[^\s>]*+)",
+                        re.I)
+_JS_URL_RE = re.compile(r"(href|src|action|formaction|xlink:href)\s*=\s*([\"']?)\s*javascript:[^\"'>\s]*", re.I)
+_MAX_STRIPS = 20
+
+
+def _drop_active(html: str) -> str:
+    """The HTML with each active tag taken out, and with a script, frame,
+    object, applet or form element everything up to its closing tag, or to
+    the end of the page when it has none. The
+    closing tag found for a name is remembered, so a page of unclosed
+    "<script>" tags is read once, not once for each."""
+    out, pos, closes = [], 0, {}
+    while True:
+        m = _ACTIVE_TAG_RE.search(html, pos)
+        if m is None:
+            out.append(html[pos:])
+            return "".join(out)
+        out.append(html[pos:m.start()])
+        pos = m.end()
+        name = m.group(2).lower()
+        if not m.group(1) and name in _ACTIVE_ELEMENTS:
+            found = closes.get(name)
+            if found is None or (found is not False and found.start() < pos):
+                found = re.compile(r"<\s*/\s*%s\s*>" % name, re.I).search(html, pos) or False
+                closes[name] = found
+            # One never closed runs to the end of the page, as a browser reads
+            # it, so what it held is never shown as the page's own text.
+            pos = found.end() if found is not False else len(html)
+
+
+class UnsafeHtml(ValueError):
+    """The HTML still held an active tag after every strip, and is not drawn."""
+
+
+def _strip_handlers(tag: str) -> str:
+    return _IN_TAG_RE.sub(lambda m: m.group(1) or "", tag)
+
+
+def _strip_once(html: str) -> str:
+    out = _drop_active(html)
+    out = _TAG_RE.sub(lambda m: _strip_handlers(m.group(0)), out)
+    return _JS_URL_RE.sub(r"\1=\2#", out)
+
+
+def inert_html(html: str, base: str) -> str:
+    """The HTML with every way to run code or load a frame taken out, and a
+    <base> of the caller's choosing: scripts, frames, objects, forms, link
+    and meta tags, the supplied base, inline event handlers and javascript:
+    URLs. Styles and images stay, since they are what a printed statement
+    needs.
+
+    Taking a tag out can join the text on either side of it into a new one,
+    so "<li<link>nk ...>" becomes a link tag once the inner one is gone. The
+    strip is repeated until a pass changes nothing, and if an active tag is
+    still there after that, UnsafeHtml is raised and nothing is drawn. Belt
+    and braces: the page it is rendered in has JavaScript off and every
+    request aborted."""
+    out = html or ""
+    for _ in range(_MAX_STRIPS):
+        stripped = _strip_once(out)
+        if stripped == out:
+            break
+        out = stripped
+    if _ACTIVE_LEFT_RE.search(out) or _strip_once(out) != out:
+        raise UnsafeHtml("an active tag was left after stripping")
+    tag = f'<base href="{base}">' if base else ""
+    if re.search(r"<head[^>]*>", out, re.I):
+        out = re.sub(r"(<head[^>]*>)", lambda m: m.group(1) + tag, out, count=1, flags=re.I)
+    else:
+        out = f"<html><head>{tag}</head><body>{out}</body></html>"
+    return out
+
+
+def print_html_inert_to_pdf(page, html: str, out_path: Path, base: Optional[str] = None) -> None:
+    """Render HTML the app fetched itself, not a page the browser already
+    showed, to a PDF without letting it run: active content is stripped
+    (inert_html) and the page it is drawn in belongs to a fresh browser
+    context with JavaScript off and none of the signed-in session's cookies.
+    `base` defaults to the bound provider's. Raises on failure, UnsafeHtml
+    when the page is refused before drawing. A page whose context is not of
+    a browser (a persistent profile's) has nothing to draw in, and raises."""
+    out_path = Path(out_path)
+    # Stripped before any context is opened, so a page refused (UnsafeHtml)
+    # opens nothing at all.
+    inert = inert_html(html, base if base is not None else _base_href())
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    browser = getattr(page.context, "browser", None)
+    if browser is None:
+        raise RuntimeError("no browser to render in")
+    ctx = browser.new_context(java_script_enabled=False, accept_downloads=False)
+    try:
+        # Offline: the stripped page may still name outside addresses in
+        # styles and images, and none is fetched. Text is what a statement
+        # needs, and a missing logo is not a loss.
+        ctx.route("**/*", lambda route: route.abort())
+        tmp = ctx.new_page()
+        tmp.set_content(inert, wait_until="load")
+        tmp.wait_for_timeout(1500)
+        print_page_to_pdf(tmp, out_path)
+    finally:
+        try:
+            ctx.close()
+        except Exception:
+            pass
+
+
 def get_print_snapshot(page) -> Optional[str]:
     """HTML stashed by the print hook at the moment print() was called
     (from the main window or any same-origin iframe), or None."""

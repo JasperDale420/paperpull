@@ -58,8 +58,8 @@ passwords, no cookies and no session tokens.
 Robinhood those include each document's category, date, title and account,
 the parts its record keys are made of, the key a tax form was saved under
 before its year was read, which of Robinhood's four fixed statement and tax
-pages listed it, and the SHA-256 digest of the saved file, which says nothing
-of what the file holds. For American Family they include each document's
+pages listed it, and the SHA-256 digests of the saved file and of its text,
+which say nothing of what the file holds. For American Family they include each document's
 date, the masked last four of the account or policy its bill is told by and
 the saved file's digest, so a statement with the bytes of another bill's is
 still caught. For AT&T they include each bill's kind, date and account,
@@ -148,7 +148,7 @@ SKIP_FIELDS = ("state", "downloaded_ok", "pdf_path", "discovered_at", "updated_a
 # category, date, title and account, the parts of its key, which hold no
 # account number (_date_saved_forms, _saved_form_of_year). And it knows a
 # statement of one account page that is another's saved one by those and the
-# saved file's digest (_other_accounts_statement). American Family trusts
+# digest of the saved file or of its text (_other_accounts_statement). American Family trusts
 # neither copy when a statement it takes has the very bytes of another bill's
 # statement of that date, found by each saved one's digest, date and account
 # part, the masked last four of the bill's account or policy, which its key
@@ -164,7 +164,7 @@ SKIP_FIELDS = ("state", "downloaded_ok", "pdf_path", "discovered_at", "updated_a
 # Every app's skip decisions, and every walk of its saved records, are read
 # against these by core/tests/test_a_minimal_history_skips_what_the_app_did.py.
 PROVIDER_SKIP_FIELDS = {"Robinhood": ("undated_key", "source_url", "category", "date",
-                                      "title", "account", "pdf_sha256"),
+                                      "title", "account", "pdf_sha256", "text_sha256"),
                         "American Family": ("pdf_sha256", "date", "account"),
                         "AT&T": ("category", "date", "account", "pdf_size", "pdf_pages"),
                         "Target": ("invoices",)}

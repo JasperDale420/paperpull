@@ -31,6 +31,12 @@ and reads the pages you're authorized to see. No stealth, no evasion.
 Port 9226 keeps this separate from Walmart (9222), Amazon (9223), Wealthfront
 (9224), and USAA (9225), so several signed-in browsers can be open at once.
 
+Some months of an account come from Robinhood only as a web page, behind a
+"Download HTML" control, and are printed to PDF in a separate browser
+context of that signed-in browser. Without `cdp_url` in `config.json` the
+tool runs in a profile of its own, which has no browser to open that context
+in, so every such month is marked for manual review instead.
+
 ## Documents captured
 
 | Folder | Contents |

@@ -537,6 +537,67 @@ def test_a_retirement_statement_that_is_the_individual_file_is_refused(tmp_path,
     assert app.progress.get(individual.key)["downloaded_ok"], "the individual one stands"
 
 
+def test_a_retirement_statement_rendered_again_from_the_individual_html_is_refused(
+        tmp_path, monkeypatch):
+    """A month served as HTML is printed to PDF on each run, and the print
+    stamps its own creation time, so one statement rendered twice is two
+    different files. The retirement page that handed over the individual
+    statement's HTML is still caught, by the digest of the PDF's text, and
+    this holds after the individual file is deleted."""
+    app = _app(tmp_path)
+    # As short as a real HTML month's first page, which is all it holds.
+    same = ["1 Example Plaza, Suite 100, Example City, ZZ 00000 help@robinhood.com",
+            "01/01/2010 to 01/31/2010 # # Individual Account #:00000 1 Invented Street"]
+    assert len(" ".join(same)) >= robinhood_docs.MIN_TEXT_FOR_DIGEST
+    stamp = iter(range(1, 10))
+
+    def press(page, title, out_path, year=""):
+        _text_pdf(Path(out_path), same)
+        with open(out_path, "ab") as f:
+            f.write(b"%% render %d\n" % next(stamp))
+        return True
+    monkeypatch.setattr(site, "download_named", press)
+    page = _Tab(headings={RETIREMENT: ["Retirement"]})
+    individual = _statement()
+    saved = _take(app, page, individual)
+    assert saved["downloaded_ok"] and saved["text_sha256"]
+    Path(saved["pdf_path"]).unlink()
+    rec = _take(app, page, _retirement())
+    assert rec["state"] == State.NEEDS_MANUAL_REVIEW.value and rec["pdf_path"] == ""
+    assert "same file as the individual statement" in rec["notes"]
+    assert app.stats["wrong_document"] == 1
+
+
+def test_a_near_empty_text_says_nothing_of_whose_statement_it_is(tmp_path, monkeypatch):
+    """Two statements of one date whose text is only a logo's words differ
+    in their bytes, and both are kept. So little text gives no digest."""
+    app = _app(tmp_path)
+    stamp = iter(range(1, 10))
+
+    def press(page, title, out_path, year=""):
+        _text_pdf(Path(out_path), ["Robinhood", "1"])
+        with open(out_path, "ab") as f:
+            f.write(b"%% render %d\n" % next(stamp))
+        return True
+    monkeypatch.setattr(site, "download_named", press)
+    page = _Tab(headings={RETIREMENT: ["Retirement"]})
+    saved = _take(app, page, _statement())
+    assert saved["downloaded_ok"] and saved["text_sha256"] == ""
+    rec = _take(app, page, _retirement())
+    assert rec["state"] == State.COMPLETED.value, rec.get("notes")
+
+
+def test_statements_whose_text_differs_are_both_saved(tmp_path, monkeypatch):
+    """The text digest catches only the same text. A retirement statement
+    printing its own account is kept beside the individual one."""
+    app = _app(tmp_path)
+    _presses(monkeypatch)
+    page = _Tab(headings={RETIREMENT: ["Retirement"]})
+    _take(app, page, _statement())
+    rec = _take(app, page, _retirement())
+    assert rec["state"] == State.COMPLETED.value, rec.get("notes")
+
+
 def test_an_older_individual_record_is_read_from_its_file(tmp_path, monkeypatch):
     """A statement saved before the digest was kept is compared by its
     file, while the file is there."""
