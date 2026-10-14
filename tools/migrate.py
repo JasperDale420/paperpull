@@ -167,7 +167,12 @@ PROVIDER_SKIP_FIELDS = {"Robinhood": ("undated_key", "source_url", "category", "
                                       "title", "account", "pdf_sha256", "text_sha256"),
                         "American Family": ("pdf_sha256", "date", "account"),
                         "AT&T": ("category", "date", "account", "pdf_size", "pdf_pages"),
-                        "Target": ("invoices",)}
+                        "Target": ("invoices",),
+                        # A combined statement covers its employer's other
+                        # plans for one period, found by the plans' digests
+                        # and the parts of the key. None names a person or
+                        # an account (netbenefits_docs._covered_already).
+                        "NetBenefits": ("category", "date", "title", "occurrence", "covers")}
 
 
 def _optum_form(rec: dict) -> bool:

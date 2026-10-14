@@ -821,6 +821,77 @@ def _look_ahead(page, path: str, label: str) -> dict:
         return {"kind": "unreachable"}
 
 
+# -- a statement that covers several plans -----------------------------------------
+
+def _squeezed(text: str) -> str:
+    """Upper case with every space gone, so a name matches however a PDF's
+    text extraction happened to break or space it."""
+    return re.sub(r"\s+", "", text or "").upper()
+
+
+def _name_key(plan: dict) -> str:
+    """What a plan is looked for by in a statement's text: its name from the
+    plan list, without a bracketed number or a closing word "Plan", since a
+    statement writes "ABC 457(B)" where the list says "ABC 457(B) PLAN"."""
+    name = re.sub(r"\(\s*\d+\s*\)", "", plan.get("heading") or plan.get("label") or "")
+    name = re.sub(r"\s+plan\s*$", "", name.strip(), flags=re.I)
+    return _squeezed(name)
+
+
+def plans_named(text: str, plans, chosen: str = "") -> List[dict]:
+    """The plans of the list whose names a statement's text carries, in the
+    list's order, each once.
+
+    NetBenefits makes one combined statement for the plans of one employer,
+    and every plan's own request gives that same statement. A plan whose
+    name is in a longer one's (ABC inside ABC DCP) counts only where it
+    stands on its own. Two plans with one name cannot be told apart by it,
+    so such a name counts only for the plan `chosen` (its digest), the one
+    the statement was made for, and never makes another plan covered."""
+    hay = _squeezed(text)
+    keyed = [(p, _name_key(p)) for p in plans if p.get("path")]
+    keys = [k for _, k in keyed]
+    out, seen = [], set()
+    for plan, key in keyed:
+        if not key or plan["digest"] in seen:
+            continue
+        if keys.count(key) > 1 and plan["digest"] != chosen:
+            continue
+        longer = [k for _, k in keyed if k != key and key in k]
+        rest = hay
+        for k in sorted(longer, key=len, reverse=True):
+            rest = rest.replace(k, "")
+        if key in rest:
+            seen.add(plan["digest"])
+            out.append(plan)
+    return out
+
+
+def employer_name(page) -> str:
+    """The employer the site's header names (id client-name), or ''."""
+    try:
+        loc = page.locator("#client-name")
+        if loc.count() == 0:
+            return ""
+        return re.sub(r"\s+", " ", loc.inner_text(timeout=3000) or "").strip()
+    except Exception:
+        return ""
+
+
+def combined_label(plans, employer: str, text: str) -> str:
+    """What a statement covering several plans is filed under.
+
+    The employer's name when the header gives one and the statement itself
+    carries it too, so a header that names another, remembered employer is
+    not believed. Otherwise the plans' names, sorted, as in "ABC 403(b),
+    ABC 457(b) and ABC DCP Plans"."""
+    if employer and _squeezed(employer) in _squeezed(text):
+        return option_label(employer).rstrip(" ,.") + " Plans"
+    names = sorted(re.sub(r"\s+Plan$", "", p["label"]) for p in plans)
+    joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    return joined + " Plans"
+
+
 def collect_documents(page, keep=None, config: Optional[dict] = None) -> List[dict]:
     """One row per completed period the site can make a statement for.
     Newest first. Stops walking older periods at the first error page that

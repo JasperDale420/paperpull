@@ -23,7 +23,8 @@ import storage  # noqa: F401  (binds this provider's AppSpec)
 import netbenefits_site as site
 import netbenefits_docs as docs
 from paperpull_core import receipt_pdf
-from paperpull_core.testkit import receipt_app, sample_pdf
+from paperpull_core.models import State
+from paperpull_core.testkit import receipt_app, text_pdf
 
 BARE = site.URLS["documents"]
 CHOOSER = site.CHOOSER_URL
@@ -47,6 +48,8 @@ class Locator:
         self.page, self.sel = page, sel
 
     def count(self):
+        if "client-name" in self.sel:
+            return 1 if self.page.employer else 0
         if "password" in self.sel:
             return 1 if self.page.url.startswith(NB_LOGIN) else 0
         if "frmRequest" in self.sel:
@@ -54,6 +57,8 @@ class Locator:
         return 1
 
     def inner_text(self, timeout=None):
+        if "client-name" in self.sel:
+            return self.page.employer
         return self.page.body()
 
 
@@ -78,6 +83,7 @@ class Page:
         self.gotos, self.probes, self.made = [], [], []
         self.names = dict(NAMES)
         self.bare_probes, self.bare_redirects = 0, False
+        self.employer = ""
 
     def body(self):
         if self.kind == "chooser":
@@ -168,6 +174,15 @@ def multi_page(remembered=P457, **behaviors):
 # site had chosen when it was made, as on the real site.
 HAVE = {P457: {"04/01/2026-06/30/2026", "01/01/2026-03/31/2026"},
         PXR: {"04/01/2026-06/30/2026"}}
+# What each plan's statement names, when that is not just its own plan.
+STATEMENT_NAMES = {}
+
+
+def render_text(pg, html, out):
+    body = re.sub(r"<[^>]+>", "", html.split("<body>", 1)[-1])
+    Path(out).write_bytes(text_pdf(body.split("|")))
+
+
 PLAN_OF_LABEL = {"ABC 457(b) Plan": P457, "North-Star Medical Group": PXR}
 
 
@@ -198,11 +213,13 @@ def statements_by_plan(page, calls, single=None):
         have = single if chosen is None else HAVE.get(chosen, set())
         if date_range not in have:
             return {"status": 200, "title": "Online Statement error page", "isStatement": False, "html": ""}
+        named = STATEMENT_NAMES.get(chosen, [NAMES.get(chosen, "SOME CORP. RETIREMENT SAVINGS PLAN")])
         return {"status": 200, "title": "Statement Details", "isStatement": True,
                 # The statement's own header names whichever employer the
                 # site remembers, which is never the label.
                 "plan": "NORTH-STAR MEDICAL GROUP, INC. 401(K) PROFIT SHARING PLAN", "period": date_range,
-                "html": "<html><head></head><body>%s %s</body></html>" % (chosen, date_range)}
+                "html": "<html><head></head><body>%s|Statement Period %s</body></html>" % (
+                    "|".join(named), date_range)}
     return make
 
 
@@ -550,8 +567,7 @@ def test_each_statement_is_made_with_its_own_plan_chosen(monkeypatch, tmp_path):
     page = multi_page()
     calls = []
     monkeypatch.setattr(site, "make_statement", statements_by_plan(page, calls))
-    monkeypatch.setattr(receipt_pdf, "print_html_to_pdf",
-                        lambda pg, html, out: Path(out).write_bytes(sample_pdf()))
+    monkeypatch.setattr(receipt_pdf, "print_html_to_pdf", render_text)
     app_on(tmp_path, page).cmd_discover(quiet=True)
     # A Resume, in a process that has listed nothing.
     site._plan_in_use["plan"] = None
@@ -594,3 +610,131 @@ def test_the_look_ahead_compares_addresses_without_the_pages_url_constructor():
     script once read every plan as redirected because of it."""
     assert "URL(" not in site._PROBE_JS
     assert "here.origin + path" in site._PROBE_JS
+
+
+
+# -- a statement that covers several plans ------------------------------------------
+
+SHARED = {P403, PDCP, P457}
+Q2 = "04/01/2026-06/30/2026"
+
+
+def three_plans_one_statement(monkeypatch, tmp_path, employer=""):
+    monkeypatch.setitem(HAVE, P403, {Q2})
+    monkeypatch.setitem(HAVE, PDCP, {Q2})
+    monkeypatch.setitem(HAVE, P457, {Q2})
+    combined = ["ABC 403(B) PLAN", "ABC DCP", "ABC 457(B) PLAN", "LAKESIDE COLLEGE OF ARTS"]
+    for p in SHARED:
+        monkeypatch.setitem(STATEMENT_NAMES, p, combined)
+    page = multi_page()
+    page.employer = employer
+    calls = []
+    monkeypatch.setattr(site, "make_statement", statements_by_plan(page, calls))
+    monkeypatch.setattr(receipt_pdf, "print_html_to_pdf", render_text)
+    app = app_on(tmp_path, page)
+    app.cmd_discover(quiet=True)
+    return app, page, calls
+
+
+def test_a_combined_statement_is_saved_once_for_the_plans_it_covers(monkeypatch, tmp_path):
+    app, page, calls = three_plans_one_statement(monkeypatch, tmp_path)
+    q2 = [app.discovery.data[k] for k in app.discovery.data if app.discovery.data[k]["date"] == "2026-06-30"]
+    assert len(q2) == 4                                   # three ABC plans and North-Star
+    calls.clear()
+    app.process(app._select())
+    saved = sorted(p.name for p in (tmp_path / "out" / "Statements").iterdir())
+    assert saved == ["2026-06-30 NetBenefits Quarterly Statement - ABC 403(b), ABC 457(b) and ABC DCP Plans.pdf",
+                     "2026-06-30 NetBenefits Quarterly Statement - North-Star Medical Group.pdf"]
+    # Made once for the three, once for North-Star.
+    assert len([c for c in calls if c[2]]) == 2
+    done = [app.progress.data[k] for k in app.progress.data]
+    assert len(done) == 4 and all(r["downloaded_ok"] for r in done)
+    covered = [r for r in done if "covered by the combined statement" in (r.get("notes") or "")]
+    assert len(covered) == 2 and all(saved[0] in r["notes"] and not r["pdf_path"] for r in covered)
+    assert app.stats["manual_review"] == 0 and app.stats["failed"] == 0
+    # A later run makes nothing again.
+    calls.clear()
+    app.process(app._select())
+    assert not [c for c in calls if c[2]]
+
+
+def test_a_combined_statement_takes_the_employers_name_when_the_statement_carries_it(monkeypatch, tmp_path):
+    app, page, calls = three_plans_one_statement(monkeypatch, tmp_path, employer="LAKESIDE COLLEGE OF ARTS")
+    app.process(app._select())
+    saved = sorted(p.name for p in (tmp_path / "out" / "Statements").iterdir())
+    assert "2026-06-30 NetBenefits Quarterly Statement - Lakeside College of Arts Plans.pdf" in saved
+
+
+def test_a_remembered_employer_the_statement_does_not_carry_is_not_believed(monkeypatch, tmp_path):
+    app, page, calls = three_plans_one_statement(monkeypatch, tmp_path, employer="NORTH-STAR MEDICAL GROUP, INC.")
+    app.process(app._select())
+    saved = sorted(p.name for p in (tmp_path / "out" / "Statements").iterdir())
+    assert "2026-06-30 NetBenefits Quarterly Statement - ABC 403(b), ABC 457(b) and ABC DCP Plans.pdf" in saved
+
+
+def test_a_statement_for_one_plan_is_filed_under_that_plan_as_before(monkeypatch, tmp_path):
+    page = multi_page()
+    monkeypatch.setattr(site, "make_statement", statements_by_plan(page, []))
+    monkeypatch.setattr(receipt_pdf, "print_html_to_pdf", render_text)
+    app = app_on(tmp_path, page)
+    app.cmd_discover(quiet=True)
+    app.process(app._select())
+    rec = next(r for r in app.progress.data.values() if r["account"] == "North-Star Medical Group")
+    assert rec["pdf_filename"] == "2026-06-30 NetBenefits Quarterly Statement - North-Star Medical Group.pdf"
+    assert not rec.get("covers")
+
+
+def test_a_statement_naming_only_another_plan_is_refused(monkeypatch, tmp_path):
+    monkeypatch.setitem(STATEMENT_NAMES, P457, ["NORTH-STAR MEDICAL GROUP"])
+    page = multi_page()
+    monkeypatch.setattr(site, "make_statement", statements_by_plan(page, []))
+    monkeypatch.setattr(receipt_pdf, "print_html_to_pdf", render_text)
+    app = app_on(tmp_path, page)
+    app.cmd_discover(quiet=True)
+    app.process(app._select())
+    saved = sorted(p.name for p in (tmp_path / "out" / "Statements").iterdir())
+    assert not any("ABC 457(b)" in n for n in saved)
+    refused = [r for r in app.progress.data.values() if r["account"] == "ABC 457(b) Plan"]
+    assert refused and all(r["state"] == State.NEEDS_MANUAL_REVIEW.value for r in refused)
+    assert app.stats["wrong_document"] == 2
+
+
+def test_plan_names_are_found_however_the_pdf_spaced_them():
+    plans = [site.plan_from_option(NAMES[p], LINK % p) for p in (P403, PDCP, P457, PXR)]
+    named = site.plans_named("Your plans: ABC403(B)  and abc dcp\nABC 457(B) Plan", plans)
+    assert [p["label"] for p in named] == ["ABC 403(b) Plan", "ABC DCP", "ABC 457(b) Plan"]
+
+
+def test_a_later_process_finds_the_combined_statement_and_makes_nothing(monkeypatch, tmp_path):
+    app, page, calls = three_plans_one_statement(monkeypatch, tmp_path)
+    app.process(app._select())
+    # The covered plans' records are gone, as for plans listed after the
+    # statement was saved, and a new process is started.
+    for key in [k for k, r in app.progress.data.items() if "covered by" in (r.get("notes") or "")]:
+        del app.progress.data[key]
+    app.progress.save()
+    site._plan_in_use["plan"] = None
+    again = app_on(tmp_path, page)
+    calls.clear()
+    again.process(again._select())
+    assert not [c for c in calls if c[2]]
+    assert sum("covered by" in (r.get("notes") or "") for r in again.progress.data.values()) == 2
+
+
+def test_download_again_makes_the_combined_statement_again(monkeypatch, tmp_path):
+    app, page, calls = three_plans_one_statement(monkeypatch, tmp_path)
+    app.process(app._select())
+    site._plan_in_use["plan"] = None
+    again = app_on(tmp_path, page)
+    again.args.redownload = True
+    calls.clear()
+    again.process(again._select())
+    assert len([c for c in calls if c[2]]) == 2          # once for the three, once for North-Star
+
+
+def test_two_plans_with_one_name_never_cover_each_other():
+    twins = [site.plan_from_option("ABC 401(K) PLAN", LINK % P403),
+             site.plan_from_option("ABC 401(K) PLAN", LINK % P457),
+             site.plan_from_option("ABC DCP", LINK % PDCP)]
+    named = site.plans_named("ABC 401(K) PLAN statement", twins, chosen=twins[0]["digest"])
+    assert [p["digest"] for p in named] == [twins[0]["digest"]]

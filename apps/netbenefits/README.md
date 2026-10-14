@@ -61,6 +61,19 @@ by a digest of the plan, never its numbers, and the plan list is kept in
 even when neither list page shows. If it cannot, it says so and asks you
 to sign out and in, then Discover, then Resume.
 
+**Combined statements.** NetBenefits makes one combined statement for the
+plans of one employer, and asking for it from any of those plans gives the
+same statement. After each statement is saved, the app reads its text. It
+must name the plan it was made for, or it is set aside for review as the
+wrong document. When it names other plans of the list too, it is saved
+once, under the employer's name when the site's header gives one and the
+statement carries it too (`... Quarterly Statement - Lakeside College of
+Arts Plans.pdf`), or else under the plans' names (`... Quarterly Statement
+- ABC 403(b), ABC 457(b) and ABC DCP Plans.pdf`), and the other plans'
+statements for that period are recorded as covered by that file, so they
+are not made again. A statement for one plan is filed under that plan as
+above.
+
 `statement_period` in `config.json` is `quarterly` by default, the cadence
 a plan issues on paper. Set it to `monthly` for one per month instead.
 

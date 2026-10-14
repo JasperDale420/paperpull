@@ -89,6 +89,8 @@ class Document:
         # On a login with several plans, the plan's digest (never its ids).
         # Empty for a login with one plan, whose keys stay as they were.
         self.plan = plan
+        # The plans a combined statement saved for this one also covers.
+        self.covers = kw.get("covers", [])
         # Sticky "was successfully downloaded at least once" marker. Once set,
         # the document is never re-downloaded even if you delete the PDF (e.g.
         # after importing it into paperless-ngx).
@@ -157,6 +159,7 @@ class App:
         self.plans = JsonStore(self.paths.root / "plans.json", self.paths.backups)
         self.plans.load()
         self._plans_by_digest = {}
+        self._covered_this_run = set()
         self.rules = doc_types.load_rules()
 
         self._pw = None
@@ -643,6 +646,16 @@ class App:
         whenever a filter or page changes).
         """
         self.check_session(page)
+        covering = self._covered_already(doc, self.progress.data) if doc.plan else None
+        # A combined statement saved earlier in this run covers this plan
+        # even with --redownload, which asks for each statement once.
+        if (covering is not None and not getattr(self.args, "redownload", False)) \
+                or doc.key in self._covered_this_run:
+            if doc.key not in self._covered_this_run:
+                self._cover(doc, covering)
+            self.stats["skipped_completed"] += 1
+            print("  Covered by a combined statement already saved - skipping.")
+            return
         folder = self.paths.folder_for(doc.category)
         # The last of the document id, used only if the name is taken.
         # Two documents on one day used to differ by " (2)", which says
@@ -722,6 +735,10 @@ class App:
             return
 
         doc.pdf_size, doc.pdf_pages = result.size_bytes, result.page_count
+        if doc.plan:
+            out_path = self._own_or_combined(page, doc, out_path)
+            if out_path is None:
+                return
         doc.downloaded_ok = True   # done for good, even if the file is deleted later
         self._record(doc, State.COMPLETED)
         self.journal.checkpoint('a document is saved')
@@ -736,6 +753,93 @@ class App:
         else:
             self.stats["other"] += 1
         print(f"  Saved: {out_path.name}")
+        if doc.covers:
+            self._cover_siblings(doc)
+
+    # -- a statement that covers several plans -----------------------------
+
+    def _own_or_combined(self, page, doc: "Document", out_path: Path) -> Optional[Path]:
+        """The saved statement's own check, on a login with several plans.
+
+        The statement must name the plan it was made for, or it is set aside
+        for review as the wrong document and None is answered. One that
+        names other plans of the list too is the employer's combined
+        statement. It is renamed for all of them, and the plans it covers
+        are noted on the record, so they are not made again."""
+        text = receipt_pdf.pdf_text(out_path)
+        named = site.plans_named(text, list(self._plans_by_digest.values()), chosen=doc.plan)
+        if doc.plan not in {p["digest"] for p in named}:
+            self.stats["wrong_document"] = self.stats.get("wrong_document", 0) + 1
+            self.stats["manual_review"] += 1
+            quarantine = unique_path(self.paths.manual_review, out_path.name,
+                                     self.config["max_path_length"])
+            try:
+                out_path.replace(quarantine)
+            except OSError:
+                quarantine = out_path
+            doc.pdf_path, doc.pdf_filename = str(quarantine), quarantine.name
+            self._record(doc, State.NEEDS_MANUAL_REVIEW,
+                         notes="the statement does not name the plan it was made for")
+            self._write_row(doc, "Wrong plan", "Needs Manual Review")
+            self.write_failure('check the statement names its plan',
+                               'the statement did not name the plan it was made for')
+            print("  !! The statement does not name its plan. Moved to Manual Review.")
+            return None
+        if len(named) < 2:
+            return out_path
+        label = site.combined_label(named, site.employer_name(page), text)
+        suffix = " - " + doc.account
+        base = doc.summary[:-len(suffix)] if doc.account and doc.summary.endswith(suffix) else doc.summary
+        doc.summary = f"{base} - {label}"
+        doc.covers = [p["digest"] for p in named if p["digest"] != doc.plan]
+        filename = build_pdf_filename(doc.date, doc.summary, "", record=doc)
+        target = unique_path(out_path.parent, filename, self.config["max_path_length"])
+        try:
+            out_path.replace(target)
+            out_path = target
+        except OSError:
+            log.warning("could not rename the combined statement for %s", doc.key)
+        doc.pdf_path, doc.pdf_filename = str(out_path), out_path.name
+        log.info("%s %s covers %d plans", doc.title, doc.date, len(named))
+        return out_path
+
+    def _same_period(self, rec: dict, doc: "Document") -> bool:
+        return (rec.get("category") == doc.category and rec.get("date") == doc.date
+                and rec.get("title") == doc.title
+                and int(rec.get("occurrence") or 0) == int(doc.occurrence or 0))
+
+    def _cover(self, doc: "Document", source: dict) -> None:
+        """Record `doc` as done by the combined statement `source` saved.
+
+        The file stays the source record's alone, so Rename and Verify see
+        one owner for it. This record says in its note which file it is."""
+        doc.pdf_path = doc.pdf_filename = ""
+        doc.downloaded_ok = True
+        self._record(doc, State.COMPLETED,
+                     notes="covered by the combined statement " + (source.get("pdf_filename") or ""))
+        self._write_row(doc, "Covered by a combined statement", "Completed")
+
+    def _cover_siblings(self, doc: "Document") -> None:
+        """The other plans' records for this period, done by this file."""
+        source = doc.to_dict()
+        for key, rec in list(self.discovery.data.items()):
+            if rec.get("plan") in doc.covers and self._same_period(rec, doc):
+                sibling = Document.from_dict(rec)
+                if self._already_done(sibling):
+                    continue
+                self._covered_this_run.add(sibling.key)
+                self._cover(sibling, source)
+                print(f"  Also covers: {sibling.summary}")
+
+    def _covered_already(self, doc: "Document", records: dict) -> Optional[dict]:
+        """The record of a combined statement already saved for this period
+        that covers this plan, or None. Its caller asks only without
+        --redownload, which makes every statement in scope again."""
+        for rec in list(records.values()):
+            if rec.get("downloaded_ok") and doc.plan in (rec.get("covers") or []) \
+                    and self._same_period(rec, doc):
+                return rec
+        return None
 
     # -- records -----------------------------------------------------------
 
@@ -850,7 +954,10 @@ class App:
         nothing is asked of the provider here (#43, #49). A preview
         unless --apply is given."""
         self.stats["mode"] = "rename"
-        renaming.run_for(self, apply_changes=bool(getattr(self.args, "apply", False)))
+        renaming.run_for(self, apply_changes=bool(getattr(self.args, "apply", False)),
+                         # A combined statement's summary is the one written
+                         # when its file was saved (_own_or_combined).
+                         as_saved=("summary",))
 
     def cmd_verify(self):
         self.stats["mode"] = "verify"

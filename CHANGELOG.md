@@ -24,10 +24,15 @@ All notable changes to PaperPull are recorded here. Versioning follows
   to another Fidelity site, as one plan's did to the Fidelity retail
   sign-in, is left for you to open yourself and never followed, and a
   sign-out partway stops the run and keeps what it saved. Plan and employer
-  numbers are kept out of file names and diagnostics. A sign-in with one
-  plan works exactly as before, with the same file names and records. The
-  several-plans path was built from a read-only survey of one sign-in and
-  one live listing, and a live run of this change is still pending.
+  numbers are kept out of file names and diagnostics. The plans of one
+  employer share one combined statement, which is saved once under the
+  employer's name, or the plans' names, and counted for each plan it
+  covers, and a statement that does not name the plan it was made for is
+  set aside for review. A sign-in with one plan works exactly as before,
+  with the same file names and records. The several-plans path was built
+  from a read-only survey of one sign-in and live runs of earlier versions
+  of this change; a live run of the combined-statement handling is still
+  pending.
 
 ## [0.51.0] - 2026-10-14
 
