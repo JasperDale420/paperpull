@@ -11,9 +11,7 @@ a second run downloaded nothing.
 
 **Several employers and plans.** One owner's sign-in with two employers and
 four plans was surveyed read-only on 2026-10-14, and the app was changed to
-handle it (below). A live run of this change on that sign-in is still
-pending, so treat the several-plans path as untested against the real site
-until it is reported.
+handle it (below). That change then ran live on the same sign-in on 2026-10-14: Discover listed the four plans with 39 quarters each, and Pilot plus Run All saved 39 combined University of California statements and 39 X-Ray Medical Group statements, every PDF naming the plans its label says, with nothing sent to manual review.
 
 ## How it reads the site
 
