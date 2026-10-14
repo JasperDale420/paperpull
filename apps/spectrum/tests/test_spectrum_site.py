@@ -160,12 +160,26 @@ def mobile_rows(days=MOBILE_DAYS):
             + [mobile_row(d) for d in days] + ["Order 1234567 August 13, 2025"])
 
 
+def spaced(text):
+    """Letter-spaced, the way the printed heading reads back from pypdf."""
+    return " ".join(text.replace(" ", ""))
+
+
 def mobile_print(page):
-    """What printing the Mobile statement page gives: its words, with the
-    date the page shows."""
-    return text_pdf(["Statement Details", upper_date(page.mobile_day), "Mobile", "AMOUNT DUE $61.40",
+    """What printing the Mobile statement page gives, in the shape the live
+    print of 2026-10-13 read back: the heading's date letter-spaced and first,
+    "Mobile" after it, and no "Statement Details" bar."""
+    return text_pdf([spaced(upper_date(page.mobile_day)) + " Mobile " + spaced("AMOUNT DUE") + " 61.40",
                      "Previous Balance Payments and Credits Remaining Balance",
                      "Unlimited Plus Lines (2) Phone " + MOB_PHONE, "Included Taxes, Fees & Charges"])
+
+
+# The live print's first page as pypdf read it, masked, with a made-up
+# address in place of the real one.
+LIVE_PRINT = ("S E P T E M B E R 1 3, 2 0 2 6 Mobile A M O U N T D U E 60.00 Your Auto Pay is scheduled "
+              "for September 30. # # 4321 Quuxberry Lane Account Number: # Previous Activity Auto Pay "
+              "Payment - Visa ending in # -# Paid on August 30 Services # $ Account Holder Information "
+              "Previous Balance # Payments and Credits -# Remaining Balance # Unlimited Plus Lines (2) #")
 
 
 def mobile_lands(page, index):
@@ -1728,7 +1742,7 @@ class MobileTaking(WithFakeClick):
         ok, out, trace = self.take(page)
         self.assertTrue(ok)
         self.assertEqual(out.read_bytes()[:5], b"%PDF-")
-        self.assertIn("AUGUST 13, 2026", site.pdf_text(out.read_bytes()))
+        self.assertEqual(site.printed_header_day(site.pdf_text(out.read_bytes())), "2026-08-13")
         self.assertEqual([c[1] for c in page.clicks],
                          [site.OPEN_MOBILE_STEP, site.CHOOSE_MOBILE_STEP, site.EXPAND_STEP])
         self.assertEqual(page.mobile_row_presses, [3])
@@ -1843,7 +1857,7 @@ class MobileTaking(WithFakeClick):
         self.stops(on_print=lambda p: b"not a pdf at all")
 
     def test_bytes_kept_for_another_statement_or_already_saved_are_refused(self):
-        same = text_pdf(["Statement Details", "AUGUST 13, 2026", "JULY 13, 2026", "Mobile",
+        same = text_pdf(["AUGUST 13, 2026 Mobile", "JULY 13, 2026",
                          "Previous Balance Payments and Credits Remaining Balance Unlimited Plus Lines"])
         self.assertTrue(self.take(Page(mobile=mobile_rows(), on_print=lambda p: same))[0])
         with self.assertRaises(pressing.Stop):
@@ -1864,7 +1878,26 @@ class MobileTaking(WithFakeClick):
         self.assertEqual(site.printed_header_day("Statement Details Espanol AUGUST 13, 2026 Mobile AMOUNT"),
                          "2026-08-13")
         self.assertIsNone(site.printed_header_day("Statement Details AUGUST 13, 2026 Internet"))
-        self.assertIsNone(site.printed_header_day("AUGUST 13, 2026 Mobile"))
+        self.assertIsNone(site.printed_header_day("AUGUST 13, 2026 Phone 555-010-4477 and then Mobile"))
+        self.assertIsNone(site.printed_header_day(""))
+
+    def test_the_live_print_shape(self):
+        self.assertEqual(site.printed_header_day(LIVE_PRINT), "2026-09-13")
+        self.assertEqual(site.printed_header_day(LIVE_PRINT.replace("1 3,", "1 4,")), "2026-09-14")
+        wrong = LIVE_PRINT.replace("S E P T E M B E R", "A U G U S T")
+        self.assertEqual(site.printed_header_day(wrong), "2026-08-13")
+        # Read back from a real PDF of that shape, it binds to its own date only.
+        out = self.tmp / "x" / "2026-09-13 Spectrum Mobile Statement.pdf"
+        out.parent.mkdir()
+        self.assertEqual(site.bind_mobile(text_pdf([LIVE_PRINT]), "2026-09-13", out), "")
+        self.assertIn("header", site.bind_mobile(text_pdf([wrong]), "2026-09-13", out))
+        self.assertIn("header", site.bind_mobile(text_pdf([LIVE_PRINT]), "2026-08-13", out))
+        # "Mobile" must be its own word right after the date.
+        auto = LIVE_PRINT.replace(" Mobile ", " Automobile ")
+        self.assertIsNone(site.printed_header_day(auto))
+        self.assertIn("header", site.bind_mobile(text_pdf([auto]), "2026-09-13", out))
+        self.assertIsNone(site.printed_header_day(LIVE_PRINT.replace(" Mobile ", " Mobiles ")))
+        self.assertIsNone(site.printed_header_day(LIVE_PRINT.replace(" Mobile ", " Internet ")))
 
     def test_a_page_that_changes_while_it_prints_stops_the_run(self):
         def moves(p):

@@ -2408,30 +2408,41 @@ def expand_statement(page, day: str, dl_dir, trace=None) -> bool:
     return True
 
 
-# The printed page's header, as its text reads: "Statement Details", then
-# within a few words the statement's date, then "Mobile".
-_PRINTED_HEADER_RE = re.compile(
-    r"statement details\b.{0,80}?\b(%s) (\d{1,2}), (\d{4})\b.{0,40}?\bmobile\b" % _MONTH_WORDS.lower(),
-    re.I | re.S)
+# The printed page's header, as pypdf reads it (live print of 2026-10-13):
+# the heading is letter-spaced in print, "S E P T E M B E R 1 3, 2 0 2 6",
+# and comes first, followed by the word "Mobile". The screen's "Statement
+# Details" bar is not printed. So the date is matched with an optional
+# space between any two of its characters, and the very next word must be
+# "Mobile" on its own (never inside a longer word such as "Automobile").
+def _spaced(word: str) -> str:
+    return r"\s?".join(re.escape(c) for c in word)
+
+
+_PRINTED_DATE_RE = re.compile(
+    r"(?<![a-z0-9])(%s)\s?(\d(?:\s?\d)?)\s?,\s?(\d\s?\d\s?\d\s?\d)(?![0-9])"
+    % "|".join(_spaced(m.lower()) for m in _MONTH_WORDS.split("|")), re.I)
+_PRINTED_MOBILE_RE = re.compile(r"\s+(?:mobile|m o b i l e)(?![a-z])", re.I)
 
 
 def printed_header_day(text) -> Optional[str]:
-    """The date the printed Mobile statement's header reads, "Statement
-    Details" with the first full date after it and "Mobile" just after that,
-    as YYYY-MM-DD, or None."""
-    m = _PRINTED_HEADER_RE.search(re.sub(r"\s+", " ", str(text or "")))
-    if not m:
+    """The date the printed Mobile statement's header reads, as YYYY-MM-DD,
+    or None: the first "<MONTH> <D>, <YYYY>" in the text, in any case and
+    however letter-spaced, whose very next word is "Mobile"."""
+    flat = str(text or "")
+    m = _PRINTED_DATE_RE.search(flat)
+    if not m or not _PRINTED_MOBILE_RE.match(flat, m.end()):
         return None
+    month, day, year = (re.sub(r"\s+", "", g).lower() for g in m.groups())
     try:
-        return _date(int(m.group(3)), _MONTHS[m.group(1)[:3].lower()], int(m.group(2))).isoformat()
-    except ValueError:
+        return _date(int(year), _MONTHS[month[:3]], int(day)).isoformat()
+    except (KeyError, ValueError):
         return None
 
 
 def bind_mobile(data: bytes, day: str, out_path: Path, trace=None, own_files=()) -> str:
     """"" when a printed Mobile statement is this one's, beyond the page
     having read its date before and after the print: a PDF whose header
-    reads "Statement Details", this date and "Mobile" (printed_header_day),
+    reads this date first, with "Mobile" just after it (printed_header_day),
     whose text prints the date, and not the same file as a statement kept
     earlier in this process or a PDF already in the folder (this
     statement's own copies apart). Otherwise our own words."""
