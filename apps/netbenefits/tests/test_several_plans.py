@@ -77,6 +77,7 @@ class Page:
         self.url, self.kind = BARE, "blank"
         self.gotos, self.probes, self.made = [], [], []
         self.names = dict(NAMES)
+        self.bare_probes, self.bare_redirects = 0, False
 
     def body(self):
         if self.kind == "chooser":
@@ -134,19 +135,24 @@ class Page:
         if js == site._PROBE_JS:
             plan = plan_of(arg["path"])
             if plan is None:                       # the Statements address itself
-                return {"kind": "page", "status": 200, "form": False, "password": False, "named": False}
+                self.bare_probes += 1
+                return {"kind": "page", "status": 200, "origin": True,
+                        "redirected": self.bare_redirects, "password": False}
             self.probes.append(plan)
             how = self.behaviors.get(plan, "ok")
             if how == "retail" or not self.signed_in:
                 return {"kind": "redirect"}
-            heading = "SOMEONE ELSE PLAN" if how == "other" else self.names[plan]
+            if how == "other":                     # an answer from somewhere else on the site
+                return {"kind": "page", "status": 200, "origin": True, "redirected": True,
+                        "password": False}
             if how in ("ok", "login"):
                 self.in_context = plan
             if how == "login":
                 self.signs_out = True
-            text = "%s (%s) Statements" % (heading, plan)
-            return {"kind": "page", "status": 200, "form": True, "password": False,
-                    "named": bool(re.search(arg["heading"], text, re.I))}
+            # As live: a plain 200 at the link itself whose body is only the
+            # selector, never the Statements page, whether or not it chose.
+            return {"kind": "page", "status": 200, "origin": True, "redirected": False,
+                    "password": False}
         raise AssertionError("an unexpected script ran")
 
 
@@ -352,12 +358,24 @@ def test_a_link_that_already_shows_its_number_still_opens():
     assert site.open_plan(page, plan) == site.OPENED
 
 
-def test_a_page_that_is_not_the_plans_own_is_not_opened():
+def test_a_plan_address_answered_from_elsewhere_on_the_site_is_left():
     page = multi_page(**{PDCP: "other"})
     plans = plans_of(page)
     page.gotos.clear()
-    assert site.open_plan(page, plans[PDCP]) == site.NOT_ITS_PAGE
+    assert site.open_plan(page, plans[PDCP]) == site.REDIRECTS
     assert page.gotos == []
+
+
+def test_the_selector_answer_is_not_the_statements_page_and_the_heading_decides():
+    # The live shape: the look ahead answers 200 with the selector page and
+    # chooses the plan. The plan opens because the Statements page names it.
+    page = multi_page(remembered=P457)
+    plans = plans_of(page)
+    assert site.open_plan(page, plans[P403]) == site.OPENED
+    assert page.in_context == P403
+    # One that answers the same but is not chosen is refused by the heading.
+    page.behaviors[PDCP] = "sticky"
+    assert site.open_plan(page, plans[PDCP]) == site.DID_NOT_OPEN
 
 
 def test_a_sign_in_page_on_a_later_plan_is_session_expired():
@@ -560,3 +578,19 @@ def test_a_plan_missing_from_the_list_stops_the_run_and_fails_nothing(monkeypatc
     app.process(app._select())
     assert app.stats["plans_unlisted"] == 1 and app.stats["failed"] == 0
     assert not app.progress.data
+
+
+def test_a_statements_address_that_redirects_is_not_loaded():
+    page = multi_page()
+    plans = plans_of(page)
+    page.gotos.clear()
+    page.bare_redirects = True
+    assert site.open_plan(page, plans[PXR]) == site.REDIRECTS
+    assert page.bare_probes == 1 and page.gotos == []
+
+
+def test_the_look_ahead_compares_addresses_without_the_pages_url_constructor():
+    """The page shadows the global URL, so new URL() there throws, and the
+    script once read every plan as redirected because of it."""
+    assert "URL(" not in site._PROBE_JS
+    assert "here.origin + path" in site._PROBE_JS

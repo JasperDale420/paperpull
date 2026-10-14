@@ -480,7 +480,7 @@ OPENED = "open"
 # error's own text, which could carry the plan's ids.
 LEAVES_THE_SITE = "its address leaves the NetBenefits statements page"
 REDIRECTS = "its statements address sends you elsewhere"
-NOT_ITS_PAGE = "its address did not answer with its own Statements page"
+NOT_ITS_PAGE = "its address did not answer as a plan of this site"
 DID_NOT_OPEN = "its Statements page did not open"
 
 
@@ -521,11 +521,13 @@ _READ_CHOICES_JS = r"""() => {
 
 # Asks for a plan's address from inside the page, with the session's
 # cookies, as following the link would, and that request is what chooses
-# the plan on the site. It is a same-origin request, so a redirect within
+# the plan on the site (live, 2026-10-14: it answers 200 with the selector
+# page, not the Statements page, and the next load of the Statements
+# address shows the plan). It is a same-origin request, so a redirect within
 # this host is followed and a redirect to any other host is refused by the
 # browser before that host is asked anything. Says only what kind of
 # answer came back.
-_PROBE_JS = r"""async ({path, heading}) => {
+_PROBE_JS = r"""async ({path}) => {
   const here = location;
   if (here.protocol !== 'https:' || here.hostname !== 'workplaceservices.fidelity.com') {
     throw new Error('Refusing to look from an off-host page');
@@ -535,11 +537,12 @@ _PROBE_JS = r"""async ({path, heading}) => {
     r = await fetch(path, {credentials: 'include', mode: 'same-origin', redirect: 'follow'});
   } catch (e) { return {kind: 'redirect'}; }
   const html = await r.text();
-  const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-  return {kind: 'page', status: r.status,
-          form: /name=["']?frmRequest\b/i.test(html),
-          password: /type=["']?password\b/i.test(html),
-          named: new RegExp(heading, 'i').test(text)};
+  // Strings, not the URL constructor, which the page shadows. `path` is
+  // always a path of this host, so the address asked for is origin + path.
+  const asked = here.origin + path;
+  return {kind: 'page', status: r.status, origin: r.type === 'basic',
+          redirected: !!r.redirected || r.url !== asked,
+          password: /type=["']?password\b/i.test(html)};
 }"""
 
 # Whether the session is still signed in, by the token call the statement
@@ -739,18 +742,20 @@ def open_plan(page, plan: dict) -> str:
     """Make `plan` the one the next statement is made for. OPENED, or the
     reason it was left for the owner.
 
-    The plan's address is first asked for from inside the page, with the
-    session's cookies, as a same-origin request. A redirect to any other
-    host is refused by the browser before that host is asked anything, and
-    such a plan, or one whose address answers with anything but its own
-    Statements page, is left for the owner and never opened. If the session
-    itself is gone by then, that is SessionExpired, not a plan to review.
-    That request is expected to choose the plan on the site, so the tab
+    The plan's address is asked for from inside the page, with the
+    session's cookies, as a same-origin request, and that request is what
+    chooses the plan on the site. Its answer is the plan selector, not the
+    Statements page, so only its shape is checked: a 200 from this origin
+    at the address asked for. A redirect to any other host is refused by
+    the browser before that host is asked anything, and such a plan, or any
+    other answer, is left for the owner. If the session itself is gone by
+    then, that is SessionExpired, not a plan to review. Then the tab
     reloads the Statements address, and that page must show this plan's
     statement form and its heading, the plan's name and its number in
     brackets, or the plan is left for the owner and no statement is made.
-    The tab never loads the plan's own address. Nothing is pressed. The reason is one of the fixed words
-    above, never an address or an error's text."""
+    The tab never loads the plan's own address. Nothing is pressed. The
+    reason is one of the fixed words above, never an address or an
+    error's text."""
     if not plan.get("path"):
         return plan.get("review") or LEAVES_THE_SITE
     if not plan_ids(plan["path"]):
@@ -760,22 +765,27 @@ def open_plan(page, plan: dict) -> str:
         _settle(page)
         if not on_documents_page(page):
             raise SessionExpired("not on a signed-in workplaceservices page")
-    probe = _look_ahead(page, plan["path"], _heading_pattern(plan), plan["label"])
+    probe = _look_ahead(page, plan["path"], plan["label"])
     if probe.get("kind") == "page" and probe.get("password"):
         raise SessionExpired("NetBenefits answered a plan with its sign-in page")
+    # The answer is the plan selector, not the Statements page, so its body
+    # is not read for the plan. It must be a plain 200 from this origin at
+    # the address asked for. Whether the plan was chosen is decided by the
+    # Statements page below.
     if not (probe.get("kind") == "page" and probe.get("status") == 200
-            and probe.get("form") and probe.get("named")):
+            and probe.get("origin") is True and probe.get("redirected") is False):
         if not _signed_in(page):
             raise SessionExpired("NetBenefits signed this session out")
-        return REDIRECTS if probe.get("kind") == "redirect" else NOT_ITS_PAGE
+        return REDIRECTS if probe.get("kind") == "redirect" or probe.get("redirected") else NOT_ITS_PAGE
     # Only the Statements address is ever loaded, never the plan's own.
     # Playwright cannot refuse a redirect hop, so an address whose answer
     # could change between the look ahead and the load is not loaded.
     for address in (urlsplit(URLS["documents"]).path,):
         # It is asked for the same way first, so a day it redirects is seen
         # without following it.
-        ahead = _look_ahead(page, address, "$^", plan["label"])
-        if ahead.get("kind") != "page" or ahead.get("status") != 200 or ahead.get("password"):
+        ahead = _look_ahead(page, address, plan["label"])
+        if not (ahead.get("kind") == "page" and ahead.get("status") == 200 and not ahead.get("password")
+                and ahead.get("origin") is True and ahead.get("redirected") is False):
             if not _signed_in(page):
                 raise SessionExpired("NetBenefits signed this session out")
             return REDIRECTS
@@ -803,9 +813,9 @@ def open_plan(page, plan: dict) -> str:
     return DID_NOT_OPEN
 
 
-def _look_ahead(page, path: str, heading: str, label: str) -> dict:
+def _look_ahead(page, path: str, label: str) -> dict:
     try:
-        return page.evaluate(_PROBE_JS, {"path": path, "heading": heading}) or {}
+        return page.evaluate(_PROBE_JS, {"path": path}) or {}
     except Exception as e:
         log.info("plan %s: the look ahead failed (%s)", label, type(e).__name__)
         return {"kind": "unreachable"}
