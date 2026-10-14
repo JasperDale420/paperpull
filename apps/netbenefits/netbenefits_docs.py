@@ -74,7 +74,7 @@ class Document:
     def __init__(self, title="", category="", summary="", date="", period="",
                  href="", row_index=-1, confidence="", account="",
                  date_text="", document_id="", item_id="", client_id="",
-                 occurrence=0, **kw):
+                 occurrence=0, plan="", **kw):
         self.title = title
         self.account = account
         self.category = category
@@ -86,6 +86,9 @@ class Document:
         self.item_id = item_id          # the statement period, a hint only, re-resolved
         self.client_id = client_id      # goes with it on the content call
         self.occurrence = occurrence    # nth document with this title and date
+        # On a login with several plans, the plan's digest (never its ids).
+        # Empty for a login with one plan, whose keys stay as they were.
+        self.plan = plan
         # Sticky "was successfully downloaded at least once" marker. Once set,
         # the document is never re-downloaded even if you delete the PDF (e.g.
         # after importing it into paperless-ngx).
@@ -104,8 +107,14 @@ class Document:
     @property
     def key(self) -> str:
         """Kind, plan and period. There is no document id to store. The
-        statement is made to order from the period at download time."""
-        base = f"{self.category}:{self.date}:{sanitize_component(self.title)[:60]}"
+        statement is made to order from the period at download time. A login
+        with several plans has the plan's digest in the key too, so two plans'
+        statements for one quarter are two documents. A login with one plan
+        keeps the key it always had."""
+        if self.plan:
+            base = f"{self.category}:{self.plan}:{self.date}:{sanitize_component(self.title)[:60]}"
+        else:
+            base = f"{self.category}:{self.date}:{sanitize_component(self.title)[:60]}"
         return base if not self.occurrence else f"{base}#{self.occurrence}"
 
     def to_dict(self) -> dict:
@@ -141,6 +150,13 @@ class App:
         self.discovery.load()
         self.index_csv = CsvFile(self.paths.document_index_csv,
                                  DOCUMENT_INDEX_COLUMNS, self.paths.backups)
+        # The plans a login with several of them holds, as the Select Account
+        # page last listed them, so a later run finds them again when the
+        # site has gone back to remembering one plan. Kept beside the
+        # progress file and read by nothing else.
+        self.plans = JsonStore(self.paths.root / "plans.json", self.paths.backups)
+        self.plans.load()
+        self._plans_by_digest = {}
         self.rules = doc_types.load_rules()
 
         self._pw = None
@@ -349,14 +365,14 @@ class App:
         account = re.sub(r"\s+", " ", (d.get("account") or "")).strip()
         acct_short = re.sub(r"\b(COMBINED|ACCOUNTS?)\b", "", account, flags=re.I)
         acct_short = re.sub(r"\s+", " ", acct_short).strip()
-        if acct_short.isupper():
+        if acct_short.isupper() and not d.get("plan"):
             acct_short = acct_short.title()       # "BrokerageLink" keeps its own case
         full_summary = f"{summary} - {acct_short}" if acct_short else summary
         doc = Document(title=title, category=category, summary=full_summary,
                        date=date, confidence=confidence, account=account,
                        date_text=date, item_id=d.get("item_id", ""),
                        client_id=d.get("client_id", ""), occurrence=occurrence,
-                       href=d.get("href", ""))
+                       href=d.get("href", ""), plan=d.get("plan", ""))
         existing = self.discovery.get(doc.key)
         if existing is None:
             rec = doc.to_dict()
@@ -368,6 +384,93 @@ class App:
                                             "client_id": doc.client_id}, save=False)
         return 0
 
+
+    # -- several plans on one login ------------------------------------------
+
+    def _plan_list(self, page) -> Optional[list]:
+        """The plans of a login with several, or None for a login with one.
+
+        The Select Account page is the list, and what it lists replaces what
+        plans.json held. When the site shows a plan's Statements page at
+        once instead, as it does once a plan has been opened, the plans
+        plans.json holds are the list, each checked again. A login whose
+        records name plans while neither list is there is not taken for a
+        login with one plan, it raises PlanListUnavailable."""
+        choices = site.read_plan_choices(page)
+        if choices is not None:
+            self.plans.data.clear()
+            for plan in choices:
+                self.plans.update(plan["digest"], plan, save=False)
+            self.plans.save()
+            plans = choices
+        else:
+            plans = [p for p in (site.checked_plan(r) for r in self.plans.data.values()) if p]
+            if not plans:
+                if any(v.get("plan") for v in self.discovery.data.values()):
+                    raise site.PlanListUnavailable("records name plans the site did not list")
+                return None
+        self._plans_by_digest = {p["digest"]: p for p in plans}
+        return plans
+
+    def _say_plans_unlisted(self) -> None:
+        self.stats["plans_unlisted"] = 1
+        print("\n!! This NetBenefits login has several plans, and the site did not")
+        print("   show their list this time. Log out of NetBenefits in the open browser,")
+        print("   sign in again, then run Discover, then Resume.")
+
+    def _left_for_review(self, plan: dict, reason: str) -> None:
+        """A plan whose statements this app does not open. Said on screen,
+        counted as needing review, and noted in plans.json. No document is
+        recorded for it, since none was made."""
+        self.stats["manual_review"] += 1
+        log.warning("plan %s left for you: %s", plan["label"], reason)
+        print(f"  {plan['label']}: {reason}. Left for you to open in NetBenefits yourself.")
+        if plan["digest"] in self.plans.data:
+            self.plans.update(plan["digest"], {"last_result": reason})
+
+    def _discover_plans(self, page, plans: list) -> int:
+        """Each plan in turn, opened by its own address, then its periods
+        walked the way a login with one plan has them walked. A plan's
+        statements are recorded when that plan is done, so a sign-out on a
+        later plan keeps the earlier ones."""
+        n_new = 0
+        keep = scope.period_filter(self.args, self.config)
+        for plan in plans:
+            reason = plan.get("review") or site.open_plan(page, plan)
+            if reason != site.OPENED:
+                self._left_for_review(plan, reason)
+                continue
+            if plan["digest"] in self.plans.data:
+                self.plans.update(plan["digest"], {"last_result": reason})
+            try:
+                rows = site.collect_documents(page, keep=keep, config=self.config)
+            except site.PlanDidNotOpen as e:
+                # It opened, then would not open again partway through its
+                # periods. What it listed is not trusted, the plan is left.
+                self._left_for_review(plan, e.reason)
+                continue
+            log.info("NetBenefits, %s: %d statement period(s)", plan["label"], len(rows))
+            for r in rows:
+                r["plan"] = plan["digest"]
+                r["account"] = plan["label"]
+            for d, occ in zip(rows, _stable_occurrences(rows, self.discovery.data,
+                                                        fields=("title", "date", "plan"))):
+                n_new += self._record_statement_doc(d, occ)
+            self.discovery.save()
+        return n_new
+
+    def _plan_for(self, page, doc: "Document") -> Optional[dict]:
+        """The plan a document belongs to, or None for a login with one.
+        Looked up again when this run has not listed the plans yet, as a
+        Resume has not."""
+        if not doc.plan:
+            return None
+        if doc.plan not in self._plans_by_digest:
+            self._plan_list(page)
+        plan = self._plans_by_digest.get(doc.plan)
+        if plan is None:
+            raise site.PlanListUnavailable("a document's plan is not on the list")
+        return plan
 
     def cmd_discover(self, quiet: bool = False) -> int:
         # A listing that stops on the way, however it stops, is noted as one
@@ -384,21 +487,29 @@ class App:
                 raise SystemExit(0)
         self.check_session(page)
 
-        # The statement periods, worked out from the plan's dates. Two can
-        # share a title and a date (a quarter and its last month, say), so
-        # the nth such pair is keyed with its position.
-        raw = site.collect_documents(page, keep=scope.period_filter(self.args, self.config),
-                                     config=self.config)
-        log.info("NetBenefits: %d statement period(s)", len(raw))
+        try:
+            plans = self._plan_list(page)
+        except site.PlanListUnavailable:
+            self._say_plans_unlisted()
+            raise SystemExit(0)
         n_new = 0
-        # Which of several documents sharing a title and a date this is.
-        # The number used to follow the order the provider answered in, so
-        # if that order ever changed, the document already downloaded took
-        # the other one's number and was skipped as done while the other was
-        # fetched again beside it. A number already given now stays with the
-        # document it was given to.
-        for d, occ in zip(raw, _stable_occurrences(raw, self.discovery.data)):
-            n_new += self._record_statement_doc(d, occ)
+        if plans is not None:
+            n_new += self._discover_plans(page, plans)
+        else:
+            # The statement periods, worked out from the plan's dates. Two can
+            # share a title and a date (a quarter and its last month, say), so
+            # the nth such pair is keyed with its position.
+            raw = site.collect_documents(page, keep=scope.period_filter(self.args, self.config),
+                                         config=self.config)
+            log.info("NetBenefits: %d statement period(s)", len(raw))
+            # Which of several documents sharing a title and a date this is.
+            # The number used to follow the order the provider answered in, so
+            # if that order ever changed, the document already downloaded took
+            # the other one's number and was skipped as done while the other was
+            # fetched again beside it. A number already given now stays with the
+            # document it was given to.
+            for d, occ in zip(raw, _stable_occurrences(raw, self.discovery.data)):
+                n_new += self._record_statement_doc(d, occ)
         self.discovery.save()
         # The whole list is in, and only now may a Resume that carries on
         # from it call the run finished (paperpull_core.listing).
@@ -430,7 +541,12 @@ class App:
         docs = [d for d in docs if self._in_scope(d)]
         docs.sort(key=lambda d: d.date or "0000", reverse=True)
         limit = limit if limit is not None else self.args.max_docs
-        return docs[:limit] if limit else docs
+        docs = docs[:limit] if limit else docs
+        # A login with several plans takes one plan's statements together,
+        # newest first, since opening a plan is a page load of its own. With
+        # one plan every plan is "" and the order is the one above.
+        docs.sort(key=lambda d: d.plan)
+        return docs
 
     def _already_done(self, doc: Document) -> bool:
         """Skip documents already handled. A document that was successfully
@@ -506,6 +622,12 @@ class App:
                 # through the rest producing empty "manual review" entries.
                 print("Stopped. Everything downloaded so far is saved.")
                 return
+            except site.PlanListUnavailable:
+                # Every document after this one belongs to a plan that cannot
+                # be opened either, so none is marked failed. They wait.
+                self._say_plans_unlisted()
+                print("Stopped. Everything downloaded so far is saved.")
+                return
             except Exception as e:
                 log.exception("Failed on %s", doc.key)
                 self._record(doc, State.FAILED, notes=str(e))
@@ -542,7 +664,8 @@ class App:
                                            item_hint=doc.item_id,
                                            client_hint=doc.client_id,
                                            occurrence=doc.occurrence,
-                                           account=doc.account)
+                                           account=doc.account,
+                                           plan=self._plan_for(page, doc))
         except site.SessionExpired:
             # Stop the whole run. Continuing would file every remaining
             # document as "manual review" and finish looking successful while
@@ -869,6 +992,13 @@ class App:
                 info["collected"] = "%s: %s" % (type(e).__name__, e)
                 docs = []
             info["collected"] = len(docs)
+            try:
+                choices = site.read_plan_choices(page)
+                info["plans"] = None if choices is None else {
+                    "listed": len(choices),
+                    "left_for_review": sum(1 for p in choices if not p["path"])}
+            except Exception as e:
+                info["plans"] = type(e).__name__
             info["samples"] = []
             for d in docs[:12]:
                 cat, summ, _ = doc_types.classify_document(d.get("title", ""), self.rules)
@@ -1038,7 +1168,7 @@ def main(argv=None):
     # A run that saved nothing must not look like a clean run. Previously any
     # outcome returned 0, so an expired session or a failed discovery ended
     # with a success code and only a log line to show for it.
-    if app.stats.get("session_expired"):
+    if app.stats.get("session_expired") or app.stats.get("plans_unlisted"):
         return 2
     if app.stats.get("failed") or app.stats.get("manual_review"):
         return 1

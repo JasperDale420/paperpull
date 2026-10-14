@@ -7,6 +7,26 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Fixed
+- **Fidelity NetBenefits adds support for a sign-in with several employers
+  and plans.** With more than one plan, the Statements page first asks which
+  account, and the app read that page as an empty Statements page and found
+  nothing. It now reads the plans that page lists, chooses each plan with a
+  request from inside the page that follows no redirect, checks the
+  Statements page then shows that plan, and saves its statements under the
+  plan's name, as in `2026-06-30 NetBenefits Quarterly Statement - ABC 457(b)
+  Plan.pdf`. Nothing on the site is pressed, not the page's Go button and
+  not the employer chooser, which would change a saved preference. A plan
+  whose address sends you to another Fidelity site, as one plan's did to the
+  Fidelity retail sign-in, is left for you to open yourself and never
+  followed, and a sign-out partway stops the run and keeps what it saved.
+  Plan and employer numbers are kept out of file names and diagnostics. A
+  sign-in with one plan works exactly as before, with the same file names
+  and records. The several-plans path was built from a read-only survey of
+  one sign-in, and a live run on it is still pending.
+
 ## [0.51.0] - 2026-10-14
 
 Alpaca arrives, statements and trade confirmations from a Live brokerage

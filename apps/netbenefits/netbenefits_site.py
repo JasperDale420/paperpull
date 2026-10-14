@@ -37,6 +37,24 @@ STATUS, mapped 2026-09-18 against a signed-in session.
   IDENTITY is period kind + period end date + plan name. The page's own
   plan number is not part of any filename.
 
+  SEVERAL PLANS, surveyed read-only 2026-10-14 on a login with two
+  employers and four plans. With no plan chosen, the Statements address
+  shows a "Select Account" page instead ("The page you've chosen requires
+  you to select an account."), a select named accountSelect whose options
+  are the plan names, each valued with that plan's own Statements address
+  (OnlineStatement?&client=<digits>&plan=<digits>), and a Go button that
+  only navigates to the chosen value. The app reads the options and never
+  presses Go. The tab never navigates to a plan's address. The address is
+  asked for from inside the page without following a redirect, which is
+  what chooses the plan on the site, and then the Statements address is
+  reloaded and must show that plan's Statements page by its form and its
+  heading. One plan on the surveyed login sent its address to the Fidelity
+  retail sign-in on digital.fidelity.com, so a plan whose address
+  redirects is left for the owner and never followed. The site remembers
+  the plan last chosen, and the statement request makes that plan's
+  statement. The employer chooser and its Continue, which change a saved
+  preference, are never used.
+
 SAFETY (this is a retirement account):
   Strictly READ-ONLY. NetBenefits can change contributions, move money
   between investments, take a loan or a withdrawal, and change
@@ -48,8 +66,10 @@ SAFETY (this is a retirement account):
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
+import time
 from datetime import date as _date
 from pathlib import Path
 from typing import List, Optional
@@ -62,6 +82,7 @@ from paperpull_core.controls import escape_for_locator
 # lives in core because seventeen apps each had their own copy and
 # they drifted into three different versions.
 from paperpull_core.redact import redact, set_private_words  # noqa: F401
+from paperpull_core.redact import private_words
 from paperpull_core.urls import is_safe_url as _host_allows
 from paperpull_core.api_census import shape_of as _shape
 from paperpull_core.dates import checked as _checked_date
@@ -292,13 +313,21 @@ _MAKE_JS = """async ({tokenPath, statementPath, dateRange, want}) => {
   if (here.protocol !== 'https:' || here.hostname !== 'workplaceservices.fidelity.com') {
     throw new Error('Refusing to make a statement from an off-host page');
   }
-  const tr = await fetch(tokenPath, {credentials: 'include', headers: {'Accept': 'application/json'}, redirect: 'error'});
+  // A redirect is refused, and a refused redirect here is the site
+  // sending a signed-out session to its sign-in page.
+  let tr;
+  try {
+    tr = await fetch(tokenPath, {credentials: 'include', headers: {'Accept': 'application/json'}, redirect: 'error'});
+  } catch (e) { return {status: 0, stage: 'token', signedOut: true}; }
   if (tr.status !== 200) return {status: tr.status, stage: 'token'};
   const tj = await tr.json();
   const body = new URLSearchParams({txntoken: tj.txnTokenValue || '', sodReqIndicator: 'HACK',
                                     dateRange: dateRange, ytdDateRange: '', sodPreview: 'N', consentReq: 'N'});
-  const r = await fetch(statementPath, {method: 'POST', credentials: 'include', redirect: 'error',
-                        headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body.toString()});
+  let r;
+  try {
+    r = await fetch(statementPath, {method: 'POST', credentials: 'include', redirect: 'error',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body.toString()});
+  } catch (e) { return {status: 0, stage: 'statement', signedOut: true}; }
   const html = await r.text();
   const title = (html.match(/<title>([^<]*)<\\/title>/i) || [, ''])[1].trim();
   const period = (html.match(/Statement Period:\\s*([0-9\\/]+\\s+to\\s+[0-9\\/]+)/) || [, ''])[1];
@@ -330,9 +359,20 @@ _last_navigation = {"at": 0.0}
 
 
 def _keep_awake(page) -> None:
-    import time
     now = time.monotonic()
     if now - _last_navigation["at"] < KEEP_AWAKE_SECONDS:
+        return
+    plan = _plan_in_use.get("plan")
+    if plan:
+        # On a login with several plans the plan is chosen again and the
+        # reload must show it, so the plan the next statement is made for
+        # stays the one this run opened. A plan that no longer comes back
+        # is PlanDidNotOpen, never a statement filed under the wrong
+        # plan's name.
+        _last_navigation["at"] = now
+        reason = open_plan(page, plan)
+        if reason != OPENED:
+            raise PlanDidNotOpen(reason)
         return
     try:
         page.goto(URLS["documents"], wait_until="domcontentloaded", timeout=30000)
@@ -357,6 +397,13 @@ def make_statement(page, date_range: str, want_html: bool = False) -> dict:
     _keep_awake(page)
     if not on_documents_page(page):
         raise SessionExpired("the Statements page did not come back on its own host, sign in again")
+    plan = _plan_in_use.get("plan")
+    if plan and not _shows_plan(page, plan):
+        # The tab no longer shows the plan this run chose, so the site may
+        # make another plan's statement. It is chosen again first.
+        reason = open_plan(page, plan)
+        if reason != OPENED:
+            raise PlanDidNotOpen(reason)
     args = {"tokenPath": TOKEN_PATH, "statementPath": STATEMENT_PATH,
             "dateRange": date_range, "want": "html" if want_html else ""}
     try:
@@ -374,6 +421,8 @@ def make_statement(page, date_range: str, want_html: bool = False) -> dict:
             raise SessionExpired("the Statements page did not come back, sign in again")
         res = page.evaluate(_MAKE_JS, args)
     status = res.get("status")
+    if res.get("signedOut") is True:
+        raise SessionExpired("NetBenefits redirected the %s request, sign in again" % res.get("stage"))
     if status in (401, 403):
         raise SessionExpired("NetBenefits answered %s" % status)
     if status != 200:
@@ -387,6 +436,301 @@ def plan_label(heading: str) -> str:
     s = re.sub(r"\(\s*\d+\s*\)", "", heading or "")
     s = re.sub(r"\s+", " ", s).strip()
     return s.title() if s.isupper() else s
+
+
+# -- several plans on one login ------------------------------------------------------
+
+# The only address a plan's option may carry. Relative, so it stays on
+# this host, and nothing after the two ids.
+PLAN_PATH_RE = re.compile(
+    r"^/mybenefits/savings2/navigation/dc/OnlineStatement\?&?client=(\d{1,15})&plan=(\d{1,15})$")
+
+OPENED = "open"
+
+# Why a plan was left for the owner. Fixed words, never an address or an
+# error's own text, which could carry the plan's ids.
+LEAVES_THE_SITE = "its address leaves the NetBenefits statements page"
+REDIRECTS = "its statements address sends you elsewhere"
+NOT_ITS_PAGE = "its address did not answer with its own Statements page"
+DID_NOT_OPEN = "its Statements page did not open"
+
+
+class PlanListUnavailable(RuntimeError):
+    """This login has several plans and the site did not show their list."""
+
+
+class PlanDidNotOpen(RuntimeError):
+    """A plan that opened earlier in the run would not open again. `reason`
+    is one of the fixed words above."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+# What the plan last opened is, so the reload that keeps the session awake
+# goes back to it and a statement is never made for another one.
+_plan_in_use: dict = {"plan": None}
+
+_READ_CHOICES_JS = r"""() => {
+  const sel = document.querySelector("select[name='accountSelect']");
+  const text = (document.body && document.body.innerText) || '';
+  if (!sel || !/requires you to select an account/i.test(text)) return null;
+  return Array.from(sel.options).map(o => ({
+    text: (o.textContent || '').replace(/\s+/g, ' ').trim(),
+    value: o.getAttribute('value') || '', disabled: !!o.disabled}));
+}"""
+
+# Asks for a plan's address from inside the page, with the session's
+# cookies, as the Go button's navigation would, and that request is what
+# chooses the plan on the site. It refuses to follow a redirect, so an
+# address that sends the browser to another site is seen without going
+# there. Says only what kind of answer came back.
+_PROBE_JS = r"""async ({path, heading}) => {
+  const here = location;
+  if (here.protocol !== 'https:' || here.hostname !== 'workplaceservices.fidelity.com') {
+    throw new Error('Refusing to look from an off-host page');
+  }
+  let r;
+  try {
+    r = await fetch(path, {credentials: 'include', redirect: 'manual'});
+  } catch (e) { return {kind: 'unreachable'}; }
+  if (r.type === 'opaqueredirect' || (r.status >= 300 && r.status < 400)) return {kind: 'redirect'};
+  const html = await r.text();
+  const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  return {kind: 'page', status: r.status,
+          form: /name=["']?frmRequest\b/i.test(html),
+          password: /type=["']?password\b/i.test(html),
+          named: new RegExp(heading, 'i').test(text)};
+}"""
+
+# Whether the session is still signed in, by the token call the statement
+# request makes anyway.
+_SIGNED_IN_JS = """async ({tokenPath}) => {
+  try {
+    const r = await fetch(tokenPath, {credentials: 'include', headers: {'Accept': 'application/json'}, redirect: 'error'});
+    if (r.status !== 200) return false;
+    const j = await r.json();
+    return !!(j && j.txnTokenValue);
+  } catch (e) { return false; }
+}"""
+
+_SMALL_WORDS = {"of", "and", "the", "for", "to", "in", "at", "on"}
+_NOT_INITIALS = {"inc", "co", "ltd", "llp"}
+
+
+def option_label(text: str) -> str:
+    """A plan's name as the Select Account page gives it, ready for a filename.
+
+    'ABC 457(B) PLAN' becomes 'ABC 457(b) Plan' and 'NORTH-STAR MEDICAL GROUP'
+    becomes 'North-Star Medical Group'. A number in brackets is dropped, as
+    plan_label drops it. Words of two or three capitals stay capitals,
+    since a plan's name is full of initials, and a letter in brackets is
+    the tax code's own, written small."""
+    s = re.sub(r"\(\s*\d+\s*\)", "", text or "")
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s.isupper():
+        return s
+    out = []
+    for i, word in enumerate(s.split(" ")):
+        letters = re.sub(r"[^A-Za-z]", "", word)
+        if i and word.lower() in _SMALL_WORDS:
+            out.append(word.lower())
+        elif "-" not in word and 2 <= len(letters) <= 3 and letters.isalpha() \
+                and letters.lower() not in _NOT_INITIALS and letters == word:
+            out.append(word)
+        else:
+            out.append("-".join(part.capitalize() for part in word.split("-")))
+    return " ".join(out)
+
+
+def plan_digest(client: str, plan: str) -> str:
+    """What a plan is known by in this app's records. The whole SHA-256 of
+    its two ids, so two plans never share one and neither id is written."""
+    return hashlib.sha256(("%s:%s" % (client, plan)).encode("ascii")).hexdigest()
+
+
+def _keep_private(ids) -> None:
+    words = set(private_words())
+    new = {i for i in ids if i} - words
+    if new:
+        set_private_words(sorted(words | new))
+
+
+def plan_from_option(text: str, value: str) -> Optional[dict]:
+    """One plan from one option of the Select Account page.
+
+    None for a placeholder, an option with no name or no value. A value that
+    is not this site's own Statements address for a client and a plan makes
+    a plan with no address, which is left for the owner and never opened."""
+    label = option_label(text)
+    value = (value or "").strip()
+    if not label or not value:
+        return None
+    m = PLAN_PATH_RE.match(value)
+    if not m:
+        digest = hashlib.sha256(("label:" + label).encode("utf-8")).hexdigest()
+        return {"label": label, "digest": digest, "path": "", "heading": text, "review": LEAVES_THE_SITE}
+    _keep_private(m.groups())
+    # A name that carries one of the plan's own numbers loses it, so it
+    # never reaches a filename or a log.
+    for number in sorted(set(m.groups()), key=len, reverse=True):
+        label = re.sub(r"\s+", " ", label.replace(number, "")).strip(" -")
+    return {"label": label or "Plan", "digest": plan_digest(*m.groups()), "path": value, "heading": text}
+
+
+def checked_plan(rec: dict) -> Optional[dict]:
+    """A plan read back from this app's own list of plans, or None when it
+    is not one this app would have written. Its address must still be this
+    site's Statements address, and its digest must be that address's."""
+    if not isinstance(rec, dict) or not rec.get("label") or not rec.get("digest"):
+        return None
+    path = rec.get("path") or ""
+    plan = {"label": rec["label"], "digest": rec["digest"], "path": path,
+            "heading": rec.get("heading") or rec["label"],
+            "shared_name": bool(rec.get("shared_name"))}
+    if not path:
+        plan["review"] = rec.get("review") or LEAVES_THE_SITE
+        return plan
+    m = PLAN_PATH_RE.match(path)
+    if not m or plan_digest(*m.groups()) != rec["digest"]:
+        return None
+    _keep_private(m.groups())
+    return plan
+
+
+def _settle(page) -> None:
+    for _ in range(20):
+        if on_documents_page(page):
+            break
+        page.wait_for_timeout(750)
+
+
+def read_plan_choices(page) -> Optional[List[dict]]:
+    """The plans this login holds, from the Select Account page, or None
+    when the Statements address shows no such page.
+
+    The bare Statements address is always opened afresh, so a page left on
+    some plan from before is not taken for the whole list. Every option is
+    read, nothing is pressed. A placeholder option is skipped and two
+    options for one plan are one plan."""
+    # Whatever plan was open may not be once this page has loaded.
+    _plan_in_use["plan"] = None
+    page.goto(URLS["documents"], wait_until="domcontentloaded", timeout=30000)
+    _settle(page)
+    if looks_signed_out(page):
+        raise SessionExpired("NetBenefits showed its sign-in page, sign in again")
+    raw = page.evaluate(_READ_CHOICES_JS)
+    if not isinstance(raw, list):
+        # The script answers a list only on the Select Account page.
+        return None
+    plans, seen = [], set()
+    for o in raw:
+        if o.get("disabled"):
+            continue
+        plan = plan_from_option(o.get("text") or "", o.get("value") or "")
+        if plan is None or plan["digest"] in seen:
+            continue
+        seen.add(plan["digest"])
+        plans.append(plan)
+    if not plans:
+        raise PlanListUnavailable("the Select Account page listed no plan")
+    names = [p["heading"].upper() for p in plans]
+    for p in plans:
+        p["shared_name"] = names.count(p["heading"].upper()) > 1
+    log.info("NetBenefits lists %d plan(s), %d left for the owner",
+             len(plans), sum(1 for p in plans if not p["path"]))
+    return plans
+
+
+def _heading_pattern(plan: dict) -> str:
+    """The plan's heading on its Statements page, its name and then its
+    number in brackets, as in 'ABC 457(B) PLAN (12345)'. When two plans on
+    the login share a name, the number must be this plan's own, from its
+    address, since the name alone would take one for the other."""
+    name = re.sub(r"\(\s*\d+\s*\)", "", plan.get("heading") or plan["label"])
+    name = re.sub(r"\s+", " ", name).strip()
+    number = r"\d+"
+    m = PLAN_PATH_RE.match(plan.get("path") or "")
+    if plan.get("shared_name") and m:
+        number = re.escape(m.group(2))
+    return re.escape(name).replace("\\ ", " ") + r"\s*\(\s*" + number + r"\s*\)"
+
+
+def _shows_plan(page, plan: dict) -> bool:
+    try:
+        if page.locator("form[name='frmRequest']").count() == 0:
+            return False
+        text = re.sub(r"\s+", " ", page.locator("body").inner_text(timeout=5000) or "")
+    except Exception:
+        return False
+    return bool(re.search(_heading_pattern(plan), text, re.I))
+
+
+def _signed_in(page) -> bool:
+    try:
+        return bool(page.evaluate(_SIGNED_IN_JS, {"tokenPath": TOKEN_PATH}))
+    except Exception:
+        return False
+
+
+def open_plan(page, plan: dict) -> str:
+    """Make `plan` the one the next statement is made for. OPENED, or the
+    reason it was left for the owner.
+
+    The tab never navigates to the plan's own address. That address is
+    asked for from inside the page, with the session's cookies and without
+    following a redirect, which is the request that chooses the plan on the
+    site. An address that redirects, or that answers with anything but this
+    plan's own Statements page, chooses nothing that is used. If the
+    session itself is gone by then, that is SessionExpired, not a plan to
+    review. Then the tab reloads the Statements address, which stays on
+    this host, and it must show this plan's Statements page by its form
+    and its heading, or the plan is left for the owner. Nothing is pressed.
+    The reason is one of the fixed words above, never an address or an
+    error's text."""
+    if not plan.get("path"):
+        return plan.get("review") or LEAVES_THE_SITE
+    if not PLAN_PATH_RE.match(plan["path"]):
+        return LEAVES_THE_SITE
+    _plan_in_use["plan"] = None
+    if not on_documents_page(page):
+        _settle(page)
+        if not on_documents_page(page):
+            raise SessionExpired("not on a signed-in workplaceservices page")
+    try:
+        probe = page.evaluate(_PROBE_JS, {"path": plan["path"], "heading": _heading_pattern(plan)})
+    except Exception as e:
+        log.info("plan %s: the look ahead failed (%s)", plan["label"], type(e).__name__)
+        probe = {"kind": "unreachable"}
+    if probe.get("kind") == "page" and probe.get("password"):
+        raise SessionExpired("NetBenefits answered a plan with its sign-in page")
+    if not (probe.get("kind") == "page" and probe.get("status") == 200
+            and probe.get("form") and probe.get("named")):
+        if not _signed_in(page):
+            raise SessionExpired("NetBenefits signed this session out")
+        return REDIRECTS if probe.get("kind") == "redirect" else NOT_ITS_PAGE
+    # The Statements address is asked for the same way before the tab
+    # reloads it, so a day it redirects is seen without following it.
+    try:
+        bare = page.evaluate(_PROBE_JS, {"path": urlsplit(URLS["documents"]).path, "heading": "$^"})
+    except Exception as e:
+        log.info("the look ahead at the Statements page failed (%s)", type(e).__name__)
+        bare = {"kind": "unreachable"}
+    if bare.get("kind") != "page" or bare.get("status") != 200 or bare.get("password"):
+        raise SessionExpired("the Statements address did not answer on its own host, sign in again")
+    try:
+        page.goto(URLS["documents"], wait_until="domcontentloaded", timeout=30000)
+    except Exception as e:
+        log.info("plan %s: reloading the Statements page failed (%s)", plan["label"], type(e).__name__)
+    _settle(page)
+    if looks_signed_out(page) or not on_documents_page(page):
+        raise SessionExpired("NetBenefits did not come back on its Statements page, sign in again")
+    if not _shows_plan(page, plan):
+        return DID_NOT_OPEN
+    _plan_in_use["plan"] = plan
+    _last_navigation["at"] = time.monotonic()
+    return OPENED
 
 
 def collect_documents(page, keep=None, config: Optional[dict] = None) -> List[dict]:
@@ -414,9 +758,19 @@ def collect_documents(page, keep=None, config: Optional[dict] = None) -> List[di
 
 
 def download_document(page, title: str, date: str, out_path: Path, occurrence: int = 0,
-                      item_hint: str = "", client_hint: str = "", account: str = "") -> bool:
-    """Make the statement for this period again and render it to PDF."""
+                      item_hint: str = "", client_hint: str = "", account: str = "",
+                      plan: Optional[dict] = None) -> bool:
+    """Make the statement for this period again and render it to PDF.
+
+    On a login with several plans, `plan` is the one this statement belongs
+    to, and it is opened first unless it is the one already open. A plan
+    that will not open saves nothing and answers False."""
     from paperpull_core import receipt_pdf
+    if plan and (_plan_in_use.get("plan") or {}).get("digest") != plan.get("digest"):
+        reason = open_plan(page, plan)
+        if reason != OPENED:
+            log.warning("%s %s: the plan %s did not open (%s)", title, date, plan.get("label"), reason)
+            return False
     date_range = item_hint
     if not date_range:
         kind = client_hint or "quarterly"
@@ -425,7 +779,12 @@ def download_document(page, title: str, date: str, out_path: Path, occurrence: i
             log.warning("no period for %s %s", title, date)
             return False
         date_range = match["range"]
-    res = make_statement(page, date_range, want_html=True)
+    try:
+        res = make_statement(page, date_range, want_html=True)
+    except PlanDidNotOpen as e:
+        log.warning("%s %s: the plan %s did not open again (%s)", title, date,
+                    (plan or {}).get("label"), e.reason)
+        return False
     if not res.get("isStatement"):
         log.warning("%s %s: the site made no statement (%s)", title, date, res.get("title"))
         return False

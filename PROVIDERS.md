@@ -51,7 +51,7 @@ telecoms, payroll systems, and retailers real people actually use.
 | [`myecp`](apps/myecp) | MILITARY STAR card (MyECP, Exchange Credit Program) | Monthly card statements, the three and a half years MyECP keeps online. Built on the maintainer's own account, 25 statements | Card |
 | [`mypay`](apps/mypay) | DFAS myPay | eRAS, CRSC, 1099-R, 1095 | Government pay system; JSON API, nothing clicked |
 | [`mtb`](apps/mtb) | M&T Bank | Mortgage statements, escrow, 1098 | Mortgage servicing |
-| [`netbenefits`](apps/netbenefits) | Fidelity NetBenefits | Quarterly or monthly 401(k) statements, made to order and rendered; nothing clicked | Workplace retirement plan |
+| [`netbenefits`](apps/netbenefits) | Fidelity NetBenefits | Quarterly or monthly 401(k) statements for every plan on the sign-in, made to order and rendered; nothing clicked | Workplace retirement plan |
 | [`navyfederal`](apps/navyfederal) | Navy Federal CU | Account statements | Bank / credit union |
 | [`nelnet`](apps/nelnet) | Nelnet | Student loan billing statements and the 1098-E, from a federal student loan servicer. Contributed by @tylerverry. A full run saved all 47 documents, 41 statements back to 2019, the 1098-E and 5 notices, every one a valid PDF | Student loan servicer |
 | [`newrez`](apps/newrez) | Newrez | Mortgage statements, escrow analysis, 1098. Confirmed by @watling777, whose run saved every document, three years of statements through the statements page's year picker and the 1098s (#38) | Mortgage servicer |
