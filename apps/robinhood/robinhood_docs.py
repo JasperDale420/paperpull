@@ -231,7 +231,9 @@ def _clear(path) -> None:
 
 # Fewer characters than this say too little to tell one account's statement
 # from another's, a page number or a logo's words, and give no text digest.
-MIN_TEXT_FOR_DIGEST = 200
+# The digest reads every page, and a real HTML month's first page alone is
+# some 170 characters, its address, period and masked account.
+MIN_TEXT_FOR_DIGEST = 120
 
 
 def _text_sha256(path) -> str:

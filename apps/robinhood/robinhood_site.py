@@ -1389,22 +1389,53 @@ def _month_and_year(date: str):
     return None
 
 
+# A range printed bare, as Robinhood prints an HTML month's period under its
+# address with no label: "01/01/2026 to 01/31/2026".
+_BARE_RANGE_RE = re.compile(
+    r"(?<![\d/])(\d{1,2})/(\d{1,2})/(\d{4})\s*(?:-|\u2013|\u2014|to)\s*(\d{1,2})/(\d{1,2})/(\d{4})(?!\d)",
+    re.I)
+# A word on the line before a bare range that says it is some other range,
+# read as a word's start so "Transactions" or "Trades" is one too.
+_BARE_LABEL_RE = re.compile(
+    r"\b(?:%s|date|opening|closing|printed|created|issued)" % _OTHER_LABEL, re.I)
+
+
+def _whole_months(text: str) -> set:
+    """The (month, year) of each bare range on its own that spans exactly
+    one calendar month, the 1st to the month's last day, with no label word
+    before it on its line."""
+    import calendar
+    found = set()
+    for m in _BARE_RANGE_RE.finditer(text or ""):
+        line = text[text.rfind("\n", 0, m.start()) + 1:m.start()]
+        if _BARE_LABEL_RE.search(line):
+            continue
+        sm, sd, sy, em, ed, ey = (int(g) for g in m.groups())
+        if not (sy == ey and sm == em and 1 <= sm <= 12 and sd == 1):
+            continue
+        if ed == calendar.monthrange(sy, sm)[1]:
+            found.add((sm, str(sy)))
+    return found
+
+
 def names_month(text: str, month_word: str, year: str) -> bool:
     """Whether `text` prints a statement period that ends in the month
     `month_word` of `year`. The end is the second date of a range printed
     under "period" or "statement", "Statement period 01/01/2026 to
     01/31/2026" or "Period: January 1, 2026 - January 31, 2026", or the date
-    after "period ending" or "statement ended". A date on its own, or a
-    range under another label, is not read, since a page of February can
-    print trade dates or an opening balance of January, and the day it was
-    made."""
+    after "period ending" or "statement ended". A range printed bare, as an
+    HTML month prints its period, counts when it is that whole month, the
+    1st to the last day, with no label word before it on its line, and every
+    such range on the page is that month. A date on its own, or a range under
+    another label, is not read, since a page of February can print trade
+    dates or an opening balance of January, and the day it was made."""
     number = _MONTH_NUMBERS.get((month_word or "")[:3].lower())
     if not number:
         return False
     for m in _PERIOD_END_RE.finditer(text or ""):
         if _month_and_year(m.group(1) or m.group(2)) == (number, year):
             return True
-    return False
+    return _whole_months(text) == {(number, year)}
 
 
 def _first_page_text(path) -> str:

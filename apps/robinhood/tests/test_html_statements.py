@@ -254,11 +254,40 @@ def test_the_month_check_wants_a_printed_period_ending_in_the_month():
     assert site.names_month("Period ended 09/30/2026", "September", "2026")
     assert site.names_month("Statement period Sept. 1, 2026 - Sept. 30, 2026", "September", "2026")
     assert not site.names_month("", "January", "2026")
-    assert not site.names_month("01/01/2026 - 01/31/2026", "January", "2026"), "a range with no label"
+    assert not site.names_month("01/05/2026 - 01/31/2026", "January", "2026"), "bare, not the whole month"
+    assert not site.names_month("01/01/2026 - 01/30/2026", "January", "2026"), "bare, not the whole month"
     assert not site.names_month("Period 12/01/2024 to 12/31/2024", "December", "2025"), "wrong year"
     assert not site.names_month("Period 02/01/2026 to 02/28/2026", "January", "2026"), "wrong month"
     assert not site.names_month("Period 01/01/2026 to 02/28/2026", "January", "2026"), "the end is what counts"
     assert not site.names_month("Decrease 12/31/2025", "December", "2025"), "a date alone is no period"
+
+
+# Page 1 of real HTML months as rendered, the address and account made up.
+LIVE_JANUARY = ("1 Example Plaza, Suite 100, Example City, ZZ 00000 help@robinhood.com "
+                "01/01/2026 to 01/31/2026 # # Individual Account #:00000 1 Invented Street")
+LIVE_FEBRUARY = ("1 Example Plaza, Suite 100, Example City, ZZ 00000 help@robinhood.com "
+                 "02/01/2026 to 02/28/2026 # # Individual Account #:00000 1 Invented Street")
+
+
+def test_a_bare_whole_month_range_is_the_period_of_an_html_month():
+    """An HTML month prints its period bare under the address, no label."""
+    assert site.names_month(LIVE_JANUARY, "January", "2026")
+    assert site.names_month(LIVE_FEBRUARY, "February", "2026")
+    assert not site.names_month(LIVE_FEBRUARY, "January", "2026")
+    assert not site.names_month(LIVE_JANUARY, "February", "2026")
+    assert site.names_month("01/01/2026 - 01/31/2026", "Jan", "2026")
+
+
+def test_bare_ranges_that_disagree_name_no_month():
+    """Two whole-month ranges of different months on one page, and neither
+    is labelled: nothing says which is the statement's."""
+    text = "01/01/2026 to 01/31/2026\n02/01/2026 to 02/28/2026"
+    assert not site.names_month(text, "January", "2026")
+    assert not site.names_month(text, "February", "2026")
+    # A labelled range of another kind is not counted against it.
+    text = LIVE_FEBRUARY + "\nTrade dates 01/01/2026 to 01/31/2026"
+    assert site.names_month(text, "February", "2026")
+    assert not site.names_month(text, "January", "2026")
 
 
 @pytest.mark.parametrize("text", [
@@ -269,6 +298,10 @@ def test_the_month_check_wants_a_printed_period_ending_in_the_month():
     "as of 2026-01-31",
     "Period 12/01/2025 to 12/31/2025  Trade date 01/02/2026",
     "Trade dates 01/01/2026 to 01/31/2026",
+    "Transactions 01/01/2026 to 01/31/2026",
+    "Trades 01/01/2026 - 01/31/2026",
+    "Dated 01/01/2026 to 01/31/2026",
+    "Closing 01/01/2026 to 01/31/2026",
     "Statement of activity, trade dates 01/01/2026 to 01/31/2026",
     "Generated 01/01/2026 to 01/31/2026",
     "Statement balance as of 01/01/2026 - 01/31/2026",

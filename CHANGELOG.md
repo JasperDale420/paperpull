@@ -16,7 +16,8 @@ All notable changes to PaperPull are recorded here. Versioning follows
   for manual review on every run. They are now rendered to PDF through
   PaperPull's own print path, drawn in a separate browser context with
   JavaScript off and no connection to anything, and kept only when the PDF's
-  first page prints a statement period ending in that month. A record
+  first page prints that month's statement period, labelled or, as an HTML
+  month prints it, bare and spanning the whole month. A record
   listed under the old title moves under the cleaned one, keeping whichever
   of two is done, so nothing is downloaded twice. The page is stripped of
   anything active until nothing more comes out, and refused when a tag

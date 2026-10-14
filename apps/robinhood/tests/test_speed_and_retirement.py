@@ -545,10 +545,9 @@ def test_a_retirement_statement_rendered_again_from_the_individual_html_is_refus
     statement's HTML is still caught, by the digest of the PDF's text, and
     this holds after the individual file is deleted."""
     app = _app(tmp_path)
-    same = ["Robinhood Securities LLC", "Account statement", "January 2010",
-            "Invented Investing LLC, 1 Example Way, Example City",
-            "Period 01/01/2010 to 01/31/2010, opening and closing balances",
-            "Portfolio value, cash, securities, dividends and interest"]
+    # As short as a real HTML month's first page, which is all it holds.
+    same = ["1 Example Plaza, Suite 100, Example City, ZZ 00000 help@robinhood.com",
+            "01/01/2010 to 01/31/2010 # # Individual Account #:00000 1 Invented Street"]
     assert len(" ".join(same)) >= robinhood_docs.MIN_TEXT_FOR_DIGEST
     stamp = iter(range(1, 10))
 
