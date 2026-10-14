@@ -523,3 +523,26 @@ def test_a_split_or_plain_active_tag_reaches_nothing_in_a_real_render(tmp_path, 
     finally:
         srv.shutdown()
     assert hits == [], hits
+
+
+def test_a_hostile_page_is_stripped_and_read_in_linear_time():
+    """A run of whitespace after "<" or "href=", a page of unclosed head
+    tags, and a first page with no newline each took between 12 and 82
+    seconds before the review's fix, and well under one second after. The
+    bound is generous so a slow machine does not trip it."""
+    import time
+    for html in ("<" + " " * 40000 + "x",
+                 "<" + " " * 20000 + "/" + " " * 20000 + "x",
+                 "href=" + " " * 40000 + "x",
+                 "<head" * 200000):
+        t0 = time.perf_counter()
+        try:
+            receipt_pdf.inert_html(html, "https://robinhood.com/")
+        except Exception:
+            pass
+        assert time.perf_counter() - t0 < 5, html[:12]
+    page = "Statement " + "01/01/2026 to 01/31/2026 x " * 12000
+    t0 = time.perf_counter()
+    site._whole_months(page)
+    assert time.perf_counter() - t0 < 5
+    assert site._whole_months("Account\n01/01/2026 - 01/31/2026\n") == {(1, "2026")}

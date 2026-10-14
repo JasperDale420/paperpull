@@ -1407,7 +1407,11 @@ def _whole_months(text: str) -> set:
     import calendar
     found = set()
     for m in _BARE_RANGE_RE.finditer(text or ""):
-        line = text[text.rfind("\n", 0, m.start()) + 1:m.start()]
+        # The line before the range, looked back on at most 200 characters,
+        # since a page with no newline once took 82 seconds over 330,000.
+        lo = max(0, m.start() - 200)
+        nl = text.rfind("\n", lo, m.start())
+        line = text[(nl + 1 if nl != -1 else lo):m.start()]
         if _BARE_LABEL_RE.search(line):
             continue
         sm, sd, sy, em, ed, ey = (int(g) for g in m.groups())
