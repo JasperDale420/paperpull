@@ -81,7 +81,9 @@ Mobile is a separate bill, and its site has no PDF of a Mobile statement.
     ForBillPresentment) was not read, so no statement is opened by its id.
   * A statement is taken by pressing its own row, checking the address is a
     Mobile statement's own and the page reads that date alone and Mobile,
-    pressing Expand All, checking again, and printing the page with
+    pressing Expand All, waiting until it reads Collapse All and each of
+    the six section buttons (accord-N-button-0) reads aria-expanded="true"
+    (seen live 2026-10-13), checking again, and printing the page with
     receipt_pdf.print_page_to_pdf (Page.printToPDF), the way the Venmo app
     prints a month. The PDF's text must print the date, and its bytes may
     not be another statement's. The statementId values are private words
@@ -2235,19 +2237,24 @@ def choose_mobile(page, index: int, text: str, day: str, dl_dir, trace=None) -> 
     return True
 
 
-# Read only. The sections that follow the page's one "Expand All" (or, once
-# pressed, "Collapse All") button in the page, as buttons carrying
-# aria-expanded, and how many of them read expanded. The survey saw the
-# sections as accordion buttons below Expand All; that they carry
-# aria-expanded is not yet seen live, so a page showing none is left.
+# Read only. The statement's sections and its one Expand All / Collapse All
+# toggle, as seen live on 2026-10-13: each section is a
+# <button id="accord-N-button-0" class="kite-accordion-row__button"
+# aria-expanded="..."> (six of them, Account Holder Information first, none
+# with aria-controls), and the toggle is a kite-button reading "Expand All"
+# that reads "Collapse All" once every section is open. Other buttons on the
+# page carry aria-expanded too (the navigation's), so only the sections'
+# own buttons are counted. Counts and the toggle's word only.
 _SECTIONS_JS = r"""() => {
-  const toggle = Array.from(document.querySelectorAll('button'))
-    .filter(b => /^\s*(expand|collapse)\s+all\s*$/i.test(b.innerText || ''));
-  if (toggle.length !== 1) return {toggles: toggle.length, sections: 0, open: 0};
-  const after = Array.from(document.querySelectorAll('button[aria-expanded]'))
-    .filter(b => toggle[0].compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-  return {toggles: 1, sections: after.length,
-          open: after.filter(b => b.getAttribute('aria-expanded') === 'true').length};
+  const flat = s => (s || '').replace(/\s+/g, ' ').trim();
+  const toggles = Array.from(document.querySelectorAll('button'))
+    .map(b => flat(b.innerText)).filter(t => /^(expand|collapse) all$/i.test(t));
+  const rows = Array.from(document.querySelectorAll('button')).filter(b =>
+    /^accord-\d+-button-0$/.test(b.id || '') && b.classList.contains('kite-accordion-row__button'));
+  return {toggles: toggles.length,
+          toggle: toggles.length === 1 ? toggles[0].split(' ')[0].toLowerCase() : '',
+          sections: rows.length,
+          open: rows.filter(b => b.getAttribute('aria-expanded') === 'true').length};
 }"""
 
 
@@ -2260,19 +2267,86 @@ def sections(page) -> dict:
     return got if isinstance(got, dict) else {}
 
 
+# The sections every Mobile statement seen live had: Account Holder
+# Information, Previous Balance, Payments and Credits, Remaining Balance,
+# the plan's lines, and Included Taxes, Fees & Charges. Fewer is a page
+# still drawing, never a whole statement. A month may have more.
+MIN_SECTIONS = 6
+
+
+def all_open(seen: dict, sections_before: int = 0) -> bool:
+    """Whether the statement shows every section: one toggle, reading
+    Collapse All, at least MIN_SECTIONS section buttons, as many as before
+    the press when that is given, and every one reading expanded."""
+    count = int(seen.get("sections") or 0)
+    return (seen.get("toggles") == 1 and seen.get("toggle") == "collapse"
+            and count >= MIN_SECTIONS and (not sections_before or count == sections_before)
+            and seen.get("open") == count)
+
+
+# How many reads in a row, half a second apart, must show every section
+# open, the same each time, before the statement counts as whole. The page
+# gives no signal that it has finished drawing, so a section added late is
+# caught by this, and by the same read just before and just after the print.
+STEADY_READS = 3
+
+
+def steady_open(page, sections_before: int = 0, polls: int = 10) -> dict:
+    """The section counts once STEADY_READS reads in a row show every
+    section open (all_open) and the same, else {} after `polls` reads."""
+    last, run = None, 0
+    for i in range(polls):
+        if i:
+            page.wait_for_timeout(500)
+        seen = sections(page)
+        now = _counts(seen)
+        if all_open(seen, sections_before):
+            run = run + 1 if now == last else 1
+            if run >= STEADY_READS:
+                return seen
+        else:
+            run = 0
+        last = now
+    return {}
+
+
+def _counts(seen: dict) -> dict:
+    return {"toggles": int(seen.get("toggles") or 0), "toggle": str(seen.get("toggle") or "")[:8],
+            "sections": int(seen.get("sections") or 0), "open": int(seen.get("open") or 0)}
+
+
 def expand_statement(page, day: str, dl_dir, trace=None) -> bool:
-    """Press the open Mobile statement's "Expand All" once, under
-    is_expand_all, so every section shows in the print, and wait until
-    every section after it reads expanded. False, nothing pressed, when
-    there is not exactly one Expand All, it is refused or turned off, or no
-    section after it can be read. False, nothing printed, when the
-    sections do not all read expanded after the press. After the press, a
-    tab, popup or download, an address that changed, a Mobile answer that
-    is not an answer, or a page that no longer reads this statement's date
-    and Mobile stops the run. SessionExpired and OtpRequired propagate."""
+    """Open every section of the Mobile statement, so all of it shows in the
+    print. A statement already showing every section (all_open) is left as
+    it is, with nothing pressed. Otherwise its one "Expand All" is pressed
+    once, under is_expand_all, and the page is given about five seconds to
+    read Collapse All with every section expanded. False, nothing pressed,
+    when there is not exactly one Expand All, it is refused or turned off,
+    or fewer than MIN_SECTIONS sections can be read. False, nothing
+    printed, when the sections, as many as before the press, do not all
+    open and hold still after the press. After the press, a tab, popup or download,
+    an address that changed, a graph answer that is not an answer, or a
+    page that no longer reads this statement's date and Mobile stops the
+    run. The trace keeps the counts seen. SessionExpired and OtpRequired
+    propagate."""
     if not dl_dir:
         raise no_folder()
     where = page.url or ""
+    before = sections(page)
+    _note(trace, note="sections before Expand All", **_counts(before))
+    if before.get("toggle") == "collapse":
+        # Already open: nothing is pressed, and it must hold still as a
+        # pressed one must.
+        held = steady_open(page)
+        _note(trace, note="sections already open", **_counts(held))
+        if not held:
+            _note(trace, note="not every section expanded")
+            return False
+        return True
+    if before.get("toggles") != 1 or before.get("toggle") != "expand" \
+            or int(before.get("sections") or 0) < MIN_SECTIONS:
+        _note(trace, note="no section to expand was read")
+        return False
     try:
         button = page.get_by_role("button", name=EXPAND_ALL_RE)
         count = button.count()
@@ -2291,10 +2365,6 @@ def expand_statement(page, day: str, dl_dir, trace=None) -> bool:
     if not is_expand_all(label) or not enabled:
         _note(trace, note="Expand All refused or turned off")
         return False
-    before = sections(page)
-    if before.get("toggles") != 1 or not before.get("sections"):
-        _note(trace, note="no section to expand was read")
-        return False
     session = MobileWatch(page)
     strays = _Strays(page, dl_dir)
     pressed = False
@@ -2306,11 +2376,7 @@ def expand_statement(page, day: str, dl_dir, trace=None) -> bool:
                        words=_words(), step="expand the Mobile statement")
         pressed = True
 
-        def opened() -> bool:
-            after.clear()
-            after.update(sections(page))
-            return bool(after.get("sections")) and after.get("open") == after.get("sections")
-        _wait_for(page, opened, polls=20)
+        after.update(steady_open(page, int(before.get("sections") or 0), polls=14))
         why = strays.found()
         state = detail_state(page)
     except (SessionExpired, OtpRequired, pressing.Stop):
@@ -2323,8 +2389,7 @@ def expand_statement(page, day: str, dl_dir, trace=None) -> bool:
     finally:
         session.stop()
         strays.stop()
-    _note(trace, note="Expand All pressed", strays=bool(why), sections=after.get("sections", 0),
-          open=after.get("open", 0))
+    _note(trace, note="Expand All pressed", strays=bool(why), **_counts(after))
     if why:
         raise mobile_stopped(EXPAND_STEP, why)
     why = session.failed()
@@ -2336,7 +2401,7 @@ def expand_statement(page, day: str, dl_dir, trace=None) -> bool:
     why = heading_says(state, day, only=False)
     if why:
         raise mobile_stopped(EXPAND_STEP, why)
-    if not after.get("sections") or after.get("open") != after.get("sections"):
+    if not all_open(after, int(before.get("sections") or 0)):
         log.info("the Mobile statement dated %s did not show every section, so it is not printed", day)
         _note(trace, note="not every section expanded")
         return False
@@ -2434,6 +2499,9 @@ def take_mobile(page, day: str, out_path: Path, dl_dir, trace=None, own_files=()
         return False
     where = page.url or ""
     why = _still_the_statement(page, where, day)
+    shown = sections(page)
+    if not why and not all_open(shown):
+        why = "not every section is open just before the print"
     if why:
         raise mobile_stopped("print the Mobile statement", why)
     part = out_path.with_name(out_path.name + ".part")
@@ -2449,6 +2517,10 @@ def take_mobile(page, day: str, out_path: Path, dl_dir, trace=None, own_files=()
             _drop(part)
             return False
         why = session.failed() or _still_the_statement(page, where, day)
+        if not why and _counts(sections(page)) != _counts(shown):
+            # A section drawn or closed while it printed: the print may
+            # not hold the whole statement.
+            why = "the sections changed while the page printed"
     finally:
         session.stop()
     try:

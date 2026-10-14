@@ -345,10 +345,11 @@ class Page:
             return {"dates": [upper_date(self.mobile_day)] + extra, "details": True, "mobile": True}
         if js == site._SECTIONS_JS:
             if self.where != "mdetail":
-                return {"toggles": 0, "sections": 0, "open": 0}
+                return {"toggles": 0, "toggle": "", "sections": 0, "open": 0}
             if self.sections:
                 return self.sections(self)
-            return {"toggles": 1, "sections": 4, "open": 4 if self.expanded else 0}
+            return {"toggles": 1, "toggle": "collapse" if self.expanded else "expand",
+                    "sections": 6, "open": 6 if self.expanded else 0}
         if js == site._ROWS_JS:
             return self.row_texts()
         if js == site._ARM_JS:
@@ -1908,21 +1909,92 @@ class MobileTaking(WithFakeClick):
         self.assertTrue(self.take(page)[0])
 
     def test_sections_that_do_not_all_expand_are_not_printed(self):
-        for sections in (lambda p: {"toggles": 1, "sections": 0, "open": 0},
-                         lambda p: {"toggles": 1, "sections": 4, "open": 3 if p.expanded else 0},
-                         lambda p: {"toggles": 2, "sections": 4, "open": 4}):
+        def shape(toggles=1, toggle="expand", sections=6, open_=0):
+            return {"toggles": toggles, "toggle": toggle, "sections": sections, "open": open_}
+        cases = [
+            # nothing to read before the press: not pressed
+            (lambda p: shape(sections=0), 0),
+            (lambda p: shape(toggles=2), 0),
+            (lambda p: shape(toggles=0, toggle=""), 0),
+            # pressed, then not every section opens
+            (lambda p: shape(toggle="collapse", open_=5) if p.expanded else shape(), 1),
+            # pressed, every section opens but the toggle still reads Expand All
+            (lambda p: shape(open_=6) if p.expanded else shape(), 1),
+            # fewer sections than any statement has: a page still drawing
+            (lambda p: shape(sections=5), 0),
+            (lambda p: shape(toggle="collapse", sections=5, open_=5), 0),
+            # the count changed with the press
+            (lambda p: shape(toggle="collapse", sections=7, open_=7) if p.expanded else shape(), 1),
+        ]
+        for sections, presses in cases:
             page = Page(mobile=mobile_rows(), sections=sections)
             ok, out, trace = self.take(page)
             self.assertFalse(ok)
-            self.assertEqual(page.prints, 0)
+            self.assertEqual((page.expands, page.prints), (presses, 0))
             self.assertFalse(out.exists())
+            seen = [t for t in trace if t.get("note") == "sections before Expand All"]
+            self.assertEqual(len(seen), 1, "the trace keeps the counts it saw")
+            self.assertEqual(set(seen[0]) - {"note"}, {"toggles", "toggle", "sections", "open"})
         polls = []
 
         def slow(p):
             if p.expanded:
                 polls.append(1)
-            return {"toggles": 1, "sections": 4, "open": 4 if len(polls) > 3 else 0}
-        self.assertTrue(self.take(Page(mobile=mobile_rows(), sections=slow))[0], "a slow expand is waited for")
+                if len(polls) > 3:
+                    return shape(toggle="collapse", open_=6)
+            return shape()
+        ok, out, trace = self.take(Page(mobile=mobile_rows(), sections=slow))
+        self.assertTrue(ok, "a slow expand is waited for")
+        self.assertIn({"note": "Expand All pressed", "strays": False, "toggles": 1, "toggle": "collapse",
+                       "sections": 6, "open": 6}, trace)
+
+    def test_a_section_drawn_late_is_never_printed_as_whole(self):
+        def shape(sections, open_):
+            return {"toggles": 1, "toggle": "collapse", "sections": sections, "open": open_}
+        # Already open, then a seventh section arrives closed: not pressed,
+        # not printed.
+        reads = []
+
+        def late_closed(p):
+            reads.append(1)
+            return shape(6, 6) if len(reads) < 3 else shape(7, 6)
+        page = Page(mobile=mobile_rows(), sections=late_closed)
+        self.assertFalse(self.take(page)[0])
+        self.assertEqual((page.expands, page.prints), (0, 0))
+        # Pressed and steady, then a section closed just before the print.
+        page = Page(mobile=mobile_rows(), sections=lambda p: (
+            {"toggles": 1, "toggle": "expand", "sections": 6, "open": 0} if not p.expanded
+            else shape(6, 6) if len(p.reads) < 4 else shape(7, 6)))
+        page.reads = []
+        original = page.sections
+
+        def counting(p):
+            if p.expanded:
+                p.reads.append(1)
+            return original(p)
+        page.sections = counting
+        self.stops_page(page)
+        self.assertEqual(page.prints, 0)
+        # A section drawn while the page printed.
+        page = Page(mobile=mobile_rows(), sections=lambda p: (
+            {"toggles": 1, "toggle": "expand", "sections": 6, "open": 0} if not p.expanded
+            else shape(7, 7) if p.prints else shape(6, 6)))
+        self.stops_page(page)
+        self.assertEqual(page.prints, 1)
+
+    def stops_page(self, page):
+        with self.assertRaises(pressing.Stop):
+            self.take(page)
+        self.assertFalse((self.tmp / "2026-08-13 Spectrum Mobile Statement.pdf").exists())
+        self.assertFalse(list(self.tmp.glob("*.part")))
+
+    def test_a_statement_already_showing_every_section_is_not_pressed(self):
+        page = Page(mobile=mobile_rows(), sections=lambda p: {"toggles": 1, "toggle": "collapse",
+                                                               "sections": 6, "open": 6})
+        ok, out, trace = self.take(page)
+        self.assertTrue(ok)
+        self.assertEqual((page.expands, page.prints), (0, 1))
+        self.assertNotIn(site.EXPAND_STEP, [c[1] for c in page.clicks])
 
     def test_a_print_that_fails_leaves_the_statement(self):
         page = Page(mobile=mobile_rows(), on_print=lambda p: RuntimeError("Timeout for " + MOB))
@@ -1950,6 +2022,65 @@ class MobileTaking(WithFakeClick):
                 self.take(page)
             self.assertEqual(page.prints, 0)
             self.assertEqual(page.live_listeners(), 0)
+
+
+LIVE_SECTIONS = """<!doctype html><meta charset="utf-8"><body>
+<nav><button aria-expanded="false">Expand Account</button>
+<button aria-expanded="false">Expand Funds &amp; Wallet</button></nav>
+<button id="accord-5-button-0" class="kite-accordion-row__button" aria-expanded="false">Account Holder Information</button>
+<button class="kite-button" id="toggle">Expand&nbsp;All</button>
+<button id="accord-2-button-0" class="kite-accordion-row__button" aria-expanded="false">Previous Balance</button>
+<button id="accord-6-button-0" class="kite-accordion-row__button" aria-expanded="false">Payments and Credits</button>
+<button id="accord-3-button-0" class="kite-accordion-row__button" aria-expanded="false">Remaining Balance</button>
+<button id="accord-4-button-0" class="kite-accordion-row__button" aria-expanded="false">Unlimited Plus Lines (2)</button>
+<button id="accord-1-button-0" class="kite-accordion-row__button" aria-expanded="false">Included Taxes, Fees &amp; Charges</button>
+<button>Print</button>
+<button id="accord-9-button-1" class="kite-accordion-row__button" aria-expanded="false">Another row</button>
+<button id="accord-8-button-0" aria-expanded="false">An accordion of another kind</button>
+<button class="kite-accordion-row__button" aria-expanded="false">An accordion with no id</button>
+<script>document.getElementById('toggle').onclick = () => setTimeout(() => {
+  document.querySelectorAll('%s').forEach(b => b.setAttribute('aria-expanded', 'true'));
+  document.getElementById('toggle').innerHTML = 'Collapse&nbsp;All'; }, 300);</script></body>"""
+
+
+class LiveSectionsShape(unittest.TestCase):
+    """_SECTIONS_JS in a real browser, on the page shape seen live on
+    2026-10-13: six accordion buttons without aria-controls, the first above
+    Expand All, navigation buttons with aria-expanded of their own, and the
+    toggle reading Collapse All once every section is open."""
+
+    def run_page(self, opens):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self.skipTest("no Playwright")
+        with sync_playwright() as pw:
+            try:
+                browser = pw.chromium.launch(headless=True)
+            except Exception as e:
+                self.skipTest("no browser: %s" % e)
+            try:
+                page = browser.new_page()
+                page.set_content(LIVE_SECTIONS % opens)
+                before = page.evaluate(site._SECTIONS_JS)
+                page.click("#toggle")
+                page.wait_for_timeout(800)
+                after = page.evaluate(site._SECTIONS_JS)
+            finally:
+                browser.close()
+        return before, after
+
+    def test_every_section_opens_and_the_toggle_reads_collapse_all(self):
+        before, after = self.run_page(".kite-accordion-row__button")
+        self.assertEqual(before, {"toggles": 1, "toggle": "expand", "sections": 6, "open": 0})
+        self.assertFalse(site.all_open(before))
+        self.assertEqual(after, {"toggles": 1, "toggle": "collapse", "sections": 6, "open": 6})
+        self.assertTrue(site.all_open(after), "the navigation's own aria-expanded is not counted")
+
+    def test_a_section_left_closed_is_seen(self):
+        _, after = self.run_page("[id^=accord-2], [id^=accord-6], [id^=accord-3], [id^=accord-4], [id^=accord-1]")
+        self.assertEqual((after["sections"], after["open"]), (6, 5))
+        self.assertFalse(site.all_open(after))
 
 
 class Source(unittest.TestCase):
