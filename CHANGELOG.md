@@ -7,6 +7,27 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Added
+- **Chase Business statements from the business document center.** A new
+  `chasebusiness` app saves the monthly statements of the business accounts
+  on a Chase business profile, up to the seven years Chase keeps online,
+  filed as Business Checking, Business Card or Business Debit. It chooses
+  each account in the document center's menu, opens Statements, picks each
+  year and saves a statement through its row's own save menu and Save as
+  PDF. Those six kinds of control are the only ones it ever presses, and
+  payments, transfers, wires, Zelle, settings and sign-out are never
+  touched. A run stops on its own when Chase shows its session timeout or
+  signs you out, and keeps what it saved. Account names and numbers stay
+  out of every file name, log and diagnostic file. Chase gives accounts
+  and statements new ids at each sign-in, so a statement is known by its
+  account's class and a short digest of its last four, which tells two
+  accounts apart but is no secret, since a last four is easy to guess
+  from it. Verified on one profile, where it
+  saved 10 checking statements on a full run. A business card's statements
+  are untested.
+
 ## [0.51.0] - 2026-10-14
 
 Alpaca arrives, statements and trade confirmations from a Live brokerage
@@ -144,23 +165,6 @@ to the Capital One app, so Discover counts as supported.
   receipt already saved, asking nothing of Costco, and a preview leaves
   every record as it was. Food court, pharmacy and tire center receipts are
   Warehouse until a member's receipts show how to tell them apart.
-- **Chase Business statements from the business document center.** A new
-  `chasebusiness` app saves the monthly statements of the business accounts
-  on a Chase business profile, up to the seven years Chase keeps online,
-  filed as Business Checking, Business Card or Business Debit. It chooses
-  each account in the document center's menu, opens Statements, picks each
-  year and saves a statement through its row's own save menu and Save as
-  PDF. Those six kinds of control are the only ones it ever presses, and
-  payments, transfers, wires, Zelle, settings and sign-out are never
-  touched. A run stops on its own when Chase shows its session timeout or
-  signs you out, and keeps what it saved. Account names and numbers stay
-  out of every file name, log and diagnostic file. Chase gives accounts
-  and statements new ids at each sign-in, so a statement is known by its
-  account's class and a short digest of its last four, which tells two
-  accounts apart but is no secret, since a last four is easy to guess
-  from it. Verified on one profile, where it
-  saved 10 checking statements on a full run. A business card's statements
-  are untested.
 - **SDG&E (San Diego Gas & Electric) bills from My Energy Center.** The app
   reads the bills Billing History lists, about two years of them, and saves
   each bill's PDF, fetched by its own address with your signed-in session.
