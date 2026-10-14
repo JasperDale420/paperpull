@@ -133,6 +133,51 @@ def good_press(page):
     page.blob = blob_result(data)
 
 
+MOB = "8350990000055555"
+MOB_PHONE = "555-010-4477"
+NB = "\u00a0"
+MOBILE_DAYS = ["2026-09-13", "2026-08-13", "2026-07-13"]
+
+
+def mobile_sid(day):
+    return "Zq9" + day.replace("-", "") + "Kx"
+
+
+def upper_date(day):
+    y, m, d = day.split("-")
+    return f"{MONTHS[int(m) - 1].upper()} {int(d)}, {y}"
+
+
+def mobile_row(day):
+    y, m, d = day.split("-")
+    return NB.join(["Statement", MONTHS[int(m) - 1], f"{int(d)},", y])
+
+
+def mobile_rows(days=MOBILE_DAYS):
+    """The Mobile list as the survey saw it: the statement under way, the
+    estimate, the finished statements and an order."""
+    return (["Statement October 13 Auto Pay: Oct 30 $78.12", "Your Total So Far Auto Pay: Nov 30 $80.00"]
+            + [mobile_row(d) for d in days] + ["Order 1234567 August 13, 2025"])
+
+
+def mobile_print(page):
+    """What printing the Mobile statement page gives: its words, with the
+    date the page shows."""
+    return text_pdf(["Statement Details", upper_date(page.mobile_day), "Mobile", "AMOUNT DUE $61.40",
+                     "Previous Balance Payments and Credits Remaining Balance",
+                     "Unlimited Plus Lines (2) Phone " + MOB_PHONE, "Included Taxes, Fees & Charges"])
+
+
+def mobile_lands(page, index):
+    """What a press of a Mobile list row does: the page moves in place to that
+    statement's own page."""
+    day = site.mobile_row_day(page.links()[index])
+    page.mobile_day = day
+    page.where = "mdetail"
+    page.url = (f"https://{HOST}{site.MOBILE_DETAIL_PATH}?statementId={mobile_sid(day)}"
+                f"&newStatementVersion=true")
+
+
 def digital(account, day):
     """The page's own unpadded DIGITAL_DOCUMENT id for a statement, with a
     code of its own."""
@@ -179,7 +224,9 @@ class Page:
 
     def __init__(self, answer=None, list_responses=None, rows=None, settle=None, body="",
                  detail=None, buttons=(("View Printable Statement", True),), on_press=good_press,
-                 dl_dir=None, on_row=lands):
+                 dl_dir=None, on_row=lands, mobile=None, on_link=None, on_mobile_row=mobile_lands,
+                 on_expand=None, detail_state=None, mbuttons=(("Expand All", True), ("Print", True)),
+                 on_print=mobile_print, sections=None):
         self.answer = list_answer() if answer is None else answer
         self.list_responses = list_responses
         self.rows = rows
@@ -200,6 +247,18 @@ class Page:
         self.gotos, self.presses, self.blob, self.armed = [], 0, {"blobs": [], "opened": []}, False
         self.detail_sid = ""
         self.restored = False
+        # The Mobile pages: None for a customer with no Mobile account, else
+        # the rows its list draws.
+        self.mobile = mobile
+        self.on_link, self.on_mobile_row, self.on_expand = on_link, on_mobile_row, on_expand
+        self.detail_state = detail_state
+        self.mbuttons = list(mbuttons)
+        self.on_print = on_print
+        self.sections = sections
+        self.where = ""
+        self.mobile_day = ""
+        self.expanded = 0
+        self.link_presses, self.mobile_row_presses, self.expands, self.prints = 0, [], 0, 0
         page = self
 
         class Ctx:
@@ -227,6 +286,7 @@ class Page:
         self.gotos.append(url)
         path = url.split("?")[0][len(site.BASE):]
         self.url = self.settle.get(path, url)
+        self.where = "billing" if path == site.BILLING_HOME_PATH else ""
         if path == site.STATEMENTS_PATH:
             responses = self.list_responses
             if responses is None:
@@ -261,7 +321,34 @@ class Page:
             texts[0] += " Auto Pay: Oct 10 $80.00"
         return texts + ["Make Early Payment"]
 
+    def links(self):
+        """The anchors with role=link the page draws where it is."""
+        if self.where == "billing":
+            out = ["Auto Pay", "Payment Methods", NB.join(["Internet", "Account", "Number:", CUR])]
+            if self.mobile is not None:
+                out.append(NB.join(["Mobile", "Account", "Number:", MOB]))
+            return out + ["Internet", "Mobile", "Manage Mobile Devices"]
+        if self.where == "mlist":
+            return list(self.mobile)
+        return []
+
     def evaluate(self, js, arg=None):
+        if js == site._LINKS_JS:
+            assert arg == site.MOBILE_ROW
+            return self.links()
+        if js == site._DETAIL_JS:
+            if self.where != "mdetail":
+                return {"dates": [], "details": False, "mobile": False}
+            if self.detail_state:
+                return self.detail_state(self)
+            extra = ["September 2, 2026"] if self.expanded else []
+            return {"dates": [upper_date(self.mobile_day)] + extra, "details": True, "mobile": True}
+        if js == site._SECTIONS_JS:
+            if self.where != "mdetail":
+                return {"toggles": 0, "sections": 0, "open": 0}
+            if self.sections:
+                return self.sections(self)
+            return {"toggles": 1, "sections": 4, "open": 4 if self.expanded else 0}
         if js == site._ROWS_JS:
             return self.row_texts()
         if js == site._ARM_JS:
@@ -279,6 +366,11 @@ class Page:
 
     def locator(self, sel):
         page = self
+        if sel == site.MOBILE_ROW:
+            class Links:
+                def nth(self, i):
+                    return MRow(page, i)
+            return Links()
         if sel == site.STATEMENT_ROW:
             class Rows:
                 def nth(self, i):
@@ -295,6 +387,8 @@ class Page:
 
     def get_by_role(self, role, name=None):
         assert role == "button"
+        if self.where == "mdetail":
+            return Btn(self, [b for b in self.mbuttons if name.search(b[0])])
         return Btn(self, [b for b in self.buttons if name.search(b[0])])
 
     def title(self):
@@ -309,10 +403,43 @@ class Row:
         return self.page.row_changes.get(self.index, self.page.row_texts()[self.index])
 
 
+class MRow:
+    """An anchor with role=link, on Billing or the Mobile list."""
+
+    def __init__(self, page, index):
+        self.page, self.index = page, index
+
+    def inner_text(self, **kw):
+        return self.page.row_changes.get(("m", self.index), self.page.links()[self.index])
+
+
 def fake_click(page, el, **kw):
     """A spy for pressing.click: records each press and plays the page's
     answer to it."""
     page.clicks.append((kw["css"], kw["step"], kw["what"]))
+    if isinstance(el, MRow):
+        assert kw["css"] == pressing.LINKS
+        if page.where == "billing":
+            assert kw["step"] == site.OPEN_MOBILE_STEP
+            page.link_presses += 1
+            if page.on_link:
+                page.on_link(page)
+                return
+            page.where = "mlist"
+            page.url = f"https://{HOST}{site.MOBILE_LIST_PATH}"
+            return
+        assert page.where == "mlist" and kw["step"] == site.CHOOSE_MOBILE_STEP
+        page.mobile_row_presses.append(el.index)
+        page.on_mobile_row(page, el.index)
+        return
+    if kw["step"] == site.EXPAND_STEP:
+        assert kw["css"] == pressing.BUTTONS and page.where == "mdetail"
+        assert site.is_expand_all(el.inner_text())
+        page.expands += 1
+        page.expanded = 1
+        if page.on_expand:
+            page.on_expand(page)
+        return
     if isinstance(el, Row):
         assert kw["css"] == pressing.LINKS and kw["step"] == "choose a statement"
         page.row_presses.append(el.index)
@@ -323,15 +450,28 @@ def fake_click(page, el, **kw):
     page.on_press(page)
 
 
+def fake_print(page, out_path):
+    """A spy for receipt_pdf.print_page_to_pdf: what the page prints."""
+    page.prints += 1
+    data = page.on_print(page)
+    if isinstance(data, Exception):
+        raise data
+    Path(out_path).write_bytes(data)
+
+
 class WithFakeClick(unittest.TestCase):
     def setUp(self):
         self._click = pressing.click
         pressing.click = fake_click
+        self._receipt_pdf = site.receipt_pdf
+        site.receipt_pdf = SimpleNamespace(print_page_to_pdf=fake_print)
         site._KEPT.clear()
+        site._MOBILE_IDS.clear()
         self.tmp = Path(tempfile.mkdtemp())
 
     def tearDown(self):
         pressing.click = self._click
+        site.receipt_pdf = self._receipt_pdf
 
     def take(self, page, family="current", day="2026-09-26", dl_dir=""):
         if dl_dir == "":
@@ -503,7 +643,7 @@ class Families(unittest.TestCase):
 class Listing(unittest.TestCase):
     def test_reads_the_one_answer_and_takes_nothing_off_the_page(self):
         page = Page()
-        got = site.collect_download_docs(page)
+        got = site.collect_download_docs(page, mobile=False)
         self.assertEqual(len(got), 5)
         self.assertEqual(page.gotos, [site.STATEMENTS_URL])
         self.assertEqual(page.live_listeners(), 0, "the listener is taken off")
@@ -1210,6 +1350,49 @@ class Orchestrator(WithFakeClick):
         self.assertEqual(docs.told_apart_by(pri), "prior account")
         self.assertEqual(app.config["pilot_count"], 1)
 
+    def test_mobile_records_and_names(self):
+        app = make_app(self.tmp, "--discover")
+        for r in site.raw_docs([site.Entry(site.MOBILE, "2026-08-13")]):
+            app._record_rawdoc(r, site.BILLING_URL)
+        rec = app.discovery.get("id:Mobile:mobile:2026-08-13")
+        self.assertEqual((rec["category"], rec["summary"], rec["document_id"]),
+                         ("Statement", "Mobile Statement", "mobile:2026-08-13"))
+        self.assertEqual(docs.build_pdf_filename(rec["date"], rec["summary"], "", record=docs.Document.from_dict(rec)),
+                         "2026-08-13 Spectrum Mobile Statement.pdf")
+        self.assertEqual(docs.told_apart_by(rec), "mobile account")
+        self.assertEqual(docs.family_summary("Mobile Statement", "mobile:2026-08-13"), "Mobile Statement")
+
+    def test_discovery_lists_mobile_and_keeps_internet_when_mobile_stops(self):
+        app = make_app(self.tmp, "--discover")
+        app._staged = True
+        app._dl_dir.mkdir(parents=True)
+        page = Page(mobile=mobile_rows())
+        app.page = lambda: page
+        with redirect_stdout(io.StringIO()):
+            app.cmd_discover()
+        self.assertEqual(sum(1 for k in app.discovery.data if k.startswith("id:Mobile:")), 3)
+        self.assertEqual(page.clicks[0][2], "the Mobile Account Number link")
+        tmp = tempfile.mkdtemp()
+        app = make_app(tmp, "--discover")
+        app._staged = True
+        app._dl_dir.mkdir(parents=True)
+        page = Page(mobile=mobile_rows(["2026-08-13", "2026-08-13"]))
+        app.page = lambda: page
+        with redirect_stdout(io.StringIO()) as said, self.assertRaises(SystemExit):
+            app.cmd_discover()
+        self.assertEqual(len(app.discovery.data), 5)
+        self.assertIn("stopped partway", said.getvalue())
+        # Without the confirmed folder nothing is pressed for Mobile, and the
+        # Internet discovery ends as it did before.
+        tmp = tempfile.mkdtemp()
+        app = make_app(tmp, "--discover")
+        page = Page(mobile=mobile_rows())
+        app.page = lambda: page
+        with redirect_stdout(io.StringIO()):
+            app.cmd_discover()
+        self.assertEqual(page.clicks, [])
+        self.assertEqual(len(app.discovery.data), 5)
+
     def run_process(self, app, raises):
         self.listed(app)
         app._staged = True
@@ -1348,16 +1531,22 @@ class Privacy(WithFakeClick):
         root.setLevel(logging.DEBUG)
         try:
             with redirect_stdout(seen):
-                for r in site.collect_download_docs(Page()):
+                app._dl_dir.mkdir(parents=True)   # as set_download_dir makes it
+                for r in site.collect_download_docs(Page(mobile=mobile_rows()), dl_dir=app._dl_dir):
                     app._record_rawdoc(r, site.BILLING_URL)
                 app.discovery.save()
                 from paperpull_core import listing
                 listing.read_whole(app)
                 app._delay = lambda *a, **k: None
                 app._staged = True
-                app._dl_dir.mkdir(parents=True)   # as set_download_dir makes it
-                app._on_its_site = lambda: Page()
-                app.process(app._select(limit=1))
+                app._on_its_site = lambda: Page(mobile=mobile_rows())
+                # The newest Internet statement, then the newest Mobile one.
+                app.process(app._select(limit=2))
+                # A Mobile statement left for review writes what the site
+                # answered, with the address it landed on.
+                mobile_doc = [d for d in app._select() if d.document_id == "mobile:2026-08-13"]
+                app._on_its_site = lambda: Page(mobile=mobile_rows(), mbuttons=(("Print", True),))
+                app.process(mobile_doc)
                 with self.assertRaises(site.ListStopped) as stop:
                     site.read_statement_list(Page(answer=list_answer(cur=["2026-09-26", "2026-09-26"])))
                 self.assertNotIn(CUR, str(stop.exception))
@@ -1379,30 +1568,426 @@ class Privacy(WithFakeClick):
                 written += p.read_text(encoding="utf-8", errors="ignore")
         names = " ".join(p.name for p in out.rglob("*"))
         self.assertTrue(list(app.paths.diagnostics.glob("*")), "the stop wrote its failure file")
+        self.assertIn("www.spectrum.net/mobile-billing/statement-history",
+                      (app.paths.diagnostics / "download-attempt.json").read_text())
         for word in (CUR, PRI, STREET, ADDRESS, sid(CUR, "2026-09-26"), sid(PRI, "2026-02-26"),
-                     "Account=", "pdfStatementId"):
+                     "Account=", "pdfStatementId", MOB, MOB_PHONE, mobile_sid("2026-09-13"),
+                     mobile_sid("2026-08-13"), "statementId", "61.40"):
             self.assertNotIn(word, written, word)
             self.assertNotIn(word, names, word)
-        pdfs = list(out.rglob("*.pdf"))
-        self.assertEqual(len(pdfs), 1)
-        self.assertEqual(pdfs[0].name, "2026-09-26 Spectrum Internet Statement.pdf")
+        pdfs = sorted(p.name for p in out.rglob("*.pdf"))
+        self.assertEqual(pdfs, ["2026-09-13 Spectrum Mobile Statement.pdf",
+                                "2026-09-26 Spectrum Internet Statement.pdf"])
+
+
+class MobileGuards(unittest.TestCase):
+    def test_the_mobile_account_link(self):
+        for label in (NB.join(["Mobile", "Account", "Number:", MOB]), "Mobile Account Number: ****5555",
+                      "Mobile Account Number: \u2022\u2022\u2022\u20225555"):
+            self.assertTrue(site.is_mobile_account_link(label), label)
+        for label in ("", "Mobile", "Manage Mobile Devices", "Internet Account Number: 1234",
+                      "Mobile Account Number", "Mobile Account Number: ", "Mobile Account Number: - .",
+                      "Mobile Account Number: 1234 Make a Payment", "Mobile Account Number Settings",
+                      "Change Mobile Account Number: 1234"):
+            self.assertFalse(site.is_mobile_account_link(label), label)
+        self.assertEqual(site.mobile_account_number(NB.join(["Mobile", "Account", "Number:", MOB])), MOB)
+
+    def test_expand_all_exactly(self):
+        for label in ("Expand All", "Expand" + NB + "All", "  expand all "):
+            self.assertTrue(site.is_expand_all(label), label)
+        for label in ("", "Print", "Collapse All", "Expand All Payments", "Expand", "Make a Payment"):
+            self.assertFalse(site.is_expand_all(label), label)
+
+    def test_the_mobile_row_guard(self):
+        self.assertTrue(site.is_safe_mobile_row(mobile_row("2026-08-13"), "2026-08-13"))
+        self.assertTrue(site.is_safe_mobile_row("Statement August 13, 2026 $61.40", "2026-08-13"))
+        for text, day in [(mobile_row("2026-08-13"), "2026-07-13"),
+                          ("Statement October 13 Auto Pay: Oct 30 $78.12", "2026-10-13"),
+                          ("Your Total So Far Auto Pay: Nov 30 $80.00", "2026-11-30"),
+                          ("Order 1234567 August 13, 2025", "2025-08-13"),
+                          ("Statement August 13, 2026 Make a Payment", "2026-08-13"),
+                          ("Statement August 13, 2026 Print", "2026-08-13"),
+                          ("Statement August 13, 2026", "not a day"), ("", "2026-08-13")]:
+            self.assertFalse(site.is_safe_mobile_row(text, day), text)
+
+    def test_which_rows_are_finished_statements(self):
+        self.assertEqual(site.mobile_days(mobile_rows()), MOBILE_DAYS)
+        self.assertEqual(site.mobile_days(mobile_rows([])), [])
+        with self.assertRaises(site.ListStopped):
+            site.mobile_days(mobile_rows(["2026-08-13", "2026-08-13"]))
+        with self.assertRaises(site.ListStopped):
+            site.mobile_days(["Statement of something new"])
+        with self.assertRaises(site.ListStopped):
+            site.mobile_days(["Statement February 30, 2026"])
+
+    def test_the_mobile_statement_address(self):
+        good = f"https://{HOST}{site.MOBILE_DETAIL_PATH}?statementId=Zq9&newStatementVersion=true"
+        self.assertEqual(site._mobile_detail_query(good)["statementId"], "Zq9")
+        for url in (good.replace("https://", "http://"), good.replace(HOST, "evil.example"),
+                    good + "#x", good + "&statementId=Zq8", good + "&other=1",
+                    f"https://{HOST}{site.MOBILE_DETAIL_PATH}?statementId=",
+                    f"https://{HOST}{site.MOBILE_LIST_PATH}?statementId=Zq9",
+                    f"https://{HOST}:8443{site.MOBILE_DETAIL_PATH}?statementId=Zq9"):
+            self.assertIsNone(site._mobile_detail_query(url), url)
+
+    def test_the_heading(self):
+        state = {"dates": ["AUGUST 13, 2026"], "details": True, "mobile": True}
+        self.assertEqual(site.heading_says(state, "2026-08-13", only=True), "")
+        self.assertTrue(site.heading_says(state, "2026-07-13", only=True))
+        self.assertTrue(site.heading_says({**state, "mobile": False}, "2026-08-13", only=True))
+        self.assertTrue(site.heading_says({**state, "details": False}, "2026-08-13", only=True))
+        two = {**state, "dates": ["AUGUST 13, 2026", "July 13, 2026"]}
+        self.assertTrue(site.heading_says(two, "2026-08-13", only=True))
+        self.assertEqual(site.heading_says(two, "2026-08-13", only=False), "")
+        self.assertTrue(site.heading_says({}, "2026-08-13", only=False))
+
+
+class MobileListing(WithFakeClick):
+    def test_the_finished_statements_are_listed_after_one_link_press(self):
+        page = Page(mobile=mobile_rows())
+        got = site.collect_download_docs(page, dl_dir=self.tmp)
+        mobile = [r for r in got if r.document_id.startswith("mobile:")]
+        self.assertEqual(len(got), 5 + 3)
+        self.assertEqual([r.document_id for r in mobile], ["mobile:" + d for d in MOBILE_DAYS])
+        self.assertEqual({(r.title, r.account) for r in mobile}, {(site.MOBILE_TITLE, "Mobile")})
+        self.assertEqual(page.gotos, [site.STATEMENTS_URL, site.BILLING_HOME_URL])
+        self.assertEqual([c[1] for c in page.clicks], [site.OPEN_MOBILE_STEP])
+        self.assertIn(MOB, site.private_words())
+        self.assertEqual(page.live_listeners(), 0)
+
+    def test_without_the_folder_the_internet_list_is_read_as_before(self):
+        page = Page(mobile=mobile_rows())
+        got = site.collect_download_docs(page, dl_dir=None)
+        self.assertEqual(len(got), 5)
+        self.assertEqual((page.clicks, page.gotos), ([], [site.STATEMENTS_URL]))
+
+    def test_no_mobile_account_is_no_mobile_statement(self):
+        page = Page()
+        got = site.collect_download_docs(page, dl_dir=self.tmp)
+        self.assertEqual(len(got), 5)
+        self.assertEqual(page.clicks, [])
+
+    def test_what_stops_the_mobile_list_keeps_the_internet_statements(self):
+        two = Page(mobile=mobile_rows())
+        two.links = lambda: [NB.join(["Mobile", "Account", "Number:", MOB]),
+                             "Mobile Account Number: 8350990000066666"] if two.where == "billing" else []
+        blank = Page(mobile=mobile_rows())
+        blank.links = lambda: []
+        elsewhere = Page(mobile=mobile_rows(), on_link=lambda p: setattr(p, "url", f"https://{HOST}/billing"))
+        odd = Page(mobile=mobile_rows())
+        odd.links = lambda: ["Internet Account Number: 1234", "Mobile Account Number: 1234 (Primary Line)"] \
+            if odd.where == "billing" else []
+        cases = [(odd, self.tmp, 0),
+                 (Page(mobile=mobile_rows(["2026-08-13", "2026-08-13"])), self.tmp, 1),
+                 (Page(mobile=["Statement of a kind not seen"]), self.tmp, 1),
+                 (two, self.tmp, 0), (blank, self.tmp, 0), (elsewhere, self.tmp, 1)]
+        for page, dl_dir, presses in cases:
+            with self.assertRaises(site.ListStopped) as stop:
+                site.collect_download_docs(page, dl_dir=dl_dir)
+            self.assertEqual(len(stop.exception.docs), 5)
+            self.assertEqual(page.link_presses, presses)
+            self.assertNotIn(MOB, str(stop.exception))
+            self.assertEqual(page.live_listeners(), 0)
+
+    def test_a_tab_or_a_download_after_the_link_press_stops_the_run(self):
+        def tab(p):
+            p.context.pages.append(SimpleNamespace(close=lambda: None))
+            p.where, p.url = "mlist", f"https://{HOST}{site.MOBILE_LIST_PATH}"
+
+        def download(p):
+            p.emit("download", SimpleNamespace(cancel=lambda: None, delete=lambda: None))
+            p.where, p.url = "mlist", f"https://{HOST}{site.MOBILE_LIST_PATH}"
+        for on_link in (tab, download):
+            page = Page(mobile=mobile_rows(), on_link=on_link)
+            with self.assertRaises(pressing.NoAnswer):
+                site.collect_download_docs(page, dl_dir=self.tmp)
+            self.assertEqual(page.live_listeners(), 0)
+
+    def test_a_signed_out_answer_after_the_link_press(self):
+        def out(p):
+            p.emit("response", Resp("fetchCmsAlerts", status=401))
+            p.where, p.url = "mlist", f"https://{HOST}{site.MOBILE_LIST_PATH}"
+        with self.assertRaises(site.SessionExpired):
+            site.collect_download_docs(Page(mobile=mobile_rows(), on_link=out), dl_dir=self.tmp)
+
+
+class MobileTaking(WithFakeClick):
+    def take(self, page, day="2026-08-13", dl_dir="", own_files=()):
+        if dl_dir == "":
+            dl_dir = self.tmp / "staging"
+            dl_dir.mkdir(exist_ok=True)
+        out = self.tmp / ("%s Spectrum Mobile Statement.pdf" % day)
+        trace = []
+        ok = site.download_bill(page, dl_dir, day, out, title=site.MOBILE_TITLE, trace=trace,
+                                document_id="mobile:" + day, own_files=own_files)
+        return ok, out, trace
+
+    def test_success_presses_the_link_the_row_and_expand_all_then_prints(self):
+        page = Page(mobile=mobile_rows())
+        ok, out, trace = self.take(page)
+        self.assertTrue(ok)
+        self.assertEqual(out.read_bytes()[:5], b"%PDF-")
+        self.assertIn("AUGUST 13, 2026", site.pdf_text(out.read_bytes()))
+        self.assertEqual([c[1] for c in page.clicks],
+                         [site.OPEN_MOBILE_STEP, site.CHOOSE_MOBILE_STEP, site.EXPAND_STEP])
+        self.assertEqual(page.mobile_row_presses, [3])
+        self.assertFalse(any("Print" in c[2] for c in page.clicks))
+        self.assertEqual((page.prints, page.presses), (1, 0))
+        self.assertEqual(page.gotos, [site.BILLING_HOME_URL], "the Internet list is not read")
+        self.assertFalse(list(self.tmp.glob("*.part")))
+        self.assertIn(mobile_sid("2026-08-13"), site.private_words())
+        self.assertEqual(page.live_listeners(), 0)
+        for t in trace:
+            self.assertNotIn(MOB, json.dumps(t))
+            self.assertNotIn(mobile_sid("2026-08-13"), json.dumps(t))
+
+    def test_a_statement_not_in_the_list_is_not_pressed(self):
+        for page in (Page(mobile=mobile_rows(["2026-09-13"])), Page(),
+                     Page(mobile=mobile_rows(["2026-08-13", "2026-08-13"]))):
+            ok, out, _ = self.take(page)
+            self.assertFalse(ok)
+            self.assertEqual(page.mobile_row_presses, [])
+            self.assertFalse(out.exists())
+
+    def test_nothing_is_pressed_without_the_download_folder(self):
+        page = Page(mobile=mobile_rows())
+        with self.assertRaises(pressing.NotPressed):
+            self.take(page, dl_dir=None)
+        self.assertEqual(page.clicks, [])
+
+    def test_a_row_that_changed_or_is_turned_off_is_left(self):
+        page = Page(mobile=mobile_rows())
+        page.row_changes[("m", 3)] = "Statement August 13, 2026 Make a Payment"
+        self.assertFalse(self.take(page)[0])
+        self.assertEqual(page.mobile_row_presses, [])
+
+        def off(p, i):
+            raise pressing.TurnedOff("choose a Mobile statement", "turned off", ["turned off"])
+        page = Page(mobile=mobile_rows(), on_mobile_row=off)
+        ok, out, trace = self.take(page)
+        self.assertFalse(ok)
+        self.assertEqual(page.prints, 0)
+        self.assertIn({"note": "the Mobile row is turned off"}, trace)
+        self.assertEqual(page.live_listeners(), 0)
+
+    def stops(self, **kw):
+        page = Page(mobile=mobile_rows(), **kw)
+        with self.assertRaises(pressing.Stop):
+            self.take(page)
+        self.assertFalse((self.tmp / "2026-08-13 Spectrum Mobile Statement.pdf").exists())
+        self.assertFalse(list(self.tmp.glob("*.part")))
+        self.assertEqual(page.live_listeners(), 0)
+        return page
+
+    def test_anything_unexpected_after_the_row_press_stops_the_run(self):
+        def other_day(p, i):
+            mobile_lands(p, i)
+            p.mobile_day = "2026-07-13"
+
+        def off_path(p, i):
+            mobile_lands(p, i)
+            p.url = f"https://{HOST}{site.MOBILE_LIST_PATH}?statementId=Zq9"
+
+        def tab(p, i):
+            mobile_lands(p, i)
+            p.context.pages.append(SimpleNamespace(close=lambda: None))
+
+        def download(p, i):
+            mobile_lands(p, i)
+            p.emit("download", SimpleNamespace(cancel=lambda: None, delete=lambda: None))
+        for on_row in (other_day, off_path, tab, download):
+            page = self.stops(on_mobile_row=on_row)
+            self.assertEqual(page.expands + page.prints, 0, on_row.__name__)
+        for state in ({"dates": ["AUGUST 13, 2026"], "details": True, "mobile": False},
+                      {"dates": ["AUGUST 13, 2026", "JULY 13, 2026"], "details": True, "mobile": True},
+                      {"dates": ["AUGUST 13, 2026"], "details": False, "mobile": True}):
+            page = self.stops(detail_state=lambda p, state=state: state)
+            self.assertEqual(page.prints, 0)
+
+    def test_two_dates_never_share_one_page(self):
+        def same_page(p, i):
+            mobile_lands(p, i)
+            p.url = p.url.replace(mobile_sid(p.mobile_day), mobile_sid("2026-08-13"))
+        page = Page(mobile=mobile_rows(), on_mobile_row=same_page)
+        self.assertTrue(self.take(page)[0])
+        page = Page(mobile=mobile_rows(), on_mobile_row=same_page)
+        with self.assertRaises(pressing.Stop):
+            self.take(page, day="2026-07-13")
+
+    def test_without_one_enabled_expand_all_nothing_is_printed(self):
+        for buttons in ((("Print", True),), (("Expand All", False), ("Print", True)),
+                        (("Expand All", True), ("Expand All", True))):
+            page = Page(mobile=mobile_rows(), mbuttons=buttons)
+            ok, out, _ = self.take(page)
+            self.assertFalse(ok)
+            self.assertEqual((page.expands, page.prints), (0, 0))
+            self.assertFalse(out.exists())
+
+    def test_anything_unexpected_after_expand_all_stops_the_run(self):
+        def moved(p):
+            p.url += "&x=1"
+
+        def tab(p):
+            p.context.pages.append(SimpleNamespace(close=lambda: None))
+        for on_expand in (moved, tab):
+            self.assertEqual(self.stops(on_expand=on_expand).prints, 0)
+        gone = self.stops(detail_state=lambda p: {"dates": [upper_date(p.mobile_day)] if not p.expanded else [],
+                                                  "details": True, "mobile": True})
+        self.assertEqual(gone.prints, 0)
+
+    def test_a_print_that_is_not_this_statement_stops_the_run(self):
+        wrong = text_pdf(["Statement Details", "JULY 13, 2026", "Mobile", "Previous Balance Payments and Credits",
+                          "Remaining Balance Unlimited Plus Lines", "Included Taxes, Fees & Charges"])
+        self.stops(on_print=lambda p: wrong)
+        self.stops(on_print=lambda p: b"not a pdf at all")
+
+    def test_bytes_kept_for_another_statement_or_already_saved_are_refused(self):
+        same = text_pdf(["Statement Details", "AUGUST 13, 2026", "JULY 13, 2026", "Mobile",
+                         "Previous Balance Payments and Credits Remaining Balance Unlimited Plus Lines"])
+        self.assertTrue(self.take(Page(mobile=mobile_rows(), on_print=lambda p: same))[0])
+        with self.assertRaises(pressing.Stop):
+            self.take(Page(mobile=mobile_rows(), on_print=lambda p: same), day="2026-07-13")
+        site._KEPT.clear()
+        site._MOBILE_IDS.clear()
+        with self.assertRaises(pressing.Stop):
+            self.take(Page(mobile=mobile_rows(), on_print=lambda p: same), day="2026-07-13")
+        own = self.tmp / "2026-08-13 Spectrum Mobile Statement.pdf"
+        site._KEPT.clear()
+        self.assertTrue(self.take(Page(mobile=mobile_rows(), on_print=lambda p: same), own_files=[own])[0],
+                        "a Download again may meet its own copy")
+
+    def test_the_printed_header_must_read_the_date_not_just_mention_it(self):
+        incidental = text_pdf(["Statement Details", "JULY 13, 2026", "Mobile", "Payment received August 13, 2026",
+                               "Previous Balance Payments and Credits Remaining Balance Unlimited Plus Lines"])
+        self.stops(on_print=lambda p: incidental)
+        self.assertEqual(site.printed_header_day("Statement Details Espanol AUGUST 13, 2026 Mobile AMOUNT"),
+                         "2026-08-13")
+        self.assertIsNone(site.printed_header_day("Statement Details AUGUST 13, 2026 Internet"))
+        self.assertIsNone(site.printed_header_day("AUGUST 13, 2026 Mobile"))
+
+    def test_a_page_that_changes_while_it_prints_stops_the_run(self):
+        def moves(p):
+            p.url = f"https://{HOST}{site.MOBILE_LIST_PATH}"
+            return mobile_print(p)
+
+        def other_day(p):
+            data = mobile_print(p)
+            p.mobile_day = "2026-07-13"
+            return data
+
+        def errors(p):
+            p.emit("response", Resp("fetchMobileHistoricalStatement", answer={"errors": [{"message": "x"}]}))
+            return mobile_print(p)
+        for on_print in (moves, other_day, errors):
+            self.stops(on_print=on_print)
+
+    def test_a_mobile_answer_that_is_not_an_answer_stops_the_run(self):
+        for resp in (Resp("fetchMobileHistoricalStatement", answer={"errors": [{"message": "x"}]}),
+                     Resp("fetchMobileAccountInfoSpecMob", status=500),
+                     Resp("fetchMobileHistoricalStatement", answer=ValueError("not json"))):
+            def on_row(p, i, resp=resp):
+                mobile_lands(p, i)
+                p.emit("response", resp)
+            page = self.stops(on_mobile_row=on_row)
+            self.assertEqual(page.expands, 0)
+
+            def on_expand(p, resp=resp):
+                p.emit("response", resp)
+            page = self.stops(on_expand=on_expand)
+            self.assertEqual(page.prints, 0)
+        # Any operation's failed answer fails the statement, one this app
+        # never heard of included, and so does one that comes while it prints.
+        for op in ("fetchMobileInsuranceInfo", "fetchCmsAlerts", "somethingNew"):
+            page = self.stops(on_expand=lambda p, op=op: p.emit(
+                "response", Resp(op, answer={"errors": [{"message": "x"}]})))
+            self.assertEqual(page.prints, 0)
+        self.stops(on_print=lambda p: (p.emit("response", Resp("somethingNew", status=503)), mobile_print(p))[1])
+        # Answers without errors, from any operation, are fine.
+        page = Page(mobile=mobile_rows(), on_expand=lambda p: p.emit(
+            "response", Resp("fetchMobileInsuranceInfo", answer={"data": {"x": 1}})))
+        self.assertTrue(self.take(page)[0])
+
+    def test_sections_that_do_not_all_expand_are_not_printed(self):
+        for sections in (lambda p: {"toggles": 1, "sections": 0, "open": 0},
+                         lambda p: {"toggles": 1, "sections": 4, "open": 3 if p.expanded else 0},
+                         lambda p: {"toggles": 2, "sections": 4, "open": 4}):
+            page = Page(mobile=mobile_rows(), sections=sections)
+            ok, out, trace = self.take(page)
+            self.assertFalse(ok)
+            self.assertEqual(page.prints, 0)
+            self.assertFalse(out.exists())
+        polls = []
+
+        def slow(p):
+            if p.expanded:
+                polls.append(1)
+            return {"toggles": 1, "sections": 4, "open": 4 if len(polls) > 3 else 0}
+        self.assertTrue(self.take(Page(mobile=mobile_rows(), sections=slow))[0], "a slow expand is waited for")
+
+    def test_a_print_that_fails_leaves_the_statement(self):
+        page = Page(mobile=mobile_rows(), on_print=lambda p: RuntimeError("Timeout for " + MOB))
+        ok, out, trace = self.take(page)
+        self.assertFalse(ok)
+        self.assertFalse(out.exists())
+        self.assertFalse(list(self.tmp.glob("*.part")))
+        self.assertNotIn(MOB, json.dumps(trace))
+
+    def test_signed_out_after_the_row_press(self):
+        def login(p, i):
+            p.url = f"https://{HOST}/login"
+
+        def answer_401(p, i):
+            mobile_lands(p, i)
+            p.emit("response", Resp("fetchMobileHistoricalStatement", status=401))
+
+        def passcode(p, i):
+            mobile_lands(p, i)
+            p.body = "Enter the code we sent"
+        for on_row, kind in ((login, site.SessionExpired), (answer_401, site.SessionExpired),
+                             (passcode, site.OtpRequired)):
+            page = Page(mobile=mobile_rows(), on_mobile_row=on_row)
+            with self.assertRaises(kind):
+                self.take(page)
+            self.assertEqual(page.prints, 0)
+            self.assertEqual(page.live_listeners(), 0)
 
 
 class Source(unittest.TestCase):
-    def test_one_press_only_through_pressing_click(self):
+    def test_each_press_only_through_pressing_click_under_its_own_guard(self):
         tree = ast.parse((HERE / "spectrum_site.py").read_text(encoding="utf-8"))
         calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
         presses = [n for n in calls if n.func.attr == "click"]
-        self.assertEqual(len(presses), 2, "a statement row and View Printable Statement")
         for n in presses:
             self.assertEqual(ast.unparse(n.func), "pressing.click")
-        css = sorted(ast.unparse(k.value) for n in presses for k in n.keywords if k.arg == "css")
-        self.assertEqual(css, ["pressing.BUTTONS", "pressing.LINKS"])
-        # Each press sits behind its own predicate in the same function.
+        # (function, css, the guard that function calls before its press)
+        expected = {("choose_in_page", "pressing.LINKS", "is_safe_row"),
+                    ("_press_for_statement", "pressing.BUTTONS", None),
+                    ("open_mobile_list", "pressing.LINKS", "is_mobile_account_link"),
+                    ("choose_mobile", "pressing.LINKS", "is_safe_mobile_row"),
+                    ("expand_statement", "pressing.BUTTONS", "is_expand_all")}
+        found = set()
         for fn in ast.walk(tree):
-            if isinstance(fn, ast.FunctionDef) and any(n in ast.walk(fn) for n in presses):
-                called = {c.func.id for c in ast.walk(fn) if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
-                self.assertTrue({"is_safe_row", "row_for"} & called or fn.name == "_press_for_statement", fn.name)
+            if not isinstance(fn, ast.FunctionDef):
+                continue
+            mine = [n for n in presses if n in list(ast.walk(fn))]
+            if not mine:
+                continue
+            self.assertEqual(len(mine), 1, fn.name)
+            css = next(ast.unparse(k.value) for k in mine[0].keywords if k.arg == "css")
+            called = {c.func.id for c in ast.walk(fn) if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+            guard = next((g for f, c, g in expected if f == fn.name), "missing")
+            if guard:
+                self.assertIn(guard, called, fn.name)
+            found.add((fn.name, css, guard))
+        self.assertEqual(found, expected)
+        self.assertEqual(len(presses), 5)
+        # The View Printable Statement press is guarded by its caller.
+        take = next(f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name == "take_statement")
+        self.assertIn("is_safe_control", {c.func.id for c in ast.walk(take)
+                                          if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)})
+        # The page's own Print is never named as something to press.
+        self.assertFalse(site.is_expand_all("Print") or site.is_safe_control("Print")
+                         or site.is_safe_mobile_row("Print", "2026-08-13"))
         for verb in ("dblclick", "tap", "fill", "type", "press", "select_option", "check", "uncheck",
                      "set_input_files", "dispatch_event", "press_sequentially", "press_once", "submit"):
             self.assertNotIn(verb, {n.func.attr for n in calls}, verb)
@@ -1410,7 +1995,8 @@ class Source(unittest.TestCase):
         for raw in ("mouse", "keyboard", "touchscreen", "storage_state", "cookies",
                     "all_headers", "headers", "header_value", "body", "text"):
             self.assertNotIn(raw, attrs, raw)
-        scripts = site._ARM_JS + site._RESULT_JS + site._ROWS_JS + site._COUNT_JS + site._RESTORE_JS
+        scripts = (site._ARM_JS + site._RESULT_JS + site._ROWS_JS + site._COUNT_JS + site._RESTORE_JS
+                   + site._LINKS_JS + site._DETAIL_JS + site._SECTIONS_JS)
         for word in (".click(", "localStorage", "sessionStorage", "document.cookie", "fetch(", "XMLHttpRequest"):
             self.assertNotIn(word, scripts, word)
 
@@ -1432,6 +2018,10 @@ class Source(unittest.TestCase):
         from paperpull_core import doc_types
         rules = doc_types.load_rules(HERE / "document_rules.json")
         self.assertEqual(doc_types.classify_document(site.TITLE, rules)[:2], ("Statement", "Internet Statement"))
+        self.assertEqual(doc_types.classify_document(site.MOBILE_TITLE, rules)[:2], ("Statement", "Mobile Statement"))
+        self.assertFalse(doc_types.should_skip(site.MOBILE_TITLE, rules))
+        for title in ("Your Total So Far", "Order 1234567"):
+            self.assertTrue(doc_types.should_skip(title, rules), title)
 
     def test_config(self):
         config = json.loads((HERE / "config.example.json").read_text())

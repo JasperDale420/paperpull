@@ -61,7 +61,7 @@
     "sdge": {"gets": "Monthly bills, about two years online", "group": "bills", "note": "Reads the one account selected on the site"},
     "shelbycounty": {"gets": "Memphis property tax receipts and the current tax notice", "group": "bills", "note": "One parcel per setup, no sign-in needed"},
     "smud": {"gets": "Monthly bills", "group": "bills"},
-    "spectrum": {"gets": "Internet statements, about a year online", "group": "bills"},
+    "spectrum": {"gets": "Internet and Mobile statements, about a year online", "group": "bills"},
     "statefarm": {"gets": "Bills, renewal notices, ID cards, receipts, policy documents", "group": "insurance"},
     "stripe": {"gets": "Fee invoices and tax forms such as the 1099-K", "group": "banks", "tested": false},
     "target": {"gets": "Online and in-store receipts", "group": "shopping"},

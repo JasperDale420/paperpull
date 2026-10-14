@@ -22,9 +22,19 @@ All notable changes to PaperPull are recorded here. Versioning follows
   pressed and the run stops. A statement whose button Spectrum has turned
   off is left for the next run. The app never pays and never touches Auto
   Pay, paperless, equipment, service or settings, and account numbers and
-  the service address stay out of every file and log. Spectrum Mobile
-  statements are not covered yet. Built from the account owner's survey;
-  a full live run is still to come.
+  the service address stay out of every file and log. Built from the
+  account owner's survey; a full live run is still to come.
+- **Spectrum Mobile statements, from the same app.** Spectrum has no PDF
+  of a Mobile statement, so for each finished one the app opens Billing,
+  presses its "Mobile Account Number" link, presses the statement's own
+  row and its Expand All, checks the page reads that statement's date and
+  Mobile before and after, and prints the page to a PDF named like
+  `2026-08-13 Spectrum Mobile Statement.pdf`. The statement still under
+  way, the running total and device orders are not listed, and the page's
+  own Print, Auto Pay, payments, device and settings controls are never
+  pressed. The Mobile account number, phone numbers and amounts stay out
+  of every file name, record and log. Built from a survey; the live run
+  is still to come.
 
 ## [0.51.0] - 2026-10-14
 

@@ -1,3 +1,3 @@
-Spectrum Internet statements from www.spectrum.net
+Spectrum Internet and Mobile statements from www.spectrum.net
 
 See README.md for setup and supervised pilot instructions.

@@ -60,6 +60,33 @@ Choosing an older statement in page is not yet run live.
     statement kept earlier in this process or a PDF already in the folder.
     Anything else stops the run.
 
+MOBILE (survey of 2026-10-13, read only, not yet run live): Spectrum
+Mobile is a separate bill, and its site has no PDF of a Mobile statement.
+  * Billing (/billing, opened by its address) draws, under Statements, one
+    link "Mobile Account Number: <n>" (an anchor with role=link, href
+    "javascript:void(0)", non-breaking spaces between its words). Pressing
+    it moves the page to /billing/mobile-statements. Whether that address
+    opened directly holds the session was not seen, so the link is pressed.
+  * The Mobile list draws the statement under way ("Statement October 13
+    Auto Pay: ..." with no year), "Your Total So Far ...", the finished
+    statements "Statement <Month> <D>, <YYYY>" and an "Order <n> <date>"
+    row. Only the finished statements are listed (mobile_days). A Mobile
+    statement is known as "mobile:YYYY-MM-DD".
+  * Pressing a finished statement's row moves the page to
+    /mobile-billing/statement-history?statementId=<id>&newStatementVersion=..
+    The page reads "Statement Details", the date ("AUGUST 13, 2026") and
+    "Mobile", has collapsed sections, one "Expand All" button and a "Print"
+    button that opens the browser's print dialog, which is never pressed.
+    The page's own GraphQL answer for the list (fetchMobileDigitalStatements
+    ForBillPresentment) was not read, so no statement is opened by its id.
+  * A statement is taken by pressing its own row, checking the address is a
+    Mobile statement's own and the page reads that date alone and Mobile,
+    pressing Expand All, checking again, and printing the page with
+    receipt_pdf.print_page_to_pdf (Page.printToPDF), the way the Venmo app
+    prints a month. The PDF's text must print the date, and its bytes may
+    not be another statement's. The statementId values are private words
+    the moment the page lands, and no two dates may land on one id.
+
 SESSION: a 401 from the graph, a GraphQL answer with errors, the sign-in
 page (/login, id.spectrum.net), a validateSession answer saying the session
 is not valid, or the idle-timeout dialog raise SessionExpired. A one-time
@@ -68,8 +95,13 @@ either. Nothing is filled in, nothing is recorded against the document.
 
 SAFETY (an account that can pay, enroll in Auto Pay and paperless, change
 service and buy equipment):
-  Strictly READ-ONLY. Two controls are ever pressed, each through
-  paperpull_core.pressing.click under its own predicate. A statement's own
+  Strictly READ-ONLY. Five controls are ever pressed, each through
+  paperpull_core.pressing.click under its own predicate. For Mobile: the
+  Billing page's "Mobile Account Number" link (is_mobile_account_link,
+  that label with only a number after it), a Mobile statement's own row
+  (is_safe_mobile_row, "Statement Month D, YYYY" of its date and nothing
+  else), and that statement's "Expand All" (is_expand_all, exactly). For
+  Internet: A statement's own
   row on Statements, once, after is_safe_row (a row whose words name
   paying, Auto Pay, paperless, equipment, settings, signing out and the
   rest is refused, and only "Statement Month D, YYYY" of that statement's
@@ -78,14 +110,18 @@ service and buy equipment):
   Nothing here fills, selects, types or scrolls. No host but
   www.spectrum.net is ever opened.
 
-PRIVACY: both account numbers, the service address (each part of four
+PRIVACY: the Mobile account number (from its link's words) and a Mobile
+statement page's statementId and newStatementVersion are private words
+before anything is logged, and no row or heading words are kept. Both
+Internet account numbers, the service address (each part of four
 letters or more, or with a digit), and every statement id are registered as
 private words as soon as the list answer is read, before anything is
 logged. Records keep the family label, the date and a fixed title only.
 
 KNOWN CEILINGS
-  * Internet statements only. Mobile statements have no PDF in the site's
-    own code and are not listed.
+  * Mobile statements are printed from the page, since the site has none
+    as a PDF. A Mobile list that draws a statement row in a shape not
+    seen, two rows of one date or two Mobile accounts stops the list.
   * A one-time passcode, when Spectrum asks for one, stops the run.
   * Two statements of one date (one for each account after a transfer)
     are left for a manual save.
@@ -107,7 +143,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 from urllib.parse import unquote, urlencode, urlsplit
 
-from paperpull_core import pressing
+from paperpull_core import pressing, receipt_pdf
 from paperpull_core.controls import SETTINGS_CONTROL_RE, AUTH_CONTROL_RE
 from paperpull_core.redact import private_words, redact, set_private_words  # noqa: F401  (re-exported)
 from paperpull_core.urls import is_safe_url as _host_allows
@@ -517,10 +553,11 @@ _ID_TEXT_RE = re.compile(
 _ANY_ID_TEXT_RE = re.compile(
     r"Account=([0-9]{4,32})\|StatementDate=(\d{4}-\d{2}-\d{2})\|StatementCode=([0-9]{1,6})\|(PDF|DIGITAL)_DOCUMENT")
 
-CURRENT, PRIOR = "current", "prior"
-FAMILY_LABEL = {CURRENT: "Internet", PRIOR: "Internet (prior account)"}
+CURRENT, PRIOR, MOBILE = "current", "prior", "mobile"
+FAMILY_LABEL = {CURRENT: "Internet", PRIOR: "Internet (prior account)", MOBILE: "Mobile"}
 TITLE = "Spectrum Internet Statement"
-DOCUMENT_ID_RE = re.compile(r"(current|prior):((?:19|20)\d{2}-\d{2}-\d{2})")
+MOBILE_TITLE = "Spectrum Mobile Statement"
+DOCUMENT_ID_RE = re.compile(r"(current|prior|mobile):((?:19|20)\d{2}-\d{2}-\d{2})")
 
 
 def decode_statement_id(statement_id) -> Tuple[str, str]:
@@ -728,9 +765,12 @@ class RawDoc:
 
 
 def raw_docs(entries: List[Entry]) -> List[RawDoc]:
-    return [RawDoc(title=TITLE, account=FAMILY_LABEL[e.family], date_text=e.date, href="",
-                   text=TITLE, row_index=i, kind="statement", document_id=e.document_id)
-            for i, e in enumerate(entries)]
+    out = []
+    for i, e in enumerate(entries):
+        title = MOBILE_TITLE if e.family == MOBILE else TITLE
+        out.append(RawDoc(title=title, account=FAMILY_LABEL[e.family], date_text=e.date, href="",
+                          text=title, row_index=i, kind="statement", document_id=e.document_id))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1002,10 +1042,29 @@ def expand_all(page) -> None:
     return None
 
 
-def collect_download_docs(page) -> List[RawDoc]:
-    """Every Internet statement Spectrum lists, current and prior account.
-    Nothing is pressed."""
-    return raw_docs(read_statement_list(page))
+def collect_download_docs(page, dl_dir=None, mobile: bool = True) -> List[RawDoc]:
+    """Every Internet statement Spectrum lists, current and prior account,
+    then, with `mobile`, every finished Mobile statement. The Internet list
+    presses nothing. The Mobile list is reached by pressing Billing's
+    "Mobile Account Number" link (open_mobile_list), which needs the run's
+    confirmed download folder `dl_dir`. Without it, Mobile is left unread
+    and the Internet statements are returned as before. A Mobile list that
+    stops raises ListStopped holding the Internet statements read, so they
+    are kept and the list is not called whole."""
+    internet = read_statement_list(page)
+    if not mobile:
+        return raw_docs(internet)
+    if not dl_dir:
+        # The Internet list is read as before. Mobile is left unread, since
+        # no press is made without the folder, and the downloads stop the
+        # run for the same reason.
+        log.info("the download folder was not confirmed, so the Mobile statements were not opened")
+        return raw_docs(internet)
+    try:
+        found = mobile_entries(page, dl_dir)
+    except ListStopped as stop:
+        raise ListStopped("the Mobile list stopped, %s" % stop, raw_docs(internet))
+    return raw_docs(internet + found)
 
 
 # ---------------------------------------------------------------------------
@@ -1633,8 +1692,9 @@ def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
                   trace: Optional[list] = None, href: str = "",
                   document_id: str = "", own_files=()) -> bool:
     """Save the statement discovery recorded as `document_id`
-    ("current:YYYY-MM-DD" or "prior:YYYY-MM-DD"), dated `iso_date`.
-    Statements is read again and exactly one entry there must carry that
+    ("current:YYYY-MM-DD", "prior:YYYY-MM-DD" or "mobile:YYYY-MM-DD"), dated
+    `iso_date`. A Mobile statement is taken by take_mobile. For an Internet
+    one Statements is read again and exactly one entry there must carry that
     family and date. The newest statement's page is then opened by its
     address, any other statement is chosen by pressing its row there.
     False, nothing pressed, when it is not found. SessionExpired and
@@ -1647,6 +1707,8 @@ def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
         log.info("no statement was recorded for this document")
         _note(trace, note="no recorded statement")
         return False
+    if m.group(1) == MOBILE:
+        return take_mobile(page, iso_date, out_path, dl_dir, trace, own_files=own_files)
     try:
         entries = read_statement_list(page)
     except ListStopped as stop:
@@ -1659,6 +1721,758 @@ def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
         _note(trace, note="no single entry matches the record", matches=len(found))
         return False
     return take_statement(page, found[0], out_path, dl_dir, trace, entries, own_files=own_files)
+
+
+# ---------------------------------------------------------------------------
+# Mobile statements, a second family. See MOBILE in the module docstring.
+# ---------------------------------------------------------------------------
+BILLING_HOME_PATH = "/billing"
+BILLING_HOME_URL = BASE + BILLING_HOME_PATH
+MOBILE_LIST_PATH = "/billing/mobile-statements"
+MOBILE_DETAIL_PATH = "/mobile-billing/statement-history"
+# The Billing page's "Mobile Account Number" link and the Mobile list's rows
+# are anchors with role=link and href "javascript:void(0)" (survey of
+# 2026-10-13). The rows' class was not seen, so they are found by role and
+# told apart by their words.
+MOBILE_LINK = "a[role=link]"
+MOBILE_ROW = "a[role=link]"
+OPEN_MOBILE_STEP = "open the Mobile statements"
+CHOOSE_MOBILE_STEP = "choose a Mobile statement"
+EXPAND_STEP = "expand the Mobile statement"
+_MONTH_WORDS = ("January|February|March|April|May|June|July|August|September|October|"
+                "November|December")
+# "Mobile Account Number: 8350..." with non-breaking spaces between the
+# words, read after normalized(), so any run of white space is one space.
+# The number may be shown whole or masked.
+_MOBILE_LINK_RE = re.compile(r"mobile account number ?:? ?([0-9*#\u2022xX. -]{0,40})")
+# The number part must hold at least one digit or masking character.
+_ACCOUNT_TOKEN_RE = re.compile(r"[0-9*#\u2022xX]")
+_INTERNET_LINK_RE = re.compile(r"^internet account number\b")
+# A finished statement's row, "Statement August 13, 2026", whole, with at most
+# one amount after it (an amount is private and never kept).
+_MOBILE_ROW_RE = re.compile(r"Statement (%s) (\d{1,2}), (\d{4})(?: -?\$[0-9,]+\.\d{2})?" % _MONTH_WORDS)
+# The statement under way, "Statement October 13 Auto Pay: Oct 30 $...", has
+# no year after its day.
+_UNFINISHED_ROW_RE = re.compile(r"^Statement (%s) \d{1,2}(?!\d|, \d{4})" % _MONTH_WORDS)
+_FULL_DATE_RE = re.compile(r"(%s) (\d{1,2}), (\d{4})" % _MONTH_WORDS, re.I)
+EXPAND_ALL_RE = re.compile(r"^\s*expand\s+all\s*$", re.I)
+
+_LINKS_JS = r"""(sel) => Array.from(document.querySelectorAll(sel))
+  .map(a => (a.innerText || '').replace(/\s+/g, ' ').trim())"""
+
+# Read only. The distinct texts of drawn elements whose whole text is a full
+# date ("AUGUST 13, 2026"), whether an element reads exactly "Statement
+# Details", and whether a line reading exactly "Mobile" sits within four
+# ancestors of such a date. An element that is not drawn (no box, or hidden)
+# is skipped, since innerText gives a hidden element's whole text.
+_DETAIL_JS = r"""() => {
+  const full = /^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},\s+\d{4}$/i;
+  const flat = s => (s || '').replace(/\s+/g, ' ').trim();
+  const drawn = el => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+  const out = {dates: [], details: false, mobile: false};
+  for (const el of document.querySelectorAll('body *')) {
+    const raw = el.textContent || '';
+    if (!raw.trim() || raw.length > 120 || !drawn(el)) continue;
+    const t = flat(el.innerText);
+    if (t === 'Statement Details') out.details = true;
+    if (!full.test(t)) continue;
+    if (!out.dates.includes(t)) out.dates.push(t);
+    let a = el;
+    for (let i = 0; i < 5 && a; i++, a = a.parentElement) {
+      if ((a.innerText || '').split('\n').some(line => flat(line) === 'Mobile')) { out.mobile = true; break; }
+    }
+  }
+  return out;
+}"""
+
+# The statementId each Mobile statement's page carried in this process, so
+# two dates never share one page. In memory only, never written or logged.
+_MOBILE_IDS: dict = {}
+
+
+def full_date(text) -> Optional[str]:
+    """A whole "Month D, YYYY" date, in any case, as YYYY-MM-DD, or None."""
+    m = _FULL_DATE_RE.fullmatch(_flat(text))
+    if not m:
+        return None
+    try:
+        return _date(int(m.group(3)), _MONTHS[m.group(1)[:3].lower()], int(m.group(2))).isoformat()
+    except ValueError:
+        return None
+
+
+def mobile_row_day(text) -> Optional[str]:
+    """The date of a finished Mobile statement's row, "Statement August 13,
+    2026" whole (an amount after it allowed), as YYYY-MM-DD, or None."""
+    m = _MOBILE_ROW_RE.fullmatch(_flat(text))
+    if not m:
+        return None
+    try:
+        return _date(int(m.group(3)), _MONTHS[m.group(1)[:3].lower()], int(m.group(2))).isoformat()
+    except ValueError:
+        return None
+
+
+def mobile_account_number(label) -> Optional[str]:
+    """The number part of a "Mobile Account Number: <n>" link label, or None
+    when the label is not that link's, a number or its mask included."""
+    m = _MOBILE_LINK_RE.fullmatch(normalized(label))
+    if not m or not _ACCOUNT_TOKEN_RE.search(m.group(1)):
+        return None
+    return m.group(1).strip()
+
+
+def is_mobile_account_link(label) -> bool:
+    """The guard for the Billing page's "Mobile Account Number" link. Deny by
+    default. The label must be exactly that, with only an account number
+    after it, and pass the shared core guards. The app's blocklist refuses
+    "mobile", so this exact shape takes its place for this one label."""
+    if mobile_account_number(label) is None:
+        return False
+    text = normalized(label)
+    return not (SETTINGS_CONTROL_RE.search(text) or AUTH_CONTROL_RE.search(text))
+
+
+def is_safe_mobile_row(text, day: str) -> bool:
+    """Whether a Mobile list row may be pressed to choose the statement dated
+    `day`. Deny by default. Unreadable words are refused, then this app's
+    blocklist (pay, Auto Pay, order, settings and the rest), then the shared
+    core guards, and only then a row that is exactly "Statement Month D,
+    YYYY" of that date. The statement under way (Auto Pay, no year), "Your
+    Total So Far" and an "Order" row never pass."""
+    label = normalized(text)
+    if not label or not valid_iso(day):
+        return False
+    if FORBIDDEN_CONTROL_RE.search(label):
+        return False
+    if SETTINGS_CONTROL_RE.search(label) or AUTH_CONTROL_RE.search(label):
+        return False
+    return mobile_row_day(text) == day
+
+
+def is_expand_all(label) -> bool:
+    """The guard for the Mobile statement's "Expand All". Deny by default,
+    exactly that label, and nothing the blocklist or the core guards
+    refuse."""
+    text = normalized(label)
+    if not EXPAND_ALL_RE.fullmatch(text):
+        return False
+    return not (FORBIDDEN_CONTROL_RE.search(text) or SETTINGS_CONTROL_RE.search(text)
+                or AUTH_CONTROL_RE.search(text))
+
+
+def mobile_days(texts) -> List[str]:
+    """The dates of the finished statements a Mobile list shows, in its
+    order. The statement under way (no year after its day) is skipped, and
+    so is every row that does not start "Statement" ("Your Total So Far",
+    "Order ..."). Any other row starting "Statement" is a shape not seen, and
+    two rows of one date leave nothing to tell them apart: both stop the
+    list. Row words are never kept or logged."""
+    days: List[str] = []
+    for t in texts or []:
+        flat = _flat(t)
+        if not flat.startswith("Statement"):
+            continue
+        day = mobile_row_day(flat)
+        if day:
+            if day in days:
+                raise ListStopped("two Mobile statements carry one date")
+            days.append(day)
+        elif not _UNFINISHED_ROW_RE.match(flat):
+            raise ListStopped("a Mobile statement row has a shape this app does not know")
+    return days
+
+
+def _link_texts(page, sel: str) -> Optional[list]:
+    try:
+        return [str(t or "") for t in (page.evaluate(_LINKS_JS, sel) or [])]
+    except Exception:
+        return None
+
+
+def _mobile_detail_query(url: str) -> Optional[dict]:
+    """The query of a Mobile statement's own page, or None for any other
+    address: https, exactly www.spectrum.net, no port, credentials or
+    fragment, exactly the path /mobile-billing/statement-history, and a
+    query of a non-empty statementId with at most newStatementVersion
+    beside it, each once."""
+    if not is_safe_url(url):
+        return None
+    try:
+        parts = urlsplit(url)
+        if parts.port is not None or parts.fragment or parts.path != MOBILE_DETAIL_PATH:
+            return None
+        pairs = _query_pairs(parts.query)
+    except ValueError:
+        return None
+    keys = [k for k, _ in pairs]
+    if len(set(keys)) != len(keys) or "statementId" not in keys \
+            or not set(keys) <= {"statementId", "newStatementVersion"}:
+        return None
+    q = dict(pairs)
+    return q if q["statementId"] else None
+
+
+def detail_state(page) -> dict:
+    """What the Mobile statement page draws (_DETAIL_JS), {} when it cannot
+    be read. Never logged."""
+    try:
+        got = page.evaluate(_DETAIL_JS) or {}
+    except Exception:
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def heading_says(state: dict, day: str, only: bool) -> str:
+    """"" when the page's state shows the Mobile statement dated `day`: an
+    element reading "Statement Details", a date element reading `day`
+    ("AUGUST 13, 2026"), with "Mobile" beside it. With `only`, as the page
+    first draws, no other date may be drawn on its own, since the expanded
+    sections, which may hold other dates, are closed then. Otherwise our own
+    words for what is wrong."""
+    days = [full_date(t) for t in state.get("dates") or []]
+    if not state.get("details"):
+        return "the page does not read Statement Details"
+    if day not in days:
+        return "the page does not show the statement's date"
+    if only and set(days) != {day}:
+        return "the page shows another date beside the statement's"
+    if not state.get("mobile"):
+        return "the page does not say Mobile beside its date"
+    return ""
+
+
+class MobileWatch(Watch):
+    """The page's own GraphQL answers while a Mobile press or the print is
+    under way. Kept, as Watch keeps them: every graph answer's status and
+    the session check, and every graph answer, of which only the status and
+    whether the JSON has an "errors" member are read, after the wait. Any
+    of them failing fails the statement, whatever operation it answered,
+    since a page drawn beside a failed answer may be drawn from an older
+    one. Nothing else of a request or response is looked at."""
+
+    def __init__(self, page):
+        super().__init__(page, "")
+        self.mine: list = []
+
+    def heard(self, response) -> None:
+        super().heard(response)
+        try:
+            request = response.request
+            if request.url != GRAPH_URL or request.method != "POST":
+                return
+        except Exception:
+            return
+        self.mine.append(response)
+
+    def failed(self) -> str:
+        """SessionExpired for a 401 or a session check that says the session
+        is not valid. "" when every graph answer was a 200 JSON object
+        without errors, else our own words."""
+        self.check_session()
+        for response in list(self.mine):
+            try:
+                status = int(response.status)
+            except Exception:
+                status = 0
+            if status != 200:
+                return "a graph answer came back %d" % status
+            try:
+                answer = response.json()
+            except Exception:
+                return "a graph answer is not JSON"
+            if not isinstance(answer, dict) or answer.get("errors"):
+                return "a graph answer carries errors"
+        return ""
+
+
+class _Strays:
+    """Tabs, popups and downloads a press brings. A download is only counted,
+    cancelled and deleted, and a file it left in the run's folder removed.
+    Nothing of either is read or kept."""
+
+    def __init__(self, page, dl_dir):
+        self.page, self.dl_dir = page, dl_dir
+        self.popups: list = []
+        self.downloads: list = []
+        self._pairs: tuple = ()
+        self.before: list = []
+        self.folder_before: Optional[dict] = {}
+
+    def start(self) -> "_Strays":
+        popups, downloads = self.popups, self.downloads
+
+        def on_popup(popup):
+            popups.append(1)
+
+        def on_download(download):
+            downloads.append(1)
+            try:
+                download.cancel()
+            except Exception:
+                pass
+            try:
+                download.delete()
+            except Exception:
+                pass
+        self._pairs = (("popup", on_popup), ("download", on_download))
+        self.before = tabs_now(self.page)
+        self.folder_before = _entries(self.dl_dir)
+        self.page.on("popup", on_popup)
+        self.page.on("download", on_download)
+        return self
+
+    def stop(self) -> None:
+        _unlisten(self.page, self._pairs)
+
+    def found(self) -> str:
+        """"" when the press brought no tab, popup or download, else which."""
+        if _opened_since(self.page, self.before) or self.popups:
+            return "a tab opened"
+        if len(self.downloads) + _changed_entries(self.dl_dir, self.folder_before):
+            return "a download began"
+        return ""
+
+
+def mobile_stopped(step: str, why: str):
+    """A Mobile press was made and the page did not do what it does. The run
+    stops, since the next press could do the same."""
+    return pressing.no_answer(
+        step, "the press opened something other than what it opens",
+        "A press to %s did not bring what it brings (%s), so the run stops." % (step, why))
+
+
+def _wait_for(page, ready, polls: int = 40) -> bool:
+    for _ in range(polls):
+        if ready():
+            return True
+        page.wait_for_timeout(500)
+    return ready()
+
+
+def open_mobile_list(page, dl_dir, trace=None) -> Optional[List[str]]:
+    """Open Billing by its address and press its "Mobile Account Number"
+    link once, under is_mobile_account_link, to reach the Mobile statement
+    list, and return the dates of its finished statements (mobile_days).
+    None, nothing pressed, when Billing draws no such link, as for an
+    Internet-only customer. ListStopped, nothing pressed, for a Billing page
+    that did not draw its statements or draws two Mobile links, and after
+    the press for a list that did not settle. A tab, popup or download the
+    press brought stops the run. SessionExpired and OtpRequired propagate."""
+    if not dl_dir:
+        raise no_folder()
+    before = tabs_now(page)
+    try:
+        page.goto(BILLING_HOME_URL, wait_until="domcontentloaded", timeout=60000)
+    except Exception as e:
+        log.info("opening Billing failed (%s)", type(e).__name__)
+        check_page(page)
+        raise ListStopped("Billing did not open")
+    if _opened_since(page, before):
+        raise ListStopped("opening Billing opened another tab, which was closed")
+    check_page(page)
+    if not _on_path(page, BILLING_HOME_PATH):
+        raise ListStopped("Billing settled off its own address")
+    seen: dict = {"links": None, "still": 0}
+
+    def drawn() -> bool:
+        texts = _link_texts(page, MOBILE_LINK) or []
+        mobile = [i for i, t in enumerate(texts) if mobile_account_number(t) is not None]
+        internet = any(_INTERNET_LINK_RE.match(normalized(t)) for t in texts)
+        now = (tuple(mobile), internet)
+        seen["still"] = seen["still"] + 1 if now == seen["links"] else 0
+        seen["links"] = now
+        return (bool(mobile) or internet) and seen["still"] >= 3
+    _wait_for(page, drawn)
+    check_page(page)
+    texts = _link_texts(page, MOBILE_LINK) or []
+    mobile = [i for i, t in enumerate(texts) if mobile_account_number(t) is not None]
+    for i in mobile:
+        register_private(_parts(mobile_account_number(texts[i])))
+    if any(normalized(t).startswith("mobile account number") and mobile_account_number(t) is None
+           for t in texts):
+        raise ListStopped("Billing draws a Mobile account link this app does not know")
+    if not mobile:
+        if not any(_INTERNET_LINK_RE.match(normalized(t)) for t in texts):
+            raise ListStopped("Billing did not draw its statement links")
+        log.info("Billing lists no Mobile account")
+        _note(trace, note="no Mobile account")
+        return None
+    if len(mobile) != 1:
+        raise ListStopped("Billing draws %d Mobile account links, not one" % len(mobile))
+    link = page.locator(MOBILE_LINK).nth(mobile[0])
+    try:
+        label = link.inner_text(timeout=2000)
+    except Exception as e:
+        raise ListStopped("the Mobile link could not be read, %s" % type(e).__name__)
+    if _flat(label) != _flat(texts[mobile[0]]) or not is_mobile_account_link(label):
+        raise ListStopped("the guard refused the Mobile link")
+    session = MobileWatch(page)
+    strays = _Strays(page, dl_dir)
+    pressed = False
+    try:
+        session.start()
+        strays.start()
+        pressing.click(page, link, css=pressing.LINKS, what="the Mobile Account Number link",
+                       words=_words(), step="open the Mobile statements")
+        pressed = True
+        rows: dict = {"days": None, "n": -1, "still": 0}
+
+        def listed() -> bool:
+            if not _on_path(page, MOBILE_LIST_PATH):
+                return False
+            texts = _link_texts(page, MOBILE_ROW) or []
+            n = sum(1 for t in texts if _flat(t).startswith("Statement"))
+            rows["still"] = rows["still"] + 1 if n == rows["n"] else 0
+            rows["n"] = n
+            return n > 0 and rows["still"] >= 3
+        _wait_for(page, listed)
+        why = strays.found()
+    except (SessionExpired, OtpRequired, pressing.Stop):
+        raise
+    except Exception as e:
+        if not pressed:
+            raise
+        raise mobile_stopped(OPEN_MOBILE_STEP, "the page could not be read after the press, %s"
+                             % type(e).__name__) from None
+    finally:
+        session.stop()
+        strays.stop()
+    _note(trace, note="Mobile link pressed", strays=bool(why))
+    if why:
+        raise mobile_stopped(OPEN_MOBILE_STEP, why)
+    why = session.failed()
+    check_page(page)
+    if why:
+        raise ListStopped(why)
+    if not _on_path(page, MOBILE_LIST_PATH):
+        raise ListStopped("the Mobile link did not open the Mobile statements")
+    texts = _link_texts(page, MOBILE_ROW)
+    if texts is None:
+        raise ListStopped("the Mobile statement rows could not be read")
+    return mobile_days(texts)
+
+
+def mobile_entries(page, dl_dir, trace=None) -> List[Entry]:
+    """Every finished Mobile statement the Mobile list shows, as Entries of
+    the mobile family, [] when Billing has no Mobile account."""
+    days = open_mobile_list(page, dl_dir, trace)
+    return [Entry(MOBILE, d) for d in days or []]
+
+
+def choose_mobile(page, index: int, text: str, day: str, dl_dir, trace=None) -> bool:
+    """Press the Mobile list row `index`, read as `text`, to open the
+    statement dated `day`. False, nothing pressed, when the row's words
+    changed or the guard refuses them, or Spectrum kept it turned off.
+    After the press, a tab, popup or download, a page that is not exactly a
+    Mobile statement's own address, a statementId another date's page
+    already carried, or a page that does not read this statement's date and
+    Mobile on its own stops the run. SessionExpired and OtpRequired
+    propagate."""
+    if not dl_dir:
+        raise no_folder()
+    row = page.locator(MOBILE_ROW).nth(index)
+    try:
+        now = _flat(row.inner_text(timeout=2000))
+    except Exception as e:
+        _note(trace, note="the Mobile row could not be read", error=type(e).__name__)
+        return False
+    if now != _flat(text) or not is_safe_mobile_row(now, day):
+        _note(trace, note="the Mobile row changed or was refused before the press")
+        return False
+    session = MobileWatch(page)
+    strays = _Strays(page, dl_dir)
+    pressed = False
+    state: dict = {}
+    try:
+        session.start()
+        strays.start()
+        try:
+            pressing.click(page, row, css=pressing.LINKS, what="the Mobile statement row dated %s" % day,
+                           words=_words(), step="choose a Mobile statement")
+        except pressing.TurnedOff:
+            log.info("the Mobile statement row stayed turned off, so nothing was pressed")
+            _note(trace, note="the Mobile row is turned off")
+            return False
+        pressed = True
+
+        def landed() -> bool:
+            if _mobile_detail_query(page.url or "") is None:
+                return False
+            state.clear()
+            state.update(detail_state(page))
+            return bool(state.get("dates")) and bool(state.get("details"))
+        _wait_for(page, landed)
+        why = strays.found()
+    except (SessionExpired, OtpRequired, pressing.Stop):
+        raise
+    except Exception as e:
+        if not pressed:
+            raise
+        raise mobile_stopped(CHOOSE_MOBILE_STEP, "the page could not be read after the press, %s"
+                             % type(e).__name__) from None
+    finally:
+        session.stop()
+        strays.stop()
+    _note(trace, note="Mobile row pressed", strays=bool(why))
+    if why:
+        raise mobile_stopped(CHOOSE_MOBILE_STEP, why)
+    why = session.failed()
+    check_page(page)
+    if why:
+        raise mobile_stopped(CHOOSE_MOBILE_STEP, why)
+    q = _mobile_detail_query(page.url or "")
+    if q is None:
+        raise mobile_stopped(CHOOSE_MOBILE_STEP, "the page it opened is not a Mobile statement's own")
+    register_private([v for v in q.values() if v])
+    other = _MOBILE_IDS.get(q["statementId"])
+    if other is not None and other != day:
+        raise mobile_stopped(CHOOSE_MOBILE_STEP, "the page is the one another date's row opened")
+    why = heading_says(state, day, only=True)
+    if why:
+        raise mobile_stopped(CHOOSE_MOBILE_STEP, why)
+    _MOBILE_IDS[q["statementId"]] = day
+    return True
+
+
+# Read only. The sections that follow the page's one "Expand All" (or, once
+# pressed, "Collapse All") button in the page, as buttons carrying
+# aria-expanded, and how many of them read expanded. The survey saw the
+# sections as accordion buttons below Expand All; that they carry
+# aria-expanded is not yet seen live, so a page showing none is left.
+_SECTIONS_JS = r"""() => {
+  const toggle = Array.from(document.querySelectorAll('button'))
+    .filter(b => /^\s*(expand|collapse)\s+all\s*$/i.test(b.innerText || ''));
+  if (toggle.length !== 1) return {toggles: toggle.length, sections: 0, open: 0};
+  const after = Array.from(document.querySelectorAll('button[aria-expanded]'))
+    .filter(b => toggle[0].compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+  return {toggles: 1, sections: after.length,
+          open: after.filter(b => b.getAttribute('aria-expanded') === 'true').length};
+}"""
+
+
+def sections(page) -> dict:
+    """What _SECTIONS_JS reads, {} when it cannot be read. Counts only."""
+    try:
+        got = page.evaluate(_SECTIONS_JS) or {}
+    except Exception:
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def expand_statement(page, day: str, dl_dir, trace=None) -> bool:
+    """Press the open Mobile statement's "Expand All" once, under
+    is_expand_all, so every section shows in the print, and wait until
+    every section after it reads expanded. False, nothing pressed, when
+    there is not exactly one Expand All, it is refused or turned off, or no
+    section after it can be read. False, nothing printed, when the
+    sections do not all read expanded after the press. After the press, a
+    tab, popup or download, an address that changed, a Mobile answer that
+    is not an answer, or a page that no longer reads this statement's date
+    and Mobile stops the run. SessionExpired and OtpRequired propagate."""
+    if not dl_dir:
+        raise no_folder()
+    where = page.url or ""
+    try:
+        button = page.get_by_role("button", name=EXPAND_ALL_RE)
+        count = button.count()
+    except Exception:
+        count = -1
+    if count != 1:
+        _note(trace, note="not one Expand All button")
+        return False
+    el = button.first
+    try:
+        label = el.inner_text(timeout=2000) or ""
+        enabled = el.is_enabled()
+    except Exception:
+        _note(trace, note="Expand All could not be read")
+        return False
+    if not is_expand_all(label) or not enabled:
+        _note(trace, note="Expand All refused or turned off")
+        return False
+    before = sections(page)
+    if before.get("toggles") != 1 or not before.get("sections"):
+        _note(trace, note="no section to expand was read")
+        return False
+    session = MobileWatch(page)
+    strays = _Strays(page, dl_dir)
+    pressed = False
+    after: dict = {}
+    try:
+        session.start()
+        strays.start()
+        pressing.click(page, el, css=pressing.BUTTONS, what="the Expand All button",
+                       words=_words(), step="expand the Mobile statement")
+        pressed = True
+
+        def opened() -> bool:
+            after.clear()
+            after.update(sections(page))
+            return bool(after.get("sections")) and after.get("open") == after.get("sections")
+        _wait_for(page, opened, polls=20)
+        why = strays.found()
+        state = detail_state(page)
+    except (SessionExpired, OtpRequired, pressing.Stop):
+        raise
+    except Exception as e:
+        if not pressed:
+            raise
+        raise mobile_stopped(EXPAND_STEP, "the page could not be read after the press, %s"
+                             % type(e).__name__) from None
+    finally:
+        session.stop()
+        strays.stop()
+    _note(trace, note="Expand All pressed", strays=bool(why), sections=after.get("sections", 0),
+          open=after.get("open", 0))
+    if why:
+        raise mobile_stopped(EXPAND_STEP, why)
+    why = session.failed()
+    check_page(page)
+    if why:
+        raise mobile_stopped(EXPAND_STEP, why)
+    if (page.url or "") != where:
+        raise mobile_stopped(EXPAND_STEP, "the address changed")
+    why = heading_says(state, day, only=False)
+    if why:
+        raise mobile_stopped(EXPAND_STEP, why)
+    if not after.get("sections") or after.get("open") != after.get("sections"):
+        log.info("the Mobile statement dated %s did not show every section, so it is not printed", day)
+        _note(trace, note="not every section expanded")
+        return False
+    return True
+
+
+# The printed page's header, as its text reads: "Statement Details", then
+# within a few words the statement's date, then "Mobile".
+_PRINTED_HEADER_RE = re.compile(
+    r"statement details\b.{0,80}?\b(%s) (\d{1,2}), (\d{4})\b.{0,40}?\bmobile\b" % _MONTH_WORDS.lower(),
+    re.I | re.S)
+
+
+def printed_header_day(text) -> Optional[str]:
+    """The date the printed Mobile statement's header reads, "Statement
+    Details" with the first full date after it and "Mobile" just after that,
+    as YYYY-MM-DD, or None."""
+    m = _PRINTED_HEADER_RE.search(re.sub(r"\s+", " ", str(text or "")))
+    if not m:
+        return None
+    try:
+        return _date(int(m.group(3)), _MONTHS[m.group(1)[:3].lower()], int(m.group(2))).isoformat()
+    except ValueError:
+        return None
+
+
+def bind_mobile(data: bytes, day: str, out_path: Path, trace=None, own_files=()) -> str:
+    """"" when a printed Mobile statement is this one's, beyond the page
+    having read its date before and after the print: a PDF whose header
+    reads "Statement Details", this date and "Mobile" (printed_header_day),
+    whose text prints the date, and not the same file as a statement kept
+    earlier in this process or a PDF already in the folder (this
+    statement's own copies apart). Otherwise our own words."""
+    if data[:5] != b"%PDF-":
+        return "the print is not a PDF"
+    text = pdf_text(data)
+    header = printed_header_day(text)
+    _note(trace, note="header check", reads_the_date=header == day)
+    if header != day:
+        return "the printed page's header does not read the statement's date"
+    verdict = verify(None, Identity(date=day), text=text)
+    _note(trace, note="date check", verdict=verdict.report())
+    if verdict.outcome != VERIFIED:
+        return "the printed page does not print the statement's date"
+    other = _KEPT.get(hashlib.sha256(data).hexdigest())
+    if other is not None and other != "%s:%s" % (MOBILE, day):
+        return "the PDF is the same file as another statement kept in this run"
+    same = _same_file_in(out_path.parent, data, [out_path, *own_files])
+    if same is None:
+        return "the folder could not be read to compare the PDF with those saved"
+    if same:
+        return "the PDF is the same file as one already saved"
+    return ""
+
+
+def _still_the_statement(page, where: str, day: str) -> str:
+    """"" when the tab is still at exactly `where` and reads the statement
+    dated `day` with Mobile, else our own words."""
+    check_page(page)
+    if (page.url or "") != where:
+        return "the address changed"
+    return heading_says(detail_state(page), day, only=False)
+
+
+def take_mobile(page, day: str, out_path: Path, dl_dir, trace=None, own_files=()) -> bool:
+    """Save the Mobile statement dated `day`. Billing's Mobile link opens
+    the list afresh, the one finished row of that date is pressed, Expand
+    All is pressed, and the page is printed to PDF with
+    receipt_pdf.print_page_to_pdf (never the page's own Print). The tab
+    must be at the same address and read the statement's date and Mobile
+    just before and just after the print, and no Mobile answer heard while
+    it printed may fail. False, nothing more pressed, when the list or the
+    row is not as expected before a press, Expand All is missing or did not
+    expand every section, or the print fails. A printed page not bound to
+    the statement (bind_mobile) stops the run."""
+    if not dl_dir:
+        raise no_folder()
+    try:
+        days = open_mobile_list(page, dl_dir, trace)
+    except ListStopped as stop:
+        log.info("the Mobile list stopped while looking for the statement dated %s: %s", day, stop)
+        _note(trace, note="Mobile list stopped", why=str(stop))
+        return False
+    if not days or days.count(day) != 1:
+        _note(trace, note="no single Mobile row matches the record")
+        return False
+    texts = _link_texts(page, MOBILE_ROW) or []
+    found = [i for i, t in enumerate(texts) if mobile_row_day(t) == day]
+    if len(found) != 1:
+        _note(trace, note="no single Mobile row matches the record")
+        return False
+    if not choose_mobile(page, found[0], texts[found[0]], day, dl_dir, trace):
+        return False
+    if not expand_statement(page, day, dl_dir, trace):
+        return False
+    where = page.url or ""
+    why = _still_the_statement(page, where, day)
+    if why:
+        raise mobile_stopped("print the Mobile statement", why)
+    part = out_path.with_name(out_path.name + ".part")
+    session = MobileWatch(page)
+    try:
+        session.start()
+        try:
+            receipt_pdf.print_page_to_pdf(page, part)
+            data = part.read_bytes()
+        except Exception as e:
+            log.info("printing the Mobile statement failed (%s)", type(e).__name__)
+            _note(trace, note="print to PDF failed", error=type(e).__name__)
+            _drop(part)
+            return False
+        why = session.failed() or _still_the_statement(page, where, day)
+    finally:
+        session.stop()
+    try:
+        why = why or bind_mobile(data, day, out_path, trace, own_files)
+        if not why:
+            part.replace(out_path)
+            _KEPT[hashlib.sha256(data).hexdigest()] = "%s:%s" % (MOBILE, day)
+    except Exception as e:
+        why = "the print could not be checked or kept, %s" % type(e).__name__
+    finally:
+        _drop(part)
+    _note(trace, note="Mobile statement kept" if not why else "Mobile statement refused", why=why)
+    if why:
+        log.info("the printed Mobile statement dated %s was refused: %s", day, why)
+        raise mobile_stopped("print the Mobile statement", why)
+    return True
+
+
+def _drop(path: Path) -> None:
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------

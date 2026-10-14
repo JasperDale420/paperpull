@@ -1,8 +1,8 @@
 # Spectrum Internet statement downloader
 
 Spectrum Internet statements, about a year of them, from Billing → Statements at www.spectrum.net:
-the current account's, and the older account's after an account transfer. Mobile statements are not
-included: Spectrum's site has no PDF for them.
+the current account's, and the older account's after an account transfer. Spectrum Mobile statements
+too: the site has no PDF for them, so each finished one is printed from its own page.
 
 Sign in yourself with `login.bat` / `login.command` (the browser opens on port 9291 with its own
 profile), answer any one-time passcode yourself, and keep the window open. Then Discover, Pilot
@@ -19,7 +19,13 @@ already saved, and no tab opened and no download began. Anything else stops the 
 of one date (one for each account, after a transfer) are left for you to save by hand, since nothing
 on the page tells their rows apart before a press.
 
-Read-only: a statement's own row and "View Printable Statement" are the only controls the app will
+Mobile: the app opens Billing, presses "Mobile Account Number", presses the finished statement's own
+row ("Statement August 13, 2026"; the statement still under way, "Your Total So Far" and device orders
+are never pressed), presses "Expand All", checks the page reads that date and "Mobile", and prints the
+page to `2026-08-13 Spectrum Mobile Statement.pdf`. The page's own Print button is never pressed.
+
+Read-only: a statement's own row and "View Printable Statement" (Internet), and the Mobile Account
+Number link, a Mobile statement's row and its Expand All (Mobile) are the only controls the app will
 press, each checked by name first (a row is refused when its words mention paying, Auto Pay,
 paperless, equipment, settings, signing out and the like). It never pays, never
 touches Auto Pay, paperless, equipment, service or settings, and never types anything. If Spectrum

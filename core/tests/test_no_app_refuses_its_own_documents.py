@@ -41,15 +41,17 @@ VERBS = ("", "View ", "Download ")
 # account can trade, transfer and deposit, and "trade" is on its blocklist;
 # its documents come from the list the page asks for and are pressed by the
 # row's own Download, never by their names. Spectrum's guard takes only
-# "View Printable Statement", the one control it ever presses. Written down
-# as names so the list can shrink and cannot quietly grow.
+# "View Printable Statement", the one button of an Internet statement it
+# presses, and its Mobile statements are chosen by their own rows under a
+# guard of their own. Written down as names so the list can shrink and
+# cannot quietly grow.
 ALLOWED_TO = {
     "mypay": {"Annuitant Account Statement", "FEGLI Document", "Net Pay Advice",
               "SGLI Document", "W-2 Tax Form"},
     "aafmaa": {"Beneficiary Designation", "Payment Record"},
     "alpaca": {"Brokerage Statement", "Crypto Statement", "Trade Confirmation"},
     # The guard accepts only the one label it presses, never a document's name.
-    "spectrum": {"Internet Statement"},
+    "spectrum": {"Internet Statement", "Mobile Statement"},
 }
 
 

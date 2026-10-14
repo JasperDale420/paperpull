@@ -1,10 +1,13 @@
-"""Spectrum Internet statement downloader (local, supervised).
+"""Spectrum Internet and Mobile statement downloader (local, supervised).
 
 Spectrum lists about a year of Internet statements at
 www.spectrum.net/billing/statements, the current account's and, after an
 account transfer, the older account's. This saves each statement's PDF,
 which the statement's own page builds when its View Printable Statement
-button is pressed. The orchestrator below is the same one every other
+button is pressed. Spectrum Mobile is a separate bill with no PDF: its
+finished statements, listed behind Billing's "Mobile Account Number" link,
+are each opened by their own row, expanded with Expand All and printed to
+PDF from the page. The orchestrator below is the same one every other
 statement app runs on. Everything about the site itself is in
 spectrum_site.py.
 
@@ -22,8 +25,10 @@ Usage:
 Filters: --year YYYY  --start-date YYYY-MM-DD  --end-date YYYY-MM-DD
          --max-docs N  --type Statement
 
-READ-ONLY: the only control pressed is a statement's own View Printable
-Statement, once. It never pays a bill, sets up Auto Pay, enrolls in
+READ-ONLY: the only controls pressed are an Internet statement's own row
+and View Printable Statement, and for Mobile the "Mobile Account Number"
+link, a Mobile statement's own row and its Expand All, each once under its
+own guard. The page's own Print is never pressed. It never pays a bill, sets up Auto Pay, enrolls in
 paperless, changes service or equipment, or changes any account setting.
 Everything stays on this machine, and nothing is sent to any external
 service. A one-time passcode or a signed-out session stops the run.
@@ -120,22 +125,22 @@ def notice_summary(title: str) -> str:
 
 
 class Document:
-    """One Spectrum Internet statement."""
+    """One Spectrum Internet or Mobile statement."""
 
     def __init__(self, title="", category="", summary="", date="", period="",
                  href="", row_index=-1, confidence="", account="",
                  date_text="", document_id="", **kw):
         self.title = title
-        # "Internet" or "Internet (prior account)", the statement's family,
-        # never an account number.
+        # "Internet", "Internet (prior account)" or "Mobile", the statement's
+        # family, never an account number.
         self.account = account
         self.category = category
         self.summary = summary
         self.date = date
         self.period = period
         self.date_text = date_text  # the row's raw date string, for re-matching
-        # "current:YYYY-MM-DD" or "prior:YYYY-MM-DD". Never Spectrum's own
-        # statement id, which carries the account number.
+        # "current:YYYY-MM-DD", "prior:YYYY-MM-DD" or "mobile:YYYY-MM-DD".
+        # Never Spectrum's own statement id, which carries the account number.
         self.document_id = document_id
         self.source_url = kw.get("source_url", "")  # page where the doc's download link lives
         # Sticky "was successfully downloaded at least once" marker. Once set,
@@ -507,7 +512,9 @@ class App:
         # again.
         self.check_session(page)
         try:
-            docs = site.collect_download_docs(page)
+            # The Mobile list is reached by a press, which waits for the
+            # browser to have taken this run's download folder.
+            docs = site.collect_download_docs(page, self._dl_dir if self._staged else None)
         except site.SessionExpired:
             self.session_ended()
         except site.OtpRequired:
@@ -698,7 +705,9 @@ class App:
             attempt = self.paths.diagnostics / "download-attempt.json"
             write_shaped(attempt, {
                 "timestamp": now_iso(), "date": doc.date,
-                "landed_on": site.redact(page.url or ""),
+                # Scheme, host and path only: a Mobile statement's address
+                # carries its statementId in the query.
+                "landed_on": site.redact(persistable(page.url or "")),
                 "responses": trace[:80]}, words_for('Spectrum', site))
             print(f"  What the site answered is in {attempt}, attach it to the issue.")
             self._record(doc, State.NEEDS_MANUAL_REVIEW,
@@ -834,7 +843,7 @@ class App:
         self.stats["mode"] = mode_name
         if mode_name == "all" and not self.args.yes:
             scope = ", ".join(self.config.get("document_types", []))
-            print(f"This downloads ALL available Spectrum Internet statements ({scope}).")
+            print(f"This downloads ALL available Spectrum Internet and Mobile statements ({scope}).")
             print("Type YES to continue:")
             if ask("> ").strip().upper() != "YES":
                 print("Aborted. (Run the pilot first if you haven't: --pilot)")
@@ -1002,7 +1011,7 @@ class App:
                     info["row_counts"][name] = page.locator(sel).count()
                 except Exception as e:
                     info["row_counts"][name] = f"ERR {e}"
-            found_docs = site.collect_download_docs(page) if found else []
+            found_docs = site.collect_download_docs(page, mobile=False) if found else []
             info["documents_recognized"] = [{"date": b.date_text, "kind": b.kind, "family": b.account}
                                             for b in found_docs[:40]]
             docs = site.collect_documents(page)
@@ -1084,7 +1093,7 @@ class App:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
-        description="Local supervised Spectrum Internet statement downloader (read-only)")
+        description="Local supervised Spectrum Internet and Mobile statement downloader (read-only)")
     for name, help_text in [
             ("login", "verify connection to your signed-in browser"),
             ("discover", "list available documents; writes discovery.json"),

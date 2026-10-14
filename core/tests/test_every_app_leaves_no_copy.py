@@ -544,9 +544,10 @@ TAKES_NOTHING = {
     "optum": "every document is a plain link on the member site, fetched by GET of its own "
              "path with no redirect followed. Nothing is pressed and no download event or "
              "response is ever listened for",
-    "spectrum": "every statement is the PDF in the page's own GraphQL answer, matched to the Blob "
-                "the page made of it; nothing is downloaded through the browser, and a download "
-                "a press began is only counted, cancelled and deleted (see observes_only)",
+    "spectrum": "every Internet statement is the PDF in the page's own GraphQL answer, matched to "
+                "the Blob the page made of it, and every Mobile statement is its page printed with "
+                "receipt_pdf.print_page_to_pdf; nothing is downloaded through the browser, and a "
+                "download a press began is only counted, cancelled and deleted (see observes_only)",
 }
 
 

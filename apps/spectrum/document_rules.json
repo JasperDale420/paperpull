@@ -1,15 +1,18 @@
 {
-  "_comment": "Editable rules mapping Spectrum document titles to filename summaries. Every Internet statement is titled 'Spectrum Internet Statement' by spectrum_site.py; a prior account's statement adds 'Prior Account' to its summary in spectrum_docs.py.",
+  "_comment": "Editable rules mapping Spectrum document titles to filename summaries. spectrum_site.py titles every Internet statement 'Spectrum Internet Statement' and every Mobile statement 'Spectrum Mobile Statement'; a prior account's Internet statement adds 'Prior Account' to its summary in spectrum_docs.py. The Mobile rule comes first, since the first rule that matches wins.",
   "tax_rules": [],
   "insurance_rules": [],
   "statement_rules": [
+    {
+      "pattern": "\\bmobile\\s+statement\\b",
+      "summary": "Mobile Statement"
+    },
     {
       "pattern": "\\bstatement\\b",
       "summary": "Internet Statement"
     }
   ],
   "skip_patterns": [
-    "\\bmobile\\b",
     "your\\s+total\\s+so\\s+far",
     "\\border\\b"
   ]
