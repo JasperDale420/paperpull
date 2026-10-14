@@ -1,0 +1,1700 @@
+"""ALL www.spectrum.net selectors, URLs, and page behavior live here.
+
+When Spectrum changes its billing pages, repair this file only.
+
+STATUS: built from the account owner's read-only survey of 2026-10-12
+(signed in, one press of View Printable Statement). The live run of
+2026-10-12/13 saved the newest statement and refused the rest (see below).
+Choosing an older statement in page is not yet run live.
+
+  * The site is an Angular app on https://www.spectrum.net. All billing data
+    comes from the page's own POSTs to https://apis.spectrum.net/selfservice/graph
+    (GraphQL), sent with a bearer token the page keeps for itself. This app
+    sends no request of its own to that host: it only watches the responses
+    the page's own requests get, and from each it reads the exact address,
+    the method, the operationName and variables.statementId of the request
+    body, the status, and the few response fields it needs. Never a header,
+    a cookie, localStorage, the storage state or a whole body.
+  * /billing/statements: the page asks fetchAccountStatementList, whose
+    answer is data.viewer.account.statementList with statements[{id, date}]
+    for the current account and accountTransfers[{accountNumber,
+    serviceAddress, statements[{id, date}]}] for an older account the
+    service was transferred from. Each id is base64 of
+    "Account=<n>|StatementDate=<YYYY-MM-DD>|StatementCode=<n>|PDF_DOCUMENT".
+    It carries the account number, so it is a private word, lives only in
+    memory, and is decoded only to check that its date is the row's date.
+    The rows the page draws (a.kite-list-item__action, "Statement Month D,
+    YYYY") must show the same dates, as a check on the answer, never as the
+    source of a document.
+  * A statement is known by its family and date, "current:2026-09-26" or
+    "prior:2026-02-26". Two statements of one date in one family stop the
+    list. Before a statement is taken the list is read afresh and exactly one
+    entry must carry that family and date.
+  * The current account's newest statement is opened by its own address,
+    /billing/bill-details?pdfStatementId=<id>&isNextBill=false&
+    isAccountTransfer=<bool>, after an exact check of that address. Opened
+    that way, an older statement's page also asks for the newest (it draws
+    a comparison) and its printable control prints the NEWEST, which the
+    live run of 2026-10-12/13 saw for 12 of 13 statements. So every other
+    statement is chosen in page, the way a person does: its own row on
+    Statements is pressed, after the row guard (is_safe_row) reads its
+    words, and the page must move to that statement's own page, its id in
+    the page's own spelling (a DIGITAL_DOCUMENT id, unpadded) naming the
+    same account and date, isAccountTransfer true for a prior account. Two
+    statements of one date have rows nothing tells apart before a press,
+    so both are left. The page's own AccountDigitalStatementV2 requests
+    must name this statement once and otherwise only statements the list
+    holds, and every answer must be an answer. Anything unexpected after
+    the row press stops the run.
+  * "View Printable Statement" makes the page ask FetchStatementPDFEncodedString
+    for the same id, whose answer, data.viewer.account.statementPdf, is the
+    PDF as base64, and the page turns it into a Blob and opens it in a new tab.
+    A hook armed before the one press keeps every Blob the page makes and
+    replaces window.open with a recorder that opens nothing. The statement
+    is kept only when exactly one such answer came for that id and decodes
+    to a PDF, exactly one application/pdf Blob of this origin holds the same
+    bytes, no tab opened, no download began, and the tab is still on the
+    statement's page. Then the bytes are bound to the statement (bind). The
+    PDF's text has to print the statement's date, may not print more of a
+    rival's facts than of this one's, and may not be the same file as a
+    statement kept earlier in this process or a PDF already in the folder.
+    Anything else stops the run.
+
+SESSION: a 401 from the graph, a GraphQL answer with errors, the sign-in
+page (/login, id.spectrum.net), a validateSession answer saying the session
+is not valid, or the idle-timeout dialog raise SessionExpired. A one-time
+passcode prompt raises OtpRequired. The run stops for the account holder at
+either. Nothing is filled in, nothing is recorded against the document.
+
+SAFETY (an account that can pay, enroll in Auto Pay and paperless, change
+service and buy equipment):
+  Strictly READ-ONLY. Two controls are ever pressed, each through
+  paperpull_core.pressing.click under its own predicate. A statement's own
+  row on Statements, once, after is_safe_row (a row whose words name
+  paying, Auto Pay, paperless, equipment, settings, signing out and the
+  rest is refused, and only "Statement Month D, YYYY" of that statement's
+  date is allowed). The statement page's "View Printable Statement", once
+  per statement, after is_safe_control, which allows that label exactly.
+  Nothing here fills, selects, types or scrolls. No host but
+  www.spectrum.net is ever opened.
+
+PRIVACY: both account numbers, the service address (each part of four
+letters or more, or with a digit), and every statement id are registered as
+private words as soon as the list answer is read, before anything is
+logged. Records keep the family label, the date and a fixed title only.
+
+KNOWN CEILINGS
+  * Internet statements only. Mobile statements have no PDF in the site's
+    own code and are not listed.
+  * A one-time passcode, when Spectrum asks for one, stops the run.
+  * Two statements of one date (one for each account after a transfer)
+    are left for a manual save.
+"""
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+import io
+import json
+import logging
+import re
+import sys
+from collections import Counter
+from dataclasses import dataclass, field
+from datetime import date as _date
+from pathlib import Path
+from typing import List, Optional, Tuple
+from urllib.parse import unquote, urlencode, urlsplit
+
+from paperpull_core import pressing
+from paperpull_core.controls import SETTINGS_CONTROL_RE, AUTH_CONTROL_RE
+from paperpull_core.redact import private_words, redact, set_private_words  # noqa: F401  (re-exported)
+from paperpull_core.urls import is_safe_url as _host_allows
+from paperpull_core.identity import (REFUSED, UNREADABLE, VERIFIED, Identity, distinguish,
+                                     verify)
+from paperpull_core.dates import last_day as _last_day
+from paperpull_core.dates import checked as _checked_date
+from paperpull_core.dates import full_year as _full_year
+# re-exported: the docs module calls it as site.set_download_dir
+from paperpull_core.capture import set_download_dir  # noqa: F401
+from paperpull_core.words import words_for as _words_for
+
+log = logging.getLogger("spectrum_docs.site")
+
+
+def _words():
+    """This app's own words for paperpull_core.words."""
+    return _words_for("Spectrum", sys.modules[__name__])
+
+
+# ---------------------------------------------------------------------------
+# Addresses
+# ---------------------------------------------------------------------------
+HOST = "www.spectrum.net"
+BASE = f"https://{HOST}"
+STATEMENTS_PATH = "/billing/statements"
+DETAIL_PATH = "/billing/bill-details"
+STATEMENTS_URL = BASE + STATEMENTS_PATH
+BILLING_URL = STATEMENTS_URL
+DOCUMENTS_URL = STATEMENTS_URL
+URLS = {
+    "home": f"{BASE}/",
+    "login": f"{BASE}/login",
+    "documents": STATEMENTS_URL,
+    "statements": STATEMENTS_URL,
+}
+
+# The page's own API. Watched, never asked.
+GRAPH_URL = "https://apis.spectrum.net/selfservice/graph"
+SESSION_CHECK_PATH = "/auth/oauth/v2/validateSession"
+API_HOST = "apis.spectrum.net"
+
+LIST_OPERATION = "fetchAccountStatementList"
+DETAIL_OPERATION = "AccountDigitalStatementV2"
+PDF_OPERATION = "FetchStatementPDFEncodedString"
+
+LOGIN_URL_MARKERS = ["/login", "/logout", "id.spectrum.net", "/signin", "/error/session-expired"]
+
+# ---------------------------------------------------------------------------
+# HARD SAFETY GUARD
+# ---------------------------------------------------------------------------
+FORBIDDEN_CONTROL_RE = re.compile(
+    r"(\bpay\b|\bpaying\b|\bpayments?\b|\bautopay\b|\bauto\s*-?\s*pay\b|\bpaperless\b|\benroll|"
+    r"\bsettings?\b|\bequipment\b|\bupgrades?\b|\badd\b|\bchang(e|es|ed|ing)\b|\bcancel|"
+    r"\bservices?\b|\bappointments?\b|\bchat\b|\bsign\s*(out|off)\b|\blog\s*(out|off)\b|\blogout\b|"
+    r"\bone\s*-?\s*time\b|\bverify\b|\bcodes?\b|\bmobile\b|\border\b|\bshop\b|\bdeals?\b|\bcall\b|"
+    r"\bsubmit\b|\bconfirm\b|\bcontinue\b|\bdelete\b|\bremove\b|\bupdate\b|\bedit\b|\bmanage\b|"
+    r"\bpreferences?\b|\bprofile\b|\bagree\b|\baccept\b|\bauthori[sz]e\b|\bpassword\b|\busername\b)", re.I)
+
+# The one control this app presses, whole and nothing else.
+SAFE_LABEL = "view printable statement"
+PRINTABLE_RE = re.compile(r"^\s*view\s+printable\s+statement\s*$", re.I)
+
+SECURITY_CHALLENGE_MARKERS = ["are you a robot", "captcha", "access denied", "unusual activity"]
+RATE_LIMIT_MARKERS = ["too many requests", "rate limit", "try again later",
+                      "temporarily unavailable", "http error 429"]
+# What the page shows when it wants a one-time passcode, and when its idle
+# timer is about to sign the session out (or has).
+OTP_MARKERS = ["one-time passcode", "one time passcode", "one-time code", "verification code",
+               "enter the code", "we sent a code"]
+IDLE_MARKERS = ["your session is about to expire", "session is about to time out",
+                "are you still there", "your session has expired", "session timed out",
+                "you have been signed out"]
+
+STATEMENT_ROW = "a.kite-list-item__action"
+PRINTABLE_BUTTON = "button:has-text('View Printable Statement')"
+
+FALLBACK = {
+    "doc_row": STATEMENT_ROW,
+    "doc_link": STATEMENT_ROW,
+    "download_control": PRINTABLE_BUTTON,
+    "page_ready": STATEMENT_ROW,
+}
+
+# ---------------------------------------------------------------------------
+# Date parsing (verbatim from the Optum app; the list answer uses
+# iso_day below, which reads one shape only)
+# ---------------------------------------------------------------------------
+DATE_PATTERNS = [
+    (re.compile(r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+                r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
+                r"Dec(?:ember)?)\.?\s+(\d{1,2}),?\s+(\d{4})", re.I), "mdY"),
+    (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), "mdy_slash"),
+    (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{2})\b"), "mdy_slash2"),
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?!\d)"), "iso"),
+]
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
+MONTH_YEAR_RE = re.compile(
+    r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
+    r"Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+    r"\s+(\d{4})", re.I)
+YEAR_RE = re.compile(r"\b(19|20)(\d{2})\b")
+
+
+def _parse_date_from_page(text: str) -> Optional[str]:
+    if not text:
+        return None
+    for pattern, kind in DATE_PATTERNS:
+        m = pattern.search(text)
+        if not m:
+            continue
+        try:
+            if kind == "mdY":
+                return f"{int(m.group(3)):04d}-{_MONTHS[m.group(1)[:3].lower()]:02d}-{int(m.group(2)):02d}"
+            if kind == "mdy_slash":
+                return f"{int(m.group(3)):04d}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+            if kind == "mdy_slash2":
+                return f"{_full_year(m.group(3)):04d}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+            if kind == "iso":
+                return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+        except (KeyError, ValueError):
+            continue
+    return None
+
+
+def parse_date(text):
+    """The date this provider's page is showing, as YYYY-MM-DD, or None for
+    a day that does not exist."""
+    return _checked_date(_parse_date_from_page(text), None)
+
+
+def parse_period_date(text: str) -> Tuple[Optional[str], str]:
+    text = text or ""
+    exact = parse_date(text)
+    if exact:
+        return exact, ""
+    m = MONTH_YEAR_RE.search(text)
+    if m:
+        month = _MONTHS[m.group(1)[:3].lower()]
+        year = int(m.group(2))
+        return f"{year:04d}-{month:02d}-{_last_day(year, month):02d}", m.group(0)
+    m = YEAR_RE.search(text)
+    if m:
+        year = int(m.group(1) + m.group(2))
+        return f"{year:04d}-12-31", str(year)
+    return None, ""
+
+
+def valid_iso(text) -> bool:
+    """Whether `text` is exactly a calendar day as YYYY-MM-DD."""
+    t = str(text or "")
+    if not re.fullmatch(r"(?:19|20)\d{2}-\d{2}-\d{2}", t):
+        return False
+    try:
+        return _date.fromisoformat(t).isoformat() == t
+    except ValueError:
+        return False
+
+
+def iso_day(value) -> Optional[str]:
+    """The day of a list answer's date, "2026-09-26T00:00:00-05:00" or
+    "2026-09-26", as YYYY-MM-DD, or None. The day is read as written, never
+    moved between time zones."""
+    m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?",
+                     str(value or "").strip())
+    if not m or not valid_iso(m.group(1)):
+        return None
+    return m.group(1)
+
+
+_ROW_DATE_RE = re.compile(
+    r"^Statement (January|February|March|April|May|June|July|August|September|October|November|December) "
+    r"(\d{1,2}), (\d{4})\b")
+
+
+def row_day(text) -> Optional[str]:
+    """The date a drawn statement row starts with, "Statement September 26,
+    2026 ...", as YYYY-MM-DD, or None."""
+    m = _ROW_DATE_RE.match(re.sub(r"\s+", " ", str(text or "")).strip())
+    if not m:
+        return None
+    try:
+        return _date(int(m.group(3)), _MONTHS[m.group(1)[:3].lower()], int(m.group(2))).isoformat()
+    except ValueError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Session / safety
+# ---------------------------------------------------------------------------
+
+class SessionExpired(Exception):
+    """Spectrum answered as a signed-out session: its sign-in page, a 401 or
+    an answer with errors from its own API, a session check saying the
+    session is not valid, or its idle-timeout dialog. The run stops for the
+    account holder."""
+
+
+class OtpRequired(Exception):
+    """Spectrum asks for a one-time passcode. Nothing is filled in, and the
+    run stops for the account holder."""
+
+
+class ListStopped(Exception):
+    """The list has a part this could not read, so what was read is not all
+    of it. `docs` holds what was read before it stopped."""
+
+    def __init__(self, why: str, docs=None):
+        super().__init__(why)
+        self.docs = list(docs or [])
+
+
+def looks_signed_out(page) -> bool:
+    """The sign-in page by its address or a password field. A page whose
+    address cannot be read raises, and is never called signed in."""
+    url = (page.url or "").lower()
+    if any(m in url for m in LOGIN_URL_MARKERS):
+        return True
+    try:
+        if page.locator("input[type='password']").count() > 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _body_text(page, limit: int = 4000) -> str:
+    """The page's visible words, lowercase. Never logged."""
+    try:
+        return (page.locator("body").inner_text(timeout=5000) or "")[:limit].lower()
+    except Exception:
+        return ""
+
+
+def otp_prompt(page) -> bool:
+    """Whether the page shows a one-time passcode prompt."""
+    hay = _body_text(page)
+    return any(m in hay for m in OTP_MARKERS)
+
+
+def idle_dialog(page) -> bool:
+    """Whether the page shows its idle-timeout dialog."""
+    hay = _body_text(page)
+    return any(m in hay for m in IDLE_MARKERS)
+
+
+def detect_security_challenge(page) -> Optional[str]:
+    """Names a robot check or throttling notice on screen, or None. Visible
+    text only. A one-time passcode prompt is not this: it raises
+    OtpRequired where it is met."""
+    hay = _body_text(page, 2500)
+    for m in SECURITY_CHALLENGE_MARKERS:
+        if m in hay:
+            return f"Security challenge detected: '{m}'"
+    for m in RATE_LIMIT_MARKERS:
+        if m in hay:
+            return f"Possible rate limiting detected: '{m}'"
+    return None
+
+
+def check_page(page) -> None:
+    """Raise SessionExpired for the sign-in page or the idle dialog, and
+    OtpRequired for a passcode prompt. Reads only."""
+    if looks_signed_out(page) or idle_dialog(page):
+        raise SessionExpired("Spectrum showed a signed-out page")
+    if otp_prompt(page):
+        raise OtpRequired("Spectrum asks for a one-time passcode")
+
+
+def normalized(label) -> str:
+    return re.sub(r"\s+", " ", str(label or "")).strip().lower()
+
+
+def is_safe_control(name: str) -> bool:
+    """Deny by default: an unreadable label is refused, then this app's
+    blocklist, then the shared core guards, and only then the one label
+    this app presses, "View Printable Statement", whole."""
+    label = normalized(name)
+    if not label:
+        return False
+    if FORBIDDEN_CONTROL_RE.search(label):
+        return False
+    if SETTINGS_CONTROL_RE.search(label) or AUTH_CONTROL_RE.search(label):
+        return False
+    return label == SAFE_LABEL
+
+
+# ---------------------------------------------------------------------------
+# Hosts. One exact host for pages; the same origin, exactly, for the blob a
+# press makes.
+# ---------------------------------------------------------------------------
+ALLOWED_HOSTS = {HOST}
+BLOB_ORIGIN = BASE
+
+
+def is_safe_url(url: str) -> bool:
+    """True only for an https URL on exactly www.spectrum.net."""
+    return _host_allows(url, ALLOWED_HOSTS, subdomains=False)
+
+
+def is_download_url(url: str) -> bool:
+    """True only for a blob: URL whose origin is exactly www.spectrum.net."""
+    u = str(url or "")
+    if not u.startswith("blob:"):
+        return False
+    try:
+        parts = urlsplit(u[len("blob:"):])
+        port = parts.port
+    except ValueError:
+        return False
+    return (parts.scheme == "https" and (parts.hostname or "").lower() == HOST
+            and port is None and not parts.username and not parts.password)
+
+
+_DETAIL_FIELDS = {"pdfStatementId", "isNextBill", "isAccountTransfer"}
+
+
+def _query_pairs(query: str) -> List[Tuple[str, str]]:
+    """The name and value pairs of an address's query, each value
+    percent-decoded as written. A "+" stays a "+", since a statement id is
+    base64 and base64 has "+" in it, where parse_qsl would make it a space.
+    ValueError for a part with no "=" or an empty name."""
+    pairs = []
+    for part in (query or "").split("&"):
+        if "=" not in part:
+            raise ValueError("a query part has no value")
+        name, value = part.split("=", 1)
+        if not name:
+            raise ValueError("a query part has no name")
+        pairs.append((unquote(name), unquote(value)))
+    return pairs
+
+
+def _detail_query(url: str) -> Optional[dict]:
+    """The query of a statement's own page, or None for any other address.
+    https, exactly www.spectrum.net, no port, credentials or fragment,
+    exactly the path /billing/bill-details, and a query of pdfStatementId,
+    isNextBill=false and isAccountTransfer=true or false, each once and
+    nothing more."""
+    if not is_safe_url(url):
+        return None
+    try:
+        parts = urlsplit(url)
+        if parts.port is not None or parts.fragment or parts.path != DETAIL_PATH:
+            return None
+        pairs = _query_pairs(parts.query)
+    except ValueError:
+        return None
+    keys = [k for k, _ in pairs]
+    if set(keys) != _DETAIL_FIELDS or len(keys) != len(_DETAIL_FIELDS):
+        return None
+    q = dict(pairs)
+    if q["isNextBill"] != "false" or q["isAccountTransfer"] not in ("true", "false"):
+        return None
+    return q
+
+
+def is_detail_url(url: str, statement_id: str = "") -> bool:
+    """A statement's own page as this app opens it by address and nothing
+    else (see _detail_query), its pdfStatementId one statement's PDF id.
+    With `statement_id`, the id must be that one."""
+    q = _detail_query(url)
+    if q is None:
+        return False
+    if statement_id and q["pdfStatementId"] != statement_id:
+        return False
+    try:
+        decode_statement_id(q["pdfStatementId"])
+    except ListStopped:
+        return False
+    return True
+
+
+def lands_on(url: str, entry: "Entry") -> bool:
+    """Whether the page a press of the entry's row moved to is that
+    statement's own page. The address has the shape _detail_query reads,
+    its pdfStatementId names the same account and date as the entry, in
+    the page's PDF or digital spelling with or without its padding, and its
+    isAccountTransfer is true for a prior account's statement and false for
+    the current account's."""
+    q = _detail_query(url)
+    if q is None:
+        return False
+    if q["isAccountTransfer"] != ("true" if entry.family == PRIOR else "false"):
+        return False
+    return same_statement(q["pdfStatementId"], entry.statement_id)
+
+
+def detail_url(statement_id: str, transfer: bool) -> str:
+    """The address of the statement with this id, or "" when it would not
+    pass is_detail_url."""
+    query = urlencode([("pdfStatementId", statement_id or ""), ("isNextBill", "false"),
+                       ("isAccountTransfer", "true" if transfer else "false")])
+    url = f"{BASE}{DETAIL_PATH}?{query}"
+    return url if is_detail_url(url, statement_id) else ""
+
+
+# ---------------------------------------------------------------------------
+# Statement ids and the list answer
+# ---------------------------------------------------------------------------
+_B64_RE = re.compile(r"[A-Za-z0-9+/]+={0,2}")
+_ID_TEXT_RE = re.compile(
+    r"Account=([0-9]{4,32})\|StatementDate=(\d{4}-\d{2}-\d{2})\|StatementCode=([0-9]{1,6})\|PDF_DOCUMENT")
+# The list names a statement by a PDF_DOCUMENT id, the statement's own page
+# asks for it by a DIGITAL_DOCUMENT id of the same account, date and code.
+_ANY_ID_TEXT_RE = re.compile(
+    r"Account=([0-9]{4,32})\|StatementDate=(\d{4}-\d{2}-\d{2})\|StatementCode=([0-9]{1,6})\|(PDF|DIGITAL)_DOCUMENT")
+
+CURRENT, PRIOR = "current", "prior"
+FAMILY_LABEL = {CURRENT: "Internet", PRIOR: "Internet (prior account)"}
+TITLE = "Spectrum Internet Statement"
+DOCUMENT_ID_RE = re.compile(r"(current|prior):((?:19|20)\d{2}-\d{2}-\d{2})")
+
+
+def decode_statement_id(statement_id) -> Tuple[str, str]:
+    """(account number, statement date) inside a statement id, or
+    ListStopped. The reason never carries the id or what it decodes to."""
+    sid = str(statement_id or "")
+    if not _B64_RE.fullmatch(sid) or len(sid) % 4:
+        raise ListStopped("a statement id is not base64")
+    try:
+        text = base64.b64decode(sid, validate=True).decode("ascii")
+    except (binascii.Error, ValueError):
+        raise ListStopped("a statement id does not decode")
+    m = _ID_TEXT_RE.fullmatch(text)
+    if not m:
+        raise ListStopped("a statement id is not a PDF statement's")
+    if not valid_iso(m.group(2)):
+        raise ListStopped("a statement id's date is not a calendar date")
+    return m.group(1), m.group(2)
+
+
+def same_statement(a, b) -> bool:
+    """Whether two statement ids name one statement: the same account and
+    statement date, whether the page spells it as a PDF_DOCUMENT or a
+    DIGITAL_DOCUMENT. The code inside the id is the document's, not the
+    statement's: the list's PDF id and the page's digital id for one month
+    carry different codes, so it is not compared. One account has one
+    statement a date (the list stops otherwise), so account and date name
+    it. False for an id that does not decode."""
+    def pair(sid):
+        # The page's own id for a statement comes without its base64 padding.
+        raw = str(sid or "")
+        raw += "=" * (-len(raw) % 4)
+        text = base64.b64decode(raw, validate=True).decode("ascii")
+        m = _ANY_ID_TEXT_RE.fullmatch(text)
+        return (m.group(1), m.group(2)) if m else None
+    try:
+        pa, pb = pair(a), pair(b)
+    except (binascii.Error, ValueError):
+        return False
+    return pa is not None and pa == pb
+
+
+@dataclass
+class Entry:
+    """One statement as the list answer gives it. The id is kept in memory
+    only and never printed (repr=False)."""
+    family: str
+    date: str
+    statement_id: str = field(default="", repr=False)
+
+    @property
+    def document_id(self) -> str:
+        return f"{self.family}:{self.date}"
+
+
+def _parts(value) -> List[str]:
+    """The parts of a value that are private words: each part of four
+    letters or more, or with a digit, as redact applies them anywhere in a
+    string. "CA" or "St" would turn "CAPTCHA" and "Statement" into "[name]"."""
+    out = []
+    text = str(value or "").strip()
+    if not text:
+        return out
+    if len(text) >= 4 and not re.search(r"\s", text):
+        out.append(text)
+    for part in re.split(r"[\s,.#/|=-]+", text):
+        if len(part) >= 4 or re.search(r"[0-9]", part):
+            out.append(part)
+    return out
+
+
+def _strings(node) -> List[str]:
+    if isinstance(node, str):
+        return [node]
+    if isinstance(node, dict):
+        return [s for v in node.values() for s in _strings(v)]
+    if isinstance(node, list):
+        return [s for v in node for s in _strings(v)]
+    return []
+
+
+def private_words_of(statement_list) -> List[str]:
+    """Every value of a list answer that names the account: the transfer
+    accounts' numbers and service addresses, each statement id and the
+    account number inside it. Read defensively, before anything is
+    checked, so they are private before any reason is said."""
+    words: List[str] = []
+    if not isinstance(statement_list, dict):
+        return words
+    groups = [statement_list.get("statements")]
+    for t in statement_list.get("accountTransfers") or []:
+        if isinstance(t, dict):
+            words += _parts(t.get("accountNumber"))
+            for s in _strings(t.get("serviceAddress")):
+                words += _parts(s)
+            groups.append(t.get("statements"))
+    for group in groups:
+        for s in group if isinstance(group, list) else []:
+            sid = s.get("id") if isinstance(s, dict) else None
+            if isinstance(sid, str) and sid:
+                words.append(sid)
+                try:
+                    words.append(base64.b64decode(sid + "=" * (-len(sid) % 4)).decode("ascii", "replace"))
+                except (binascii.Error, ValueError):
+                    pass
+                m = re.search(r"Account=([0-9A-Za-z]+)", words[-1])
+                if m:
+                    words.append(m.group(1))
+    return [w for w in words if w]
+
+
+def register_private(words) -> None:
+    """Add words to the private words, each once."""
+    have = list(private_words())
+    new = [w for w in dict.fromkeys(words) if w and w not in have]
+    if new:
+        set_private_words(have + new)
+
+
+def statement_list_of(answer) -> dict:
+    """data.viewer.account.statementList of a fetchAccountStatementList
+    answer. An answer with errors is a signed-out session, and any other
+    shape stops the list."""
+    if not isinstance(answer, dict):
+        raise ListStopped("the statement list answer is not an object")
+    if answer.get("errors"):
+        raise SessionExpired("the statement list answer carries errors")
+    try:
+        found = answer["data"]["viewer"]["account"]["statementList"]
+    except (KeyError, TypeError):
+        raise ListStopped("the statement list answer has no statementList")
+    if not isinstance(found, dict):
+        raise ListStopped("the statementList is not an object")
+    return found
+
+
+def entries_of(statement_list: dict) -> List[Entry]:
+    """Every statement of the current account and of the accounts transferred
+    from, as Entries. The private words are registered first. A statement
+    whose id is not a PDF statement's, whose id's date is not its date, two
+    statements of one date in one family, or a family whose statements name
+    two accounts stop the list."""
+    register_private(private_words_of(statement_list))
+    current = statement_list.get("statements")
+    transfers = statement_list.get("accountTransfers")
+    if not isinstance(current, list):
+        raise ListStopped("the statement list has no statements")
+    if transfers is None:
+        transfers = []
+    if not isinstance(transfers, list):
+        raise ListStopped("the account transfers are not a list")
+    out: List[Entry] = []
+
+    def read(group, family: str, account: Optional[str]) -> None:
+        seen = set()
+        accounts = set()
+        for s in group:
+            if not isinstance(s, dict):
+                raise ListStopped("a statement is not an object")
+            day = iso_day(s.get("date"))
+            if not day:
+                raise ListStopped("a statement's date is not a calendar date")
+            inside_account, inside_day = decode_statement_id(s.get("id"))
+            if inside_day != day:
+                raise ListStopped("a statement id's date is not its row's date")
+            if account is not None and inside_account != account:
+                raise ListStopped("a transferred account's statement names another account")
+            accounts.add(inside_account)
+            if day in seen:
+                raise ListStopped("two %s statements carry one date" % family)
+            seen.add(day)
+            out.append(Entry(family, day, s["id"]))
+        if len(accounts) > 1:
+            raise ListStopped("the %s statements name more than one account" % family)
+
+    read(current, CURRENT, None)
+    prior_days: set = set()
+    for t in transfers:
+        if not isinstance(t, dict):
+            raise ListStopped("an account transfer is not an object")
+        number = str(t.get("accountNumber") or "").strip()
+        group = t.get("statements")
+        if not number or not isinstance(group, list):
+            raise ListStopped("an account transfer has no account number or statements")
+        before = len(out)
+        read(group, PRIOR, number)
+        for e in out[before:]:
+            if e.date in prior_days:
+                raise ListStopped("two prior statements carry one date")
+            prior_days.add(e.date)
+    return out
+
+
+@dataclass
+class RawDoc:
+    title: str
+    account: str = ""
+    date_text: str = ""
+    href: str = ""
+    text: str = ""
+    row_index: int = -1
+    kind: str = "doc"
+    # "current:YYYY-MM-DD" or "prior:YYYY-MM-DD", never a statement id.
+    document_id: str = ""
+
+
+def raw_docs(entries: List[Entry]) -> List[RawDoc]:
+    return [RawDoc(title=TITLE, account=FAMILY_LABEL[e.family], date_text=e.date, href="",
+                   text=TITLE, row_index=i, kind="statement", document_id=e.document_id)
+            for i, e in enumerate(entries)]
+
+
+# ---------------------------------------------------------------------------
+# Watching the page's own API
+# ---------------------------------------------------------------------------
+
+class Watch:
+    """The answers the page's own requests get, while armed.
+
+    Kept: each answer to a POST of exactly GRAPH_URL whose request body's
+    operationName is `operation` (with whether its variables.statementId is
+    `statement_id`), the status of every answer to a POST of GRAPH_URL, and
+    each answer to the session check. A response object is kept to be read
+    after the wait, never inside the listener, and only the fields named in
+    read_* are read from it. Nothing else of a request or a response is
+    looked at, and nothing of one is logged."""
+
+    def __init__(self, page, operation: str, statement_id: str = ""):
+        self.page = page
+        self.operation = operation
+        self.statement_id = statement_id
+        # [(response, its statementId names `statement_id`, that statementId)].
+        # The id is a private word, kept in memory to be compared only.
+        self.hits: list = []
+        self.statuses: list = []    # every graph answer's status
+        self.sessions: list = []    # session-check responses
+        self._listener = None
+
+    def start(self) -> "Watch":
+        watch = self
+
+        def on_response(response):
+            watch.heard(response)
+        self._listener = on_response
+        self.page.on("response", on_response)
+        return self
+
+    def stop(self) -> None:
+        if self._listener is not None:
+            try:
+                self.page.remove_listener("response", self._listener)
+            except Exception:
+                pass
+            self._listener = None
+
+    def heard(self, response) -> None:
+        try:
+            request = response.request
+            url = request.url
+            method = request.method
+        except Exception:
+            return
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            return
+        if method == "GET" and parts.scheme == "https" and parts.hostname == API_HOST \
+                and parts.path == SESSION_CHECK_PATH:
+            self.sessions.append(response)
+            return
+        if url != GRAPH_URL or method != "POST":
+            return
+        try:
+            self.statuses.append(int(response.status))
+        except Exception:
+            self.statuses.append(0)
+        try:
+            body = json.loads(request.post_data or "")
+        except (TypeError, ValueError):
+            return
+        if not isinstance(body, dict) or body.get("operationName") != self.operation:
+            return
+        variables = body.get("variables") if isinstance(body.get("variables"), dict) else {}
+        asked = variables.get("statementId")
+        asked = asked if isinstance(asked, str) else ""
+        self.hits.append((response, bool(self.statement_id) and same_statement(asked, self.statement_id),
+                          asked))
+
+    def check_session(self) -> None:
+        """SessionExpired for a 401 from the graph or a session check that
+        says the session is not valid."""
+        if 401 in self.statuses:
+            raise SessionExpired("Spectrum's API answered 401")
+        for response in list(self.sessions):
+            try:
+                status = int(response.status)
+            except Exception:
+                continue
+            if status == 401:
+                raise SessionExpired("Spectrum's session check answered 401")
+            try:
+                answer = response.json()
+            except Exception:
+                continue
+            if isinstance(answer, dict) and answer.get("isValidSession") is False:
+                raise SessionExpired("Spectrum's session check says the session is not valid")
+
+    def wait(self, polls: int = 60, delay_ms: int = 500, also=None) -> None:
+        """Wait for the first answer, then until the count has held still
+        for three polls, so a second answer lands in the count rather than
+        after it. `also` adds a count of its own to what has to hold still."""
+        seen, still = None, 0
+        for _ in range(polls):
+            self.page.wait_for_timeout(delay_ms)
+            now = (len(self.hits), also() if also else 0)
+            if now[0] and now == seen:
+                still += 1
+                if still >= 3:
+                    return
+            else:
+                still = 0
+            seen = now
+
+
+def answer_of(response) -> dict:
+    """A graph answer's JSON, SessionExpired for a 401 or an answer with
+    errors, ListStopped for anything that is not an answer."""
+    try:
+        status = int(response.status)
+    except Exception:
+        status = 0
+    if status == 401:
+        raise SessionExpired("Spectrum's API answered 401")
+    if status != 200:
+        raise ListStopped("Spectrum's API answered %d" % status)
+    try:
+        answer = response.json()
+    except Exception:
+        raise ListStopped("Spectrum's API answer is not JSON")
+    if not isinstance(answer, dict):
+        raise ListStopped("Spectrum's API answer is not an object")
+    if answer.get("errors"):
+        raise SessionExpired("Spectrum's API answer carries errors")
+    return answer
+
+
+# ---------------------------------------------------------------------------
+# Pages
+# ---------------------------------------------------------------------------
+
+def tabs_now(page) -> list:
+    """The tabs open before a navigation or a press, so a tab that opened
+    can be told from one that was already there."""
+    try:
+        return list(page.context.pages)
+    except Exception:
+        return []
+
+
+def _opened_since(page, before: list) -> list:
+    """Tabs that opened since `before`, by identity, closed again here since
+    this app opens none. When the tabs cannot be read, that counts as a tab
+    that opened, so nothing is taken on a guess."""
+    try:
+        extra = [p for p in page.context.pages
+                 if p is not page and not any(p is q for q in before)]
+    except Exception:
+        return [None]
+    for p in extra:
+        try:
+            p.close()
+        except Exception:
+            pass
+    return extra
+
+
+def _on_path(page, path: str) -> bool:
+    url = page.url or ""
+    try:
+        return is_safe_url(url) and urlsplit(url).path.rstrip("/") == path
+    except ValueError:
+        return False
+
+
+_ROWS_JS = r"""() => Array.from(document.querySelectorAll('a.kite-list-item__action'))
+  .map(a => (a.innerText || '').replace(/\s+/g, ' ').trim())"""
+
+
+def _row_days(page) -> Optional[list]:
+    """The dates the drawn statement rows start with. None when a row that
+    reads "Statement ..." has no date this can read. Row text is never kept
+    or logged."""
+    try:
+        texts = page.evaluate(_ROWS_JS) or []
+    except Exception:
+        return None
+    days = []
+    for t in texts:
+        if not re.match(r"^\s*statement\b", str(t or ""), re.I):
+            continue
+        d = row_day(t)
+        if not d:
+            return None
+        days.append(d)
+    return days
+
+
+def corroborate(entries: List[Entry], days: Optional[list]) -> None:
+    """The drawn rows show the dates the list answer gives, as many times
+    each, or ListStopped. The rows are a check on the answer only."""
+    if days is None:
+        raise ListStopped("a drawn statement row has no date this can read")
+    if Counter(days) != Counter(e.date for e in entries):
+        raise ListStopped("the drawn rows do not show the statements the list answer gives")
+
+
+def read_statement_list(page) -> List[Entry]:
+    """Open Statements by its address with the list watch armed first, take
+    the one fetchAccountStatementList answer the page's own request got, and
+    check it against the drawn rows. SessionExpired, OtpRequired or
+    ListStopped otherwise."""
+    watch = Watch(page, LIST_OPERATION).start()
+    try:
+        before = tabs_now(page)
+        try:
+            page.goto(STATEMENTS_URL, wait_until="domcontentloaded", timeout=60000)
+        except Exception as e:
+            log.info("opening Statements failed (%s)", type(e).__name__)
+            check_page(page)
+            raise ListStopped("Statements did not open")
+        if _opened_since(page, before):
+            raise ListStopped("opening Statements opened another tab, which was closed")
+        check_page(page)
+        if not _on_path(page, STATEMENTS_PATH):
+            raise ListStopped("Statements settled off its own address")
+        watch.wait()
+        watch.check_session()
+        check_page(page)
+        if len(watch.hits) != 1:
+            raise ListStopped("%d statement list answers came, not one" % len(watch.hits))
+        entries = entries_of(statement_list_of(answer_of(watch.hits[0][0])))
+    finally:
+        watch.stop()
+    days = _row_days(page)
+    for _ in range(20):
+        if days is not None and len(days) >= len(entries):
+            break
+        page.wait_for_timeout(500)
+        days = _row_days(page)
+    corroborate(entries, days)
+    return entries
+
+
+def goto_documents(page) -> bool:
+    """Open Statements by its address and read its list. False when it
+    showed a signed-out page, asked for a passcode, settled elsewhere, or
+    could not be read. No click."""
+    try:
+        read_statement_list(page)
+        return True
+    except (SessionExpired, OtpRequired, ListStopped) as e:
+        log.info("Statements did not open: %s", e)
+        return False
+
+
+def statement_list_opens(page) -> bool:
+    """What the login check asks: Statements opened and its list was read
+    whole, which only a signed-in page allows."""
+    return goto_documents(page)
+
+
+def scroll_full_page(page, rounds: int = 0, delay_ms: int = 0) -> None:
+    """Nothing to scroll: the list comes whole from the page's own answer."""
+    return None
+
+
+def expand_all(page) -> None:
+    """Nothing to press: every statement is in the one list answer."""
+    return None
+
+
+def collect_download_docs(page) -> List[RawDoc]:
+    """Every Internet statement Spectrum lists, current and prior account.
+    Nothing is pressed."""
+    return raw_docs(read_statement_list(page))
+
+
+# ---------------------------------------------------------------------------
+# The press and what it makes
+# ---------------------------------------------------------------------------
+# The hook keeps the page's own window.open and URL.createObjectURL, and
+# _RESTORE_JS puts both back once the press is done with, on every path, so
+# the person's tab works as Spectrum made it after the run.
+_ARM_JS = r"""() => {
+  if (!window.__ppNative) window.__ppNative = {open: window.open, create: URL.createObjectURL};
+  window.__pp = {blobs: [], opened: []};
+  const oc = window.__ppNative.create.bind(URL);
+  URL.createObjectURL = function (b) { const u = oc(b); window.__pp.blobs.push({blob: b, type: (b && b.type) || '', size: (b && b.size) || 0, url: String(u)}); return u; };
+  window.open = function (u, t, f) { window.__pp.opened.push(String(u)); return null; };
+}"""
+_RESTORE_JS = r"""() => {
+  const n = window.__ppNative;
+  if (!n) return false;
+  window.open = n.open; URL.createObjectURL = n.create;
+  delete window.__ppNative; delete window.__pp;
+  return true;
+}"""
+_COUNT_JS = r"""() => (window.__pp && window.__pp.blobs.length) || 0"""
+_RESULT_JS = r"""async () => {
+  const s = window.__pp || {blobs: [], opened: []};
+  const out = {blobs: s.blobs.map(b => ({type: b.type, size: b.size, url: b.url})), opened: s.opened.slice(), b64: ''};
+  if (s.blobs.length === 1) {
+    const buf = await s.blobs[0].blob.arrayBuffer();
+    let bin = ''; const bytes = new Uint8Array(buf); for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    out.b64 = btoa(bin);
+  }
+  return out;
+}"""
+
+
+def pdf_of(answer) -> bytes:
+    """The PDF a FetchStatementPDFEncodedString answer carries, or b"" when
+    it carries none: data.viewer.account.statementPdf, base64, decoding to
+    bytes that start %PDF-."""
+    try:
+        text = answer["data"]["viewer"]["account"]["statementPdf"]
+    except (KeyError, TypeError):
+        return b""
+    if not isinstance(text, str) or not text:
+        return b""
+    try:
+        data = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        return b""
+    return data if data[:5] == b"%PDF-" else b""
+
+
+def accept(pdfs: list, blob_result: dict, *, new_pages: int, popups: int, downloads: int,
+           on_route: bool) -> Tuple[bytes, str]:
+    """(bytes, "") only when the press brought exactly the one statement and
+    nothing else: exactly one answer for the statement's id, `pdfs` being
+    [(id matches, decoded bytes)], whose bytes are a PDF, exactly one Blob,
+    of type application/pdf, on this origin, holding the same bytes, and no
+    address opened but that Blob's, no new tab, popup or download, and the
+    tab still on the statement's page. Otherwise (b"", why), our own words."""
+    if new_pages or popups:
+        return b"", "a tab opened"
+    if downloads:
+        return b"", "a download began"
+    if not on_route:
+        return b"", "the tab left the statement's page"
+    if len(pdfs) != 1:
+        return b"", "%d statement answers came, not one" % len(pdfs)
+    matches, data = pdfs[0]
+    if not matches:
+        return b"", "the statement answer was for another statement"
+    if not data:
+        return b"", "the statement answer holds no PDF"
+    blobs = list((blob_result or {}).get("blobs") or [])
+    if len(blobs) != 1:
+        return b"", "%d blobs were made, not one" % len(blobs)
+    b = blobs[0]
+    if str(b.get("type") or "").split(";", 1)[0].strip().lower() != "application/pdf":
+        return b"", "the blob is not application/pdf"
+    if not is_download_url(str(b.get("url") or "")):
+        return b"", "the blob is not on this site's origin"
+    opened = list((blob_result or {}).get("opened") or [])
+    if any(u != b.get("url") for u in opened) or len(opened) > 1:
+        return b"", "the page asked to open something other than the blob"
+    try:
+        held = base64.b64decode((blob_result or {}).get("b64") or "", validate=True)
+    except (binascii.Error, ValueError):
+        return b"", "the blob's bytes could not be read"
+    if held != data:
+        return b"", "the blob does not hold the statement answer's bytes"
+    return data, ""
+
+
+def _entries(dl_dir) -> Optional[dict]:
+    """Each entry of the run's download folder with its size and time, or
+    None when the folder cannot be read. Nothing in it is opened."""
+    if not dl_dir:
+        return {}
+    try:
+        return {p.name: (p.stat().st_size, p.stat().st_mtime_ns) for p in Path(dl_dir).iterdir()}
+    except OSError:
+        return None
+
+
+def _changed_entries(dl_dir, before: Optional[dict]) -> int:
+    """How many entries of the folder are new or rewritten since `before`,
+    each removed, since this app keeps nothing a download left. A folder
+    that cannot be read counts as one, so nothing is taken on a guess."""
+    now = _entries(dl_dir)
+    if before is None or now is None:
+        return 1
+    changed = [name for name, stamp in now.items() if before.get(name) != stamp]
+    for name in changed:
+        try:
+            (Path(dl_dir) / name).unlink()
+        except OSError:
+            pass
+    return len(changed)
+
+
+def _note(trace, **what) -> None:
+    if trace is not None:
+        trace.append(what)
+
+
+def refused(why: str):
+    """The press was made and did not bring exactly one statement: the run
+    stops, since pressing again could do something else."""
+    return pressing.no_answer(
+        "take a statement", "the press made something other than one statement",
+        "View Printable Statement was pressed and did not bring exactly one statement "
+        "(%s), so the run stops." % why)
+
+
+CHOOSE_STEP = "choose a statement"
+
+
+def chose_wrong(entry: Entry, why: str):
+    """The statement's row was pressed and the page did not become exactly
+    that statement's own page. The run stops, since the next statement's
+    row could do the same."""
+    return pressing.no_answer(
+        CHOOSE_STEP, "the statement row opened something other than its statement",
+        "The statement row dated %s was pressed and did not open exactly that statement "
+        "(%s), so the run stops." % (entry.date, why))
+
+
+def no_folder():
+    """The run's download folder was not confirmed, so a download a press
+    began could land anywhere. Nothing is pressed and the run stops."""
+    return pressing.NotPressed(
+        "take a statement", "the browser did not take the download folder",
+        ["The browser did not take this run's download folder, so no statement "
+         "was pressed and the run stops.",
+         "Close the browser, open Spectrum with login.bat again, then run Resume."])
+
+
+def newest(entries: List[Entry]) -> Optional[Entry]:
+    """The current account's newest statement, or None when the current
+    account lists none. Its own page, opened by its address, asks for it
+    alone and prints it, which the live run of 2026-10-12 saw. Every other
+    statement's page opened that way prints this one instead."""
+    current = [e for e in entries if e.family == CURRENT]
+    return max(current, key=lambda e: e.date) if current else None
+
+
+def is_safe_row(text, day: str) -> bool:
+    """Whether a drawn statement row may be pressed to choose the statement
+    dated `day`. Deny by default. Unreadable words are refused, then any
+    word of this app's blocklist (pay, payment, Auto Pay, paperless,
+    equipment, settings, sign out and the rest), then the shared core
+    guards, and only then a row whose words start "Statement Month D, YYYY"
+    with exactly that date. A row whose address holds a refused word is
+    refused with it, and its statement is left for a manual save."""
+    label = normalized(text)
+    if not label or not valid_iso(day):
+        return False
+    if FORBIDDEN_CONTROL_RE.search(label):
+        return False
+    if SETTINGS_CONTROL_RE.search(label) or AUTH_CONTROL_RE.search(label):
+        return False
+    return row_day(text) == day
+
+
+def _flat(text) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def row_for(page, entry: Entry, entries: List[Entry]) -> Tuple[int, str, str]:
+    """(index among the drawn rows, its words, "") for the one row that
+    chooses `entry`, or (-1, "", why) when there is not exactly one. Two
+    statements of one date, one for each account, leave both, since
+    nothing the survey saw tells their rows apart before a press."""
+    if sum(1 for e in entries if e.date == entry.date) != 1:
+        return -1, "", "another statement carries the same date"
+    try:
+        texts = page.evaluate(_ROWS_JS) or []
+    except Exception:
+        return -1, "", "the rows could not be read"
+    found = [(i, _flat(t)) for i, t in enumerate(texts)
+             if re.match(r"^\s*statement\b", str(t or ""), re.I) and row_day(t) == entry.date]
+    if len(found) != 1:
+        return -1, "", "%d rows carry the statement's date, not one" % len(found)
+    i, text = found[0]
+    if not is_safe_row(text, entry.date):
+        return -1, "", "the guard refused the statement's row"
+    return i, text, ""
+
+
+def details_answered(watch: "Watch", entry: Entry, entries: List[Entry]) -> str:
+    """An empty string when every AccountDigitalStatementV2 answer the
+    statement's page got is an answer, the page asked for this statement
+    exactly once, and every other such request named a statement the list
+    holds (the page compares against one). Otherwise our own words for what
+    was wrong. Every answer is read first, so a 401 or an answer with
+    errors raises SessionExpired whatever else is wrong."""
+    failed = ""
+    for response, _, _ in watch.hits:
+        try:
+            answer_of(response)
+        except ListStopped as stop:
+            failed = failed or str(stop)
+    if failed:
+        return failed
+    mine = [h for h in watch.hits if h[1]]
+    if len(mine) != 1:
+        return "the page asked for this statement %d times, not once" % len(mine)
+    for _, matches, asked in watch.hits:
+        if not matches and not any(same_statement(asked, e.statement_id) for e in entries):
+            return "the page asked for a statement the list does not hold"
+    return ""
+
+
+def open_by_address(page, entry: Entry, entries: List[Entry], trace) -> bool:
+    """Open the newest statement's own page by its address and check the
+    page asked for it. False, nothing pressed, otherwise."""
+    url = detail_url(entry.statement_id, entry.family == PRIOR)
+    if not url:
+        _note(trace, note="statement address refused")
+        return False
+    detail = Watch(page, DETAIL_OPERATION, entry.statement_id)
+    try:
+        detail.start()
+        before = tabs_now(page)
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        except Exception as e:
+            log.info("opening the statement's page failed (%s)", type(e).__name__)
+            check_page(page)
+            _note(trace, note="statement page did not open", error=type(e).__name__)
+            return False
+        if _opened_since(page, before):
+            _note(trace, note="a tab opened with the statement's page")
+            return False
+        check_page(page)
+        if not is_detail_url(page.url or "", entry.statement_id):
+            _note(trace, note="statement page settled off its address")
+            return False
+        detail.wait(polls=40)
+        detail.check_session()
+        check_page(page)
+        why = details_answered(detail, entry, entries)
+    finally:
+        detail.stop()
+    if why:
+        _note(trace, note="statement page answer refused", why=why, answers=len(detail.hits))
+        return False
+    return True
+
+
+def choose_in_page(page, entry: Entry, entries: List[Entry], dl_dir, trace) -> bool:
+    """Choose the statement by pressing its own row on Statements, the page
+    the list was just read from, so the statement page the app moves to is
+    the one chosen and not the newest. False, nothing pressed, when there
+    is not exactly one row the guard allows for it, when the row's words
+    changed before the press, or when Spectrum kept it turned off. Once the
+    row is pressed, a tab, a popup or a download, a page that is not this
+    statement's own, or a page that asked for anything but this statement
+    and one the list holds stops the run (chose_wrong). SessionExpired and
+    OtpRequired propagate."""
+    index, text, why = row_for(page, entry, entries)
+    if why:
+        log.info("the statement dated %s was not chosen: %s", entry.date, why)
+        _note(trace, note="no row to choose", why=why)
+        return False
+    row = page.locator(STATEMENT_ROW).nth(index)
+    try:
+        now = _flat(row.inner_text(timeout=2000))
+    except Exception as e:
+        _note(trace, note="the row could not be read", error=type(e).__name__)
+        return False
+    if now != text or not is_safe_row(now, entry.date):
+        _note(trace, note="the row changed before the press")
+        return False
+    if not dl_dir:
+        raise no_folder()
+    detail = Watch(page, DETAIL_OPERATION, entry.statement_id)
+    popups: list = []
+    downloads: list = []
+
+    def on_popup(popup):
+        popups.append(1)
+
+    # Observation only: a download the press began is counted and
+    # cancelled, and its file, if the browser had already written one,
+    # deleted. Nothing of it is read or saved.
+    def on_download(download):
+        downloads.append(1)
+        try:
+            download.cancel()
+        except Exception:
+            pass
+        try:
+            download.delete()
+        except Exception:
+            pass
+    pressed = False
+    try:
+        detail.start()
+        page.on("popup", on_popup)
+        page.on("download", on_download)
+        before = tabs_now(page)
+        folder_before = _entries(dl_dir)
+        try:
+            pressing.click(page, row, css=pressing.LINKS, what="the statement row dated %s" % entry.date,
+                           words=_words(), step=CHOOSE_STEP)
+        except pressing.TurnedOff:
+            log.info("the statement row stayed turned off, so nothing was pressed")
+            _note(trace, note="the row is turned off")
+            return False
+        pressed = True
+        detail.wait(polls=40)
+        new_pages = len(_opened_since(page, before))
+    except (SessionExpired, OtpRequired):
+        raise
+    except Exception as e:
+        if not pressed:
+            raise
+        raise chose_wrong(entry, "the page could not be read after the press, %s" % type(e).__name__) from None
+    finally:
+        detail.stop()
+        _unlisten(page, (("popup", on_popup), ("download", on_download)))
+    try:
+        stray = len(downloads) + _changed_entries(dl_dir, folder_before)
+        _note(trace, note="row pressed", answers=len(detail.hits), tabs=new_pages, downloads=stray)
+        if new_pages or popups:
+            raise chose_wrong(entry, "a tab opened")
+        if stray:
+            raise chose_wrong(entry, "a download began")
+        detail.check_session()
+        check_page(page)
+        if not lands_on(page.url or "", entry):
+            raise chose_wrong(entry, "the page it opened is not that statement's own")
+        why = details_answered(detail, entry, entries)
+    except (SessionExpired, OtpRequired):
+        raise
+    except Exception as e:
+        raise chose_wrong(entry, "the page could not be read after the press, %s" % type(e).__name__) from None
+    if why:
+        raise chose_wrong(entry, why)
+    return True
+
+
+def take_statement(page, entry: Entry, out_path: Path, dl_dir=None,
+                   trace: Optional[list] = None, entries: Optional[List[Entry]] = None) -> bool:
+    """Bring up the statement's own page and press View Printable Statement
+    once under the hook. The newest statement's page is opened by its
+    address. Every other statement is chosen in page by pressing its row
+    (choose_in_page). False, with nothing pressed, when the page or the
+    button is not as expected before any press. Once a row was pressed, a
+    printable button that is not the one expected stops the run. After the
+    printable press anything but exactly one statement, bound to this one,
+    stops the run (refused). SessionExpired and OtpRequired propagate."""
+    entries = list(entries) if entries else [entry]
+    top = newest(entries)
+    by_address = top is not None and top.document_id == entry.document_id
+    if by_address:
+        if not open_by_address(page, entry, entries, trace):
+            return False
+
+        def on_page(url):
+            return is_detail_url(url, entry.statement_id)
+    else:
+        if not choose_in_page(page, entry, entries, dl_dir, trace):
+            return False
+
+        def on_page(url):
+            return lands_on(url, entry)
+
+    def wrong(why: str) -> bool:
+        _note(trace, note=why)
+        if by_address:
+            return False
+        raise chose_wrong(entry, why)
+    try:
+        button = page.get_by_role("button", name=PRINTABLE_RE)
+        count = button.count()
+    except Exception:
+        count = -1
+    if count != 1:
+        return wrong("not one printable statement button")
+    el = button.first
+    try:
+        label = el.inner_text(timeout=2000) or ""
+        enabled = el.is_enabled()
+    except Exception:
+        return wrong("the button could not be read")
+    if not is_safe_control(label):
+        return wrong("the guard refused the button")
+    if not enabled:
+        _note(trace, note="the button is turned off")
+        return False
+    return _press_for_statement(page, el, entry, entries, out_path, dl_dir, trace, on_page)
+
+
+def _unlisten(page, pairs) -> None:
+    for event, handler in pairs:
+        try:
+            page.remove_listener(event, handler)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Binding the bytes to the statement
+# ---------------------------------------------------------------------------
+# sha256 of each statement this process kept, with its document id. Bytes
+# one statement already gave are never kept for another.
+_KEPT: dict = {}
+
+
+def pdf_text(data: bytes, pages: int = 5) -> str:
+    """The text of the first pages of a PDF held in memory, or "". Never
+    logged, never written."""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        return "\n".join((pg.extract_text() or "") for pg in reader.pages[:max(1, pages)])
+    except Exception:
+        return ""
+
+
+def rivals_of(entry: Entry, entries: List[Entry]) -> list:
+    """The statements this one could be mistaken for, as Identity: the
+    current account's newest (the copy the page printed in its place on
+    2026-10-12) and the statements beside it in the list."""
+    out: List[Entry] = []
+    top = newest(entries)
+    if top is not None:
+        out.append(top)
+    ids = [e.document_id for e in entries]
+    if entry.document_id in ids:
+        i = ids.index(entry.document_id)
+        out += entries[max(0, i - 1):i] + entries[i + 1:i + 2]
+    seen, rivals = set(), []
+    for e in out:
+        if e.document_id != entry.document_id and e.document_id not in seen:
+            seen.add(e.document_id)
+            rivals.append(Identity(date=e.date))
+    return rivals
+
+
+def _same_file_in(folder: Path, data: bytes, skip: Path) -> Optional[bool]:
+    """Whether a PDF already in `folder` holds exactly these bytes, None
+    when the folder cannot be read. A folder not made yet holds none."""
+    if not folder.exists():
+        return False
+    try:
+        for p in folder.iterdir():
+            if p == skip or p.suffix.lower() != ".pdf" or not p.is_file():
+                continue
+            if p.stat().st_size == len(data) and p.read_bytes() == data:
+                return True
+    except OSError:
+        return None
+    return False
+
+
+def bind(data: bytes, entry: Entry, entries: List[Entry], out_path: Path,
+         trace: Optional[list] = None) -> str:
+    """An empty string when the bytes the press brought are this statement's, beyond
+    the page's own request having named it. The PDF's text prints the
+    statement's date, it does not print more of a rival statement's own
+    facts than of this one's, and it is not the same file as a statement
+    kept earlier in this process or a PDF already in the folder it is saved
+    to (where earlier runs kept the newest). Otherwise our own words for
+    what was wrong. Only names and yes or no go into the trace."""
+    text = pdf_text(data)
+    own = Identity(date=entry.date)
+    verdict = verify(None, own, text=text)
+    _note(trace, note="date check", verdict=verdict.report())
+    if verdict.outcome == UNREADABLE:
+        return "the PDF holds no text to check its date against"
+    if verdict.outcome != VERIFIED:
+        return "the PDF does not print the statement's date"
+    told = distinguish(None, own, rivals_of(entry, entries), text=text)
+    _note(trace, note="rival check", verdict=told.report())
+    if told.outcome == REFUSED:
+        return "the PDF prints another statement's date more than this one's"
+    digest = hashlib.sha256(data).hexdigest()
+    other = _KEPT.get(digest)
+    if other is not None and other != entry.document_id:
+        return "the PDF is the same file as another statement kept in this run"
+    same = _same_file_in(out_path.parent, data, out_path)
+    if same is None:
+        return "the folder could not be read to compare the PDF with those saved"
+    if same:
+        return "the PDF is the same file as one already saved"
+    return ""
+
+
+def _press_for_statement(page, el, entry: Entry, entries: List[Entry], out_path: Path, dl_dir,
+                         trace, on_page) -> bool:
+    if not dl_dir:
+        raise no_folder()
+    pdf = Watch(page, PDF_OPERATION, entry.statement_id)
+    popups: list = []
+    downloads: list = []
+
+    def on_popup(popup):
+        popups.append(1)
+
+    # Observation only: a download the press began is counted and
+    # cancelled, and its file, if the browser had already written one,
+    # deleted. Nothing of it is read or saved.
+    def on_download(download):
+        downloads.append(1)
+        try:
+            download.cancel()
+        except Exception:
+            pass
+        try:
+            download.delete()
+        except Exception:
+            pass
+    result: dict = {}
+    pressed = False
+    try:
+        pdf.start()
+        page.on("popup", on_popup)
+        page.on("download", on_download)
+        page.evaluate(_ARM_JS)
+        pages_before = tabs_now(page)
+        folder_before = _entries(dl_dir)
+        try:
+            pressing.click(page, el, css=pressing.BUTTONS, what="the View Printable Statement button",
+                           words=_words(), step="take a statement")
+        except pressing.TurnedOff:
+            # Spectrum kept the button turned off the whole time Playwright
+            # waited, with nothing over it, so nothing was pressed. The
+            # statement is left for the next run, as the core leaves any
+            # document whose own control is turned off. The hook comes off
+            # in finally.
+            log.info("View Printable Statement stayed turned off, so nothing was pressed")
+            _note(trace, note="the button is turned off")
+            return False
+        pressed = True
+
+        def blobs() -> int:
+            try:
+                return int(page.evaluate(_COUNT_JS) or 0)
+            except Exception:
+                return 0
+        pdf.wait(polls=60, also=blobs)
+        new_pages = len(_opened_since(page, pages_before))
+        pdf.check_session()
+        check_page(page)
+        on_route = on_page(page.url or "")
+        decoded = []
+        for response, matches, _ in pdf.hits:
+            try:
+                decoded.append((matches, pdf_of(answer_of(response))))
+            except ListStopped:
+                decoded.append((matches, b""))
+        try:
+            result = page.evaluate(_RESULT_JS) or {}
+        except Exception:
+            result = {}
+    except (SessionExpired, OtpRequired):
+        raise
+    except Exception as e:
+        if not pressed:
+            raise
+        raise refused("the page could not be read after the press, %s" % type(e).__name__) from None
+    finally:
+        pdf.stop()
+        _unlisten(page, (("popup", on_popup), ("download", on_download)))
+        try:
+            page.evaluate(_RESTORE_JS)
+        except Exception:
+            pass
+    try:
+        stray = len(downloads) + _changed_entries(dl_dir, folder_before)
+        data, why = accept(decoded, result, new_pages=new_pages, popups=len(popups),
+                           downloads=stray, on_route=on_route)
+        made = list(result.get("blobs") or [])
+        _note(trace, note="statement accepted" if data else "statement refused", why=why,
+              answers=len(decoded), blobs=len(made), tabs=new_pages, downloads=stray)
+        if data:
+            why = bind(data, entry, entries, out_path, trace)
+            if why:
+                log.info("the PDF the press brought is not bound to the statement dated %s: %s", entry.date, why)
+        else:
+            log.info("the press did not bring exactly one statement: %s", why)
+        if not why:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(data)
+            _KEPT[hashlib.sha256(data).hexdigest()] = entry.document_id
+    except Exception as e:
+        raise refused("what it brought could not be checked or kept, %s" % type(e).__name__) from None
+    if why:
+        raise refused(why)
+    return True
+
+
+def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
+                  trace: Optional[list] = None, href: str = "",
+                  document_id: str = "") -> bool:
+    """Save the statement discovery recorded as `document_id`
+    ("current:YYYY-MM-DD" or "prior:YYYY-MM-DD"), dated `iso_date`.
+    Statements is read again and exactly one entry there must carry that
+    family and date. The newest statement's page is then opened by its
+    address, any other statement is chosen by pressing its row there.
+    False, nothing pressed, when it is not found. SessionExpired and
+    OtpRequired propagate to the run, and a press that brought anything but
+    the statement stops it."""
+    out_path = Path(out_path)
+    m = DOCUMENT_ID_RE.fullmatch((document_id or "").strip())
+    if not m or m.group(2) != (iso_date or "") or not valid_iso(iso_date):
+        log.info("no statement was recorded for this document")
+        _note(trace, note="no recorded statement")
+        return False
+    try:
+        entries = read_statement_list(page)
+    except ListStopped as stop:
+        log.info("the statement list stopped while looking for the statement dated %s: %s", iso_date, stop)
+        _note(trace, note="list stopped", why=str(stop))
+        return False
+    found = [e for e in entries if e.family == m.group(1) and e.date == iso_date]
+    if len(found) != 1:
+        log.info("%d entries match the recorded statement dated %s, none taken", len(found), iso_date)
+        _note(trace, note="no single entry matches the record", matches=len(found))
+        return False
+    return take_statement(page, found[0], out_path, dl_dir, trace, entries)
+
+
+# ---------------------------------------------------------------------------
+# Diagnose: a survey with the private words taken out, no screenshot.
+# ---------------------------------------------------------------------------
+
+def collect_documents(page) -> List[RawDoc]:
+    """The drawn statement rows' dates only, for --diagnose."""
+    out: List[RawDoc] = []
+    for i, d in enumerate((_row_days(page) or [])[:40]):
+        out.append(RawDoc(title="Statement", date_text=d, text="Statement", row_index=i))
+    return out
+
+
+def _page_summary(page) -> dict:
+    out = {"url": redact(urlsplit(page.url or "").path), "title": ""}
+    try:
+        out["title"] = redact(page.title() or "")
+    except Exception:
+        pass
+    try:
+        out["headings"] = [redact(h.strip())[:60] for h in page.locator("h1, h2, h3").all_inner_texts() if h.strip()][:20]
+    except Exception:
+        out["headings"] = []
+    controls = []
+    for role in ("link", "button"):
+        try:
+            loc = page.get_by_role(role)
+            for i in range(min(loc.count(), 60)):
+                try:
+                    text = (loc.nth(i).inner_text(timeout=300) or "").strip()
+                except Exception:
+                    text = ""
+                if text:
+                    controls.append({"role": role, "text": redact(text)[:50], "safe": is_safe_control(text)})
+        except Exception:
+            pass
+    out["controls"] = controls
+    return out
+
+
+def survey(page, dwell_ms: int = 3000, max_follow: int = 0) -> dict:
+    """The page's headings and controls with the guard's verdict. Follows
+    nothing, listens to nothing, no screenshot."""
+    report = {"pages": []}
+    page.wait_for_timeout(dwell_ms)
+    report["pages"].append(_page_summary(page))
+    return report

@@ -74,7 +74,8 @@ def test_no_app_will_click_a_control_that_commits_something(app):
 _ACCEPTED = ["Download statement", "Download PDF", "View statement", "View PDF", "Download",
              "View Receipt", "Download Bill", "Download 1098-E", "View order details",
              "Purchase history",
-             "Download document with subject Repayment Notice"]
+             "Download document with subject Repayment Notice",
+             "View Printable Statement"]
 
 
 @pytest.mark.parametrize("app", APPS, ids=lambda d: d.name)

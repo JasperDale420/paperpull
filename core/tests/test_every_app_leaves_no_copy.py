@@ -544,6 +544,9 @@ TAKES_NOTHING = {
     "optum": "every document is a plain link on the member site, fetched by GET of its own "
              "path with no redirect followed. Nothing is pressed and no download event or "
              "response is ever listened for",
+    "spectrum": "every statement is the PDF in the page's own GraphQL answer, matched to the Blob "
+                "the page made of it; nothing is downloaded through the browser, and a download "
+                "a press began is only counted, cancelled and deleted (see observes_only)",
 }
 
 
@@ -566,18 +569,108 @@ TAKERS = {"expect_download", "take_download", "take_new_pdf", "save_download", "
 LISTENERS = {"on", "once", "wait_for_event", "expect_event"}
 
 
+# What an observation-only download listener may do with the download it is
+# handed: end it, and remove a file the browser had already written. Nothing
+# of the download is read or saved.
+OBSERVER_CALLS = {"cancel", "delete"}
+
+
+def observes_only(func) -> bool:
+    """True when `func` is a listener that only ends the download it is given.
+
+    The narrow rule that lets an app count a download a press began and
+    stop it, without that counting as taking one. The function takes a
+    single plain parameter, and every use of that name in its body is an
+    exact direct call with no arguments, `download.cancel()` or
+    `download.delete()`. The name appearing anywhere else, read through
+    (`download.cancel.__self__.path()`), handed on (`keep(download.cancel)`),
+    rebound (`drop = download.delete; drop()`), or reused as another
+    function's parameter, and the listener is a taker like any other.
+    """
+    a = func.args
+    if (a.posonlyargs or a.vararg or a.kwonlyargs or a.kwarg or a.defaults
+            or len(a.args) != 1):
+        return False
+    param = a.args[0].arg
+    parent = {}
+    for node in ast.walk(func):
+        for child in ast.iter_child_nodes(node):
+            parent[child] = node
+    for node in ast.walk(func):
+        if isinstance(node, ast.arg) and node is not a.args[0] and node.arg == param:
+            return False
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and param in node.names:
+            return False
+        if not (isinstance(node, ast.Name) and node.id == param):
+            continue
+        attr = parent.get(node)
+        call = parent.get(attr)
+        if not (isinstance(node.ctx, ast.Load)
+                and isinstance(attr, ast.Attribute) and attr.value is node
+                and attr.attr in OBSERVER_CALLS
+                and isinstance(call, ast.Call) and call.func is attr
+                and not call.args and not call.keywords):
+            return False
+    return True
+
+
+def is_observer(tree, handler) -> bool:
+    """True when the handler passed to a download listener is, by name, a
+    function of this module that observes_only, and the name is bound to
+    nothing else."""
+    if not isinstance(handler, ast.Name):
+        return False
+    defs = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == handler.id:
+            defs.append(node)
+        elif isinstance(node, ast.Name) and node.id == handler.id and not isinstance(node.ctx, ast.Load):
+            return False
+        elif isinstance(node, ast.arg) and node.arg == handler.id:
+            return False
+        elif isinstance(node, ast.alias) and (node.asname or node.name) == handler.id:
+            return False
+    return bool(defs) and all(observes_only(d) for d in defs)
+
+
+def listened_event(call):
+    """The event a listener call names, given by position or as `event=`."""
+    if call.args:
+        return call.args[0]
+    return next((k.value for k in call.keywords if k.arg == "event"), None)
+
+
+def listened_handler(call):
+    """The one handler an on/once call hands over, by position or as `f=`,
+    or None when it hands over anything else as well."""
+    given = list(call.args[1:]) + [k.value for k in call.keywords if k.arg != "event"]
+    if len(call.args) > 2 or len(given) != 1:
+        return None
+    if len(call.args) == 2 or any(k.arg == "f" for k in call.keywords):
+        return given[0]
+    return None
+
+
+def is_download(event) -> bool:
+    return isinstance(event, ast.Constant) and event.value == "download"
+
+
 def takes_from_a_folder(app: Path) -> list:
     """Every call in the app's own modules that takes a download, by file
-    and line, a download listener included."""
+    and line, a download listener included. A listener whose handler only
+    ends the download (observes_only) takes nothing and is not counted."""
     found = []
     for path in app_modules(app):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8", errors="ignore"))):
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+        for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             f = node.func
             name = (f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")).lstrip("_")
-            listens = (name in LISTENERS and node.args
-                       and isinstance(node.args[0], ast.Constant) and node.args[0].value == "download")
+            listens = name in LISTENERS and is_download(listened_event(node))
+            if (listens and name in ("on", "once")
+                    and is_observer(tree, listened_handler(node))):
+                continue
             if name in TAKERS or listens:
                 found.append((path.name, node.lineno))
     return found
@@ -604,10 +697,64 @@ def test_what_takes_a_download_is_found(tmp_path):
         "def e(page):\n    page.on('response', print)\n"
         "def f(page, req, out, d):\n    delivery.deliver(page, req, out, is_safe_url=ok, dl_dir=d)\n"
         "def g(page):\n    with page.expect_event('download'):\n        pass\n"
-        "def h(page):\n    page.wait_for_event('popup')\n", encoding="utf-8")
-    assert takes_from_a_folder(app) == [("made_site.py", 2), ("made_site.py", 4),
-                                        ("made_site.py", 6), ("made_site.py", 10),
-                                        ("made_site.py", 12)]
+        "def h(page):\n    page.wait_for_event('popup')\n"
+        "def i(page, s):\n    page.context.once(event='download', f=s.append)\n"
+        "def j(page):\n    page.wait_for_event(event='download')\n", encoding="utf-8")
+    assert sorted(takes_from_a_folder(app)) == [("made_site.py", 2), ("made_site.py", 4),
+                                                ("made_site.py", 6), ("made_site.py", 10),
+                                                ("made_site.py", 12), ("made_site.py", 17),
+                                                ("made_site.py", 19)]
+
+
+def test_a_listener_handed_over_by_keyword_is_found(tmp_path):
+    """`page.on(event="download", f=handler)` is the same listener as the
+    positional form, and a handler that reads the file is a taker."""
+    app = tmp_path / "made"
+    app.mkdir()
+    (app / "made_site.py").write_text(
+        "def on_download(download):\n"
+        "    open(download.path()).read()\n"
+        "def press(page):\n"
+        "    page.on(event='download', f=on_download)\n", encoding="utf-8")
+    assert takes_from_a_folder(app) == [("made_site.py", 4)]
+
+
+@pytest.mark.parametrize("body", [
+    "    download.cancel.__self__.path()\n",
+    "    keep(download.cancel)\n",
+    "    drop = download.delete\n    drop()\n",
+], ids=["read-through", "handed-on", "rebound"])
+def test_a_listener_that_does_more_than_end_the_download_is_found(tmp_path, body):
+    """A listener is let off only when it does nothing with the download
+    but call its cancel() or delete() directly. Each of these reaches the
+    download some other way and is a taker."""
+    app = tmp_path / "made"
+    app.mkdir()
+    (app / "made_site.py").write_text(
+        "def on_download(download):\n" + body
+        + "def press(page):\n    page.on('download', on_download)\n", encoding="utf-8")
+    line = 3 + body.count("\n")
+    assert takes_from_a_folder(app) == [("made_site.py", line)]
+
+
+def test_a_listener_that_only_ends_the_download_takes_nothing(tmp_path):
+    """The observation-only listener an app may keep: it counts the download
+    and ends it, and reads and saves nothing of it."""
+    app = tmp_path / "made"
+    app.mkdir()
+    (app / "made_site.py").write_text(
+        "def press(page, seen):\n"
+        "    def on_download(download):\n"
+        "        seen.append(1)\n"
+        "        try:\n"
+        "            download.cancel()\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "        download.delete()\n"
+        "    page.on('download', on_download)\n"
+        "    page.context.on(event='download', f=on_download)\n"
+        "    page.remove_listener('download', on_download)\n", encoding="utf-8")
+    assert takes_from_a_folder(app) == []
 
 
 # -- what the source has to say ------------------------------------------------

@@ -7,6 +7,25 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Added
+- **Spectrum Internet statements, about a year of them.** For each
+  statement the app brings up its page (an older one by pressing its own
+  row on Statements, so the page prints that statement and not the newest),
+  presses View Printable Statement once and keeps the PDF the page makes,
+  only when it matches the PDF Spectrum sent for that statement, prints the
+  statement's date and is not a copy of one already saved. Two statements
+  of one date, one per account after a transfer, are left for a manual
+  save. No tab is opened and nothing is downloaded through your browser;
+  if the browser will not take the run's own download folder, nothing is
+  pressed and the run stops. A statement whose button Spectrum has turned
+  off is left for the next run. The app never pays and never touches Auto
+  Pay, paperless, equipment, service or settings, and account numbers and
+  the service address stay out of every file and log. Spectrum Mobile
+  statements are not covered yet. Built from the account owner's survey;
+  a full live run is still to come.
+
 ## [0.51.0] - 2026-10-14
 
 Alpaca arrives, statements and trade confirmations from a Live brokerage

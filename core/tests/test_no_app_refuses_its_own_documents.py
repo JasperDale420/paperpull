@@ -32,7 +32,7 @@ APPS = sorted(d for d in (REPO / "apps").iterdir()
 # How a provider labels the control that gets you the document.
 VERBS = ("", "View ", "Download ")
 
-# Three apps refuse a document name on purpose, and all three are allowed
+# Four apps refuse a document name on purpose, and all four are allowed
 # to. On a military pay system "W-2", "SGLI", "FEGLI", "Beneficiary" and
 # "Net Pay" name a settings form as often as a document, and neither app
 # gates a click on this answer: myPay reads its documents from a JSON API
@@ -40,13 +40,16 @@ VERBS = ("", "View ", "Download ")
 # only the whole labels Download, Next, Previous or a page number, since the
 # account can trade, transfer and deposit, and "trade" is on its blocklist;
 # its documents come from the list the page asks for and are pressed by the
-# row's own Download, never by their names. Written down as names so the
-# list can shrink and cannot quietly grow.
+# row's own Download, never by their names. Spectrum's guard takes only
+# "View Printable Statement", the one control it ever presses. Written down
+# as names so the list can shrink and cannot quietly grow.
 ALLOWED_TO = {
     "mypay": {"Annuitant Account Statement", "FEGLI Document", "Net Pay Advice",
               "SGLI Document", "W-2 Tax Form"},
     "aafmaa": {"Beneficiary Designation", "Payment Record"},
     "alpaca": {"Brokerage Statement", "Crypto Statement", "Trade Confirmation"},
+    # The guard accepts only the one label it presses, never a document's name.
+    "spectrum": {"Internet Statement"},
 }
 
 

@@ -86,12 +86,17 @@ def is_document(data, zip_ok: bool = False) -> bool:
 # keeps the event's file whenever it is a PDF, and goes to the folder only
 # when it is not.
 
-def set_download_dir(page, dirpath) -> None:
+def set_download_dir(page, dirpath) -> bool:
     """Point the attached browser's downloads at `dirpath`, over CDP.
 
     Best effort on purpose. A browser that refuses is not a reason to stop
     a run, because the app still has the other ways of taking a document,
     and the failure is written down rather than raised.
+
+    Returns True when the browser accepted the folder and False otherwise.
+    Most callers ignore the value; an app that must not press a control
+    unless the browser's downloads are pointed away from the user's own
+    folder reads it and refuses to press when it is False.
 
     It reaches the browser's own context, the one an attached browser is
     used through. A context made with new_context is not pointed anywhere.
@@ -111,6 +116,8 @@ def set_download_dir(page, dirpath) -> None:
                  {"behavior": "allow", "downloadPath": str(folder), "eventsEnabled": True})
     except Exception as e:
         log.info("set_download_dir failed: %s", e)
+        return False
+    return True
 
 
 class Snapshot(set):
