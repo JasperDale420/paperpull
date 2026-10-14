@@ -780,8 +780,11 @@ _CLASSES = ((re.compile(r"\b(CHK|CHECKING)\b", re.I), "Business Checking"),
 _TAIL_RE = re.compile(r"\s*\(\.\.\.\d{4}\)(\s*,\s*current selection)?\s*$", re.I)
 _FOUR_RE = re.compile(r"\(\.\.\.(\d{4})\)")
 # A cardholder's menu entry, as the live menu draws it: one initial with a
-# period, then a surname of one or more words, then the masked last four.
-CARDHOLDER_RE = re.compile(r"[A-Z]\. [A-Z][A-Z' -]+ \(\.\.\.\d{4}\)(\s*,\s*current selection)?")
+# period, then a surname of one or more words of capital letters, an
+# apostrophe or hyphen only inside a word, then the masked last four.
+_SURNAME_WORD = r"[A-Z]+(?:['-][A-Z]+)*"
+CARDHOLDER_RE = re.compile(r"[A-Z]\. %s(?: %s)* \(\.\.\.\d{4}\)(\s*,\s*current selection)?"
+                           % (_SURNAME_WORD, _SURNAME_WORD))
 
 
 def label_tail(label: str) -> str:

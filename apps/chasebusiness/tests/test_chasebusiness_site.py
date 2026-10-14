@@ -496,8 +496,8 @@ def test_label_classification():
 
 
 def test_cardholder_entries_are_skipped_and_shared_tails_kept_apart():
-    """The cardholder is listed under the card's own last four, as the
-    survey found it, so it is passed over."""
+    """The cardholder, an initial and a surname under a last four of its
+    own as the live menu draws it, is passed over beside a Business Card."""
     st = center().state()
     accts = site.accounts_of(st)
     assert [a.klass for a in accts] == ["Business Checking", "Business Card", "Business Debit"]
@@ -507,7 +507,9 @@ def test_cardholder_entries_are_skipped_and_shared_tails_kept_apart():
 
 @pytest.mark.parametrize("label", ["INK BUSINESS CASH (...9876)", "ZEPHYRINA QUILLFEATHER (...9876)",
                                    "BUS DEBIT CARD (...1357)", "Z. QUILLFEATHER",
-                                   "Z. QUILLFEATHER (...1357), INK", "ZQ. QUILLFEATHER (...1357)"])
+                                   "Z. QUILLFEATHER (...1357), INK", "ZQ. QUILLFEATHER (...1357)",
+                                   "J. A- (...1357)", "J. O' (...1357)", "J. -SMITH (...1357)",
+                                   "J. SMITH- JONES (...1357)"])
 def test_an_entry_that_names_no_class_and_is_no_cardholder_stops_the_list(label):
     """A card whose name carries no product word, a name not in the
     cardholder's shape, one naming two classes, or one with no last four
@@ -1342,6 +1344,29 @@ def test_a_new_sign_in_with_new_account_ids_keeps_one_record_each_and_finds_its_
     rec = next(v for v in first.values() if v["date"] == "2025-12-31")
     got, out = take(again, tmp_path, digest=rec["account_digest"])
     assert got and out.exists()
+
+
+def test_the_second_of_two_checking_accounts_is_found_after_its_id_changes(tmp_path):
+    """Two Checking accounts, told apart only by their last fours, each
+    under a new id after a sign-in: a record of the second one reaches the
+    second one, and its PDF prints that account's last four."""
+    other = {"id": "bottom-7700121212", "label": "BUS SELECT CHK (...1357)"}
+    years = {2026: [item("DOCQXS0926", "2026-09-30", 5)], 2025: []}
+    app = make_app(tmp_path, "--discover")
+    attach(app, Center([dict(CHK, years=chk_years()), dict(other, years=years),
+                        dict(CARD, years={2026: [item("DOCQXC0926", "2026-09-28", 4)]})],
+                       years=[2026, 2025, 2024]))
+    with redirect_stdout(io.StringIO()):
+        app.cmd_discover()
+    rec = next(v for v in app.discovery.data.values() if v["page_count"] == 5)
+    assert rec["account_digest"] == site.account_digest("Business Checking", "1357")
+    again = Center([dict(CHK, id="bottom-8800112233", years=chk_years()),
+                    dict(other, id="bottom-8800121212", years=years),
+                    dict(CARD, id="bottom-8800445566", years={2026: []})],
+                   years=[2026, 2025, 2024])
+    got, out = take(again, tmp_path, digest=rec["account_digest"], iso="2026-09-30", pages=5)
+    assert got and out.exists()
+    assert "#bottom-8800121212" in again.presses
 
 
 # ---------------------------------------------------------------------------
