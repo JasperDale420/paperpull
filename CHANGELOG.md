@@ -154,10 +154,11 @@ to the Capital One app, so Discover counts as supported.
   payments, transfers, wires, Zelle, settings and sign-out are never
   touched. A run stops on its own when Chase shows its session timeout or
   signs you out, and keeps what it saved. Account names and numbers stay
-  out of every file name, log and diagnostic file. An exported history
-  leaves out Chase's account and statement ids and keeps only a short
-  digest of each account's id, which tells two accounts apart but is no
-  secret from someone who holds the id. Verified on one profile, where it
+  out of every file name, log and diagnostic file. Chase gives accounts
+  and statements new ids at each sign-in, so a statement is known by its
+  account's class and a short digest of its last four, which tells two
+  accounts apart but is no secret, since a last four is easy to guess
+  from it. Verified on one profile, where it
   saved 10 checking statements on a full run. A business card's statements
   are untested.
 - **SDG&E (San Diego Gas & Electric) bills from My Energy Center.** The app

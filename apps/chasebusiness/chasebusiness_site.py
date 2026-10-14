@@ -62,9 +62,9 @@ documentId as soon as an answer is read. None of them, nor a request body,
 an answer, or an address with its query, is ever logged or said. A
 statement's account is written down only as its class, "Business Checking",
 "Business Card" or "Business Debit", read from the product noun in its
-label. An entry with no such noun is passed over only when its last four
-are an account's own, which is how the survey found a cardholder listed.
-Any other stops the list (accounts_of).
+label. An entry with no such noun is passed over only when it reads as a
+cardholder, "J. SURNAME (...1234)", beside a Business Card. Any other stops
+the list (accounts_of).
 
 SIGNED OUT: the session-timeout dialog drawn open, a sign-in address, a
 password field, or a 401, 403 or redirect answering the list call, checked
@@ -78,9 +78,10 @@ KNOWN CEILINGS (ponytail: left until a live run shows otherwise)
   * An empty year read before any non-empty one is held until a non-empty
     answer in the same run shows the success code, and a listing in which
     every year was empty stops.
-  * Whether the account id in bottom-<accountId> stays the same from one
-    sign-in to the next is not yet known. A record's key holds a digest of
-    it, so an id that changed would list every statement anew.
+  * The account id in bottom-<accountId> changes with each sign-in (seen
+    live), so a record is known by its account's class and last four
+    (account_digest), and two accounts of one class with one last four
+    stop the list.
   * Two statements of one account on one date stop the list, on every run,
     since nothing on a row tells them apart.
   * Rows do not name their account, so a saved PDF is kept only when its
@@ -92,6 +93,7 @@ KNOWN CEILINGS (ponytail: left until a live run shows otherwise)
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import sys
@@ -204,7 +206,7 @@ _ROW_DATE = rf"{_MONTH}\s+\d{{1,2}},\s+\d{{4}}"
 
 # The six controls this app presses, each anchored whole.
 ACCOUNT_ENTRY_RE = re.compile(
-    r"[A-Za-z0-9 .&'-]+ \(\.\.\.\d{4}\)(, current selection)?", re.I)
+    r"[A-Za-z0-9 .&'-]+ \(\.\.\.\d{4}\)(\s*,\s*current selection)?", re.I)
 STATEMENTS_ACCORDION_RE = re.compile(r"statements", re.I)
 # The picker's aria-label reads " View:: 2026" live, two colons and a space.
 YEAR_PICKER_RE = re.compile(r"(view:{0,2}\s*)?(\d{4})?", re.I)
@@ -653,11 +655,16 @@ class RawDoc:
     kind: str = "doc"
     # documentId from the list answer. Private: never logged or in a name.
     document_id: str = ""
-    # The menu entry's element id, bottom-<accountId>. Private, and only
-    # what re-selects the account when the statement is taken.
+    # The menu entry's element id, bottom-<accountId>. Private. Chase mints
+    # it anew each sign-in, so it names the account for this session only
+    # and is never what a record is known by.
     account_ref: str = ""
     doc_type: str = ""
     page_count: int = 0
+    # The account's class and last four, digested (account_digest). What a
+    # record is known by and what finds its account again on a later
+    # sign-in.
+    account_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -678,9 +685,26 @@ class Account:
     ref: str          # bottom-<accountId>
     account_id: str
     klass: str
-    # The last four digits the menu label shows, "(...1234)". Private, and
-    # only what a saved statement's text is checked for.
+    # The last four digits the menu label shows, "(...1234)". Private. With
+    # the class it is what names the account across sign-ins (digest), and
+    # what a saved statement's text is checked for.
     tail: str = ""
+
+    @property
+    def digest(self) -> str:
+        return account_digest(self.klass, self.tail)
+
+
+def account_digest(klass: str, tail: str) -> str:
+    """Twelve hex letters of an unsalted SHA-256 of an account's class and
+    last four, "Business Checking:1234", or "" without both. Chase mints an
+    account's id anew each sign-in, so the class and last four are what
+    name the account from one sign-in to the next, as the chase app keys
+    its cards. The digest keeps the four digits out of a file name, but it
+    is no secret, since there are only ten thousand last fours to try."""
+    if not klass or not re.fullmatch(r"\d{4}", tail or ""):
+        return ""
+    return hashlib.sha256(("%s:%s" % (klass, tail)).encode("utf-8")).hexdigest()[:12]
 
 
 # ---------------------------------------------------------------------------
@@ -753,8 +777,11 @@ _ACCOUNT_REF_RE = re.compile(r"bottom-([A-Za-z0-9_-]{1,80})")
 _CLASSES = ((re.compile(r"\b(CHK|CHECKING)\b", re.I), "Business Checking"),
             (re.compile(r"\bCARD\b", re.I), "Business Card"),
             (re.compile(r"\bDEBIT\b", re.I), "Business Debit"))
-_TAIL_RE = re.compile(r"\s*\(\.\.\.\d{4}\)(, current selection)?\s*$", re.I)
+_TAIL_RE = re.compile(r"\s*\(\.\.\.\d{4}\)(\s*,\s*current selection)?\s*$", re.I)
 _FOUR_RE = re.compile(r"\(\.\.\.(\d{4})\)")
+# A cardholder's menu entry, as the live menu draws it: one initial with a
+# period, then a surname of one or more words, then the masked last four.
+CARDHOLDER_RE = re.compile(r"[A-Z]\. [A-Z][A-Z' -]+ \(\.\.\.\d{4}\)(\s*,\s*current selection)?")
 
 
 def label_tail(label: str) -> str:
@@ -811,13 +838,16 @@ def accounts_of(state: dict) -> List[Account]:
     well-formed element id, one last four, and a class every label it
     carries agrees on.
 
-    An entry with no class is a cardholder's only when its last four are
-    those of an entry that has one. The survey found the business card's
-    cardholder listed under the card's own last four, with only notices.
-    Any other entry without a class stops the list, since it may be an
-    account whose name carries no product word (a card named "INK BUSINESS
-    CASH", say) and skipping it would call the list whole without it. One
-    element id twice stops the list too."""
+    An entry with no class is a cardholder's, and passed over, only when
+    its label reads as a person, one initial with a period and then a
+    surname, "J. SURNAME (...1234)" (CARDHOLDER_RE), and the menu also
+    lists a Business Card. Live, the cardholder shows a last four of its
+    own, not the card's, and only notices. Any other entry without a class
+    stops the list, since it may be an account whose name carries no
+    product word (a card named "INK BUSINESS CASH", say) and skipping it
+    would call the list whole without it. One element id twice stops the
+    list too, and so do two accounts of one class with one last four,
+    which nothing would tell apart."""
     seen, read = set(), []
     for e in state.get("menu") or []:
         ref = str(e.get("id") or "")
@@ -843,16 +873,18 @@ def accounts_of(state: dict) -> List[Account]:
         tails = {label_tail(t) for t in labels}
         if len(tails) != 1 or "" in tails:
             raise ListStopped("an account menu entry shows no single last four")
-        read.append((ref, m.group(1), klass, tails.pop()))
-    classed_tails = {tail for _r, _i, klass, tail in read if klass}
+        read.append((ref, m.group(1), klass, tails.pop(), labels))
+    has_card = any(klass == "Business Card" for _r, _i, klass, _t, _l in read)
     out = []
-    for ref, account_id, klass, tail in read:
+    for ref, account_id, klass, tail, labels in read:
         if klass:
             out.append(Account(ref=ref, account_id=account_id, klass=klass, tail=tail))
-        elif tail in classed_tails:
-            log.info("a cardholder's menu entry, under an account's own last four, is passed over")
+        elif has_card and all(CARDHOLDER_RE.fullmatch(_tidy(t)) for t in labels):
+            log.info("a cardholder's menu entry is passed over")
         else:
             raise ListStopped("an account menu entry names no class of business account this reads")
+    if len({a.digest for a in out}) != len(out):
+        raise ListStopped("two accounts of one class show one last four")
     return out
 
 
@@ -1420,7 +1452,8 @@ def _rawdocs(acct: Account, items: List[Item]) -> List[RawDoc]:
     title = "%s Statement" % acct.klass
     return [RawDoc(title=title, account=acct.klass, date_text=i.date, href="", text=title,
                    kind="statement", document_id="", account_ref=acct.ref,
-                   doc_type=i.doc_type, page_count=i.pages) for i in items]
+                   doc_type=i.doc_type, page_count=i.pages, account_digest=acct.digest)
+            for i in items]
 
 
 def _account_docs(page, run: Run, acct: Account, accounts: List[Account]) -> List[RawDoc]:
@@ -1476,7 +1509,7 @@ def collect_download_docs(page, run: Optional[Run] = None) -> List[RawDoc]:
     # date stop the list here on every run (README, Validation status).
     seen = set()
     for d in docs:
-        ident = (d.account_ref, d.date_text, d.doc_type)
+        ident = (d.account_digest, d.date_text, d.doc_type)
         if ident in seen:
             raise ListStopped("one account has two statements on one date", docs)
         seen.add(ident)
@@ -1528,14 +1561,14 @@ def bind(items: List[Item], rows: list, document_id: str, iso_date: str, doc_typ
     return _row_number(hits[0].get("id") or "")
 
 
-def _reach_row(page, run: Run, account_ref: str, document_id: str, iso_date: str,
+def _reach_row(page, run: Run, digest: str, document_id: str, iso_date: str,
                doc_type: str, pages: int, trace: Optional[list]) -> Tuple[int, str]:
     """Open the document center afresh, choose the record's account, open
     Statements, choose the record's year and bind the record to one row.
     The row's number and the account's last four, or -1 with nothing
     pressed past the list."""
     opened = _open(page)
-    accts = [a for a in accounts_of(opened.state) if a.ref == account_ref]
+    accts = [a for a in accounts_of(opened.state) if a.digest == digest]
     if len(accts) != 1:
         if trace is not None:
             trace.append({"note": "the account is not in the menu once"})
@@ -1757,11 +1790,12 @@ def _catch_statement(page, run: Run, dl_dir, n: int, iso_date: str, out_path: Pa
             pass
 
 
-def download_statement(page, run: Run, dl_dir, out_path, *, account_ref: str, document_id: str,
+def download_statement(page, run: Run, dl_dir, out_path, *, account_digest: str, document_id: str,
                        iso_date: str, doc_type: str, page_count: int,
                        trace: Optional[list] = None) -> bool:
     """Save the statement discovery recorded. The document center is opened
-    afresh, the record's account chosen and proven current, Statements
+    afresh, the record's account found by its class and last four
+    (account_digest) and chosen and proven current, Statements
     opened, its year chosen, and the record bound to exactly one answered
     statement and one shown row before anything is pressed on the row.
     False, with nothing pressed on the row, when any of that does not hold.
@@ -1772,13 +1806,13 @@ def download_statement(page, run: Run, dl_dir, out_path, *, account_ref: str, do
     out_path = Path(out_path)
     # The documentId is not required: Chase mints it anew each session, so
     # a record keeps none (see bind).
-    if not (_ACCOUNT_REF_RE.fullmatch(account_ref or "")
+    if not (re.fullmatch(r"[0-9a-f]{12}", account_digest or "")
             and answer_date(iso_date) == iso_date and doc_type == "Statement" and int(page_count or 0) > 0):
         if trace is not None:
             trace.append({"note": "the record does not name one statement"})
         return False
     try:
-        n, tail = _reach_row(page, run, account_ref, document_id, iso_date, doc_type,
+        n, tail = _reach_row(page, run, account_digest, document_id, iso_date, doc_type,
                              int(page_count), trace)
     except ListStopped as stop:
         log.info("the list stopped while looking for the statement dated %s: %s", iso_date, stop)

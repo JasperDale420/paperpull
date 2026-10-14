@@ -33,8 +33,10 @@ EIGHT_YEARS = tuple(range(CUR, CUR - 8, -1))
 CHK = {"id": "bottom-7700112233", "label": "BUS COMPLETE CHK (...4321)"}
 CARD = {"id": "bottom-7700445566", "label": "BUSINESS CARD (...8765)"}
 DEBIT = {"id": "bottom-7700778899", "label": "BUS TOTAL DEBIT (...5555)"}
-HOLDER = {"id": "bottom-7700990011", "label": "ZEPHYRINA QUILLFEATHER (...8765)"}
-SECRETS = ["BUS COMPLETE CHK", "BUSINESS CARD (...8765)", "BUS TOTAL DEBIT", "ZEPHYRINA",
+# The cardholder, as the live menu draws one: an initial, a surname and a
+# last four of its own.
+HOLDER = {"id": "bottom-7700990011", "label": "Z. QUILLFEATHER (...2468)"}
+SECRETS = ["BUS COMPLETE CHK", "BUSINESS CARD (...8765)", "BUS TOTAL DEBIT", "2468",
            "QUILLFEATHER", "4321", "8765", "5555", "7700112233", "7700445566",
            "7700778899", "7700990011", "DOCQX", "KEYZZ", "TOKZZ"]
 
@@ -504,10 +506,11 @@ def test_cardholder_entries_are_skipped_and_shared_tails_kept_apart():
 
 
 @pytest.mark.parametrize("label", ["INK BUSINESS CASH (...9876)", "ZEPHYRINA QUILLFEATHER (...9876)",
-                                   "BUS DEBIT CARD (...1357)", "ZEPHYRINA QUILLFEATHER"])
+                                   "BUS DEBIT CARD (...1357)", "Z. QUILLFEATHER",
+                                   "Z. QUILLFEATHER (...1357), INK", "ZQ. QUILLFEATHER (...1357)"])
 def test_an_entry_that_names_no_class_and_is_no_cardholder_stops_the_list(label):
-    """A card whose name carries no product word, an entry under no
-    account's last four, one naming two classes, or one with no last four
+    """A card whose name carries no product word, a name not in the
+    cardholder's shape, one naming two classes, or one with no last four
     is not passed over, since the list would then be called whole
     without it."""
     page = center()
@@ -515,6 +518,26 @@ def test_an_entry_that_names_no_class_and_is_no_cardholder_stops_the_list(label)
     with pytest.raises(site.ListStopped):
         site.collect_download_docs(page, run())
     assert page.presses == []
+
+
+@pytest.mark.parametrize("label", ["Z. QUILLFEATHER (...2468)", "J. O'NEIL-SMITH (...1357)",
+                                   "J. VAN DER BERG (...1357) , current selection"])
+def test_a_cardholder_beside_a_business_card_is_passed_over(label):
+    st = {"menu": [{"id": CARD["id"], "labels": [CARD["label"]], "shown": True},
+                   {"id": "bottom-7700123123", "labels": [label], "shown": True}]}
+    assert [a.klass for a in site.accounts_of(st)] == ["Business Card"]
+
+
+def test_a_cardholder_with_no_business_card_in_the_menu_stops_the_list():
+    st = {"menu": [{"id": CHK["id"], "labels": [CHK["label"]], "shown": True},
+                   {"id": HOLDER["id"], "labels": [HOLDER["label"]], "shown": True}]}
+    with pytest.raises(site.ListStopped):
+        site.accounts_of(st)
+
+
+def test_the_current_selection_may_have_a_space_before_its_comma():
+    label = "BUS COMPLETE CHK (...4321) , current selection"
+    assert site.is_account_entry(label) and site.account_class(label) == "Business Checking"
 
 
 def test_a_menu_that_reads_differently_twice_over_stops_the_list():
@@ -549,8 +572,12 @@ def test_a_menu_that_changes_between_accounts_stops_the_list():
 
 def test_duplicate_labels_are_two_accounts_and_one_id_twice_stops():
     twin = {"menu": [{"id": "bottom-1001", "labels": [CHK["label"]], "shown": True},
-                     {"id": "bottom-1002", "labels": [CHK["label"]], "shown": True}]}
+                     {"id": "bottom-1002", "labels": ["BUS COMPLETE CHK (...1357)"], "shown": True}]}
     assert [a.ref for a in site.accounts_of(twin)] == ["bottom-1001", "bottom-1002"]
+    # One class and one last four twice: nothing across sign-ins tells them apart.
+    with pytest.raises(site.ListStopped):
+        site.accounts_of({"menu": [{"id": "bottom-1001", "labels": [CHK["label"]], "shown": True},
+                                   {"id": "bottom-1002", "labels": [CHK["label"]], "shown": True}]})
     with pytest.raises(site.ListStopped):
         site.accounts_of({"menu": [{"id": "bottom-1001", "labels": [CHK["label"]], "shown": True},
                                    {"id": "bottom-1001", "labels": [CARD["label"]], "shown": True}]})
@@ -561,7 +588,7 @@ def test_duplicate_labels_are_two_accounts_and_one_id_twice_stops():
 def test_every_menu_label_and_id_is_private_once_read():
     site.guard_menu(center().state())
     words = " ".join(site.private_words())
-    for secret in ("ZEPHYRINA", "QUILLFEATHER", "7700112233", "bottom-7700990011", "4321"):
+    for secret in ("QUILLFEATHER", "2468", "7700112233", "bottom-7700990011", "4321"):
         assert secret in words
     assert "4321" not in site.redact("BUS COMPLETE CHK (...4321)")
 
@@ -792,12 +819,15 @@ def test_a_dialog_that_opens_during_the_listing_is_session_expired():
 # Download
 # ---------------------------------------------------------------------------
 
-def take(page, tmp_path, doc_id="DOCQX1225", iso="2025-12-31", pages=2, ref=CHK["id"], trace=None,
+CHK_DIGEST = site.account_digest("Business Checking", "4321")
+
+
+def take(page, tmp_path, doc_id="DOCQX1225", iso="2025-12-31", pages=2, digest=CHK_DIGEST, trace=None,
          r=None, name="out.pdf"):
     out = tmp_path / name
     dl = tmp_path / "dl"
     dl.mkdir(exist_ok=True)
-    got = site.download_statement(page, r or run(), dl, out, account_ref=ref, document_id=doc_id,
+    got = site.download_statement(page, r or run(), dl, out, account_digest=digest, document_id=doc_id,
                                   iso_date=iso, doc_type="Statement", page_count=pages,
                                   trace=trace if trace is not None else [])
     return got, out
@@ -837,7 +867,7 @@ def test_no_row_press_without_one_bound_row(tmp_path):
 
 def test_an_account_gone_from_the_menu_presses_nothing(tmp_path):
     page = center()
-    got, _out = take(page, tmp_path, ref="bottom-1234567")
+    got, _out = take(page, tmp_path, digest=site.account_digest("Business Checking", "1357"))
     assert not got and page.presses == []
 
 
@@ -928,7 +958,8 @@ def test_records_carry_the_class_and_never_a_query(tmp_path):
         assert rec["summary"] == "Bank Statement " + rec["account"]
         assert rec["href"] == "" and "?" not in rec["source_url"]
     told = docs.told_apart_by(recs[0])
-    assert len(told) == 6 and told not in recs[0]["account_ref"]
+    assert len(told) == 6 and all(rec["account_ref"] == "" for rec in recs)
+    assert len({docs.told_apart_by(rec) for rec in recs}) == 2, "two accounts, two digests"
     assert all(rec["document_id"] == "" for rec in recs)
 
 
@@ -1256,7 +1287,7 @@ def test_a_record_key_never_holds_the_statement_id(tmp_path):
     with redirect_stdout(io.StringIO()):
         app.cmd_discover()
     for key, rec in app.discovery.data.items():
-        assert rec["document_id"] == "" and rec["account_ref"] not in key
+        assert rec["document_id"] == "" and rec["account_ref"] == ""
         assert "DOCQX" not in key and "DOCQX" not in json.dumps(rec)
         assert key.startswith("id:" + rec["account"] + ":")
 
@@ -1285,6 +1316,32 @@ def test_a_second_discover_with_new_statement_ids_keeps_one_record_each(tmp_path
     with redirect_stdout(io.StringIO()):
         app.cmd_discover()
     assert sorted(app.discovery.data) == sorted(first)
+
+
+def test_a_new_sign_in_with_new_account_ids_keeps_one_record_each_and_finds_its_account(tmp_path):
+    """Live, every account in the menu carried a new id after a fresh
+    sign-in. Records are known by class and last four, so the same
+    statements under new account ids are the same records, and a record
+    from the first sign-in is taken from the second."""
+    app = make_app(tmp_path, "--discover")
+    attach(app, center())
+    with redirect_stdout(io.StringIO()):
+        app.cmd_discover()
+    first = dict(app.discovery.data)
+
+    def renamed(a):
+        return dict(a, id=a["id"].replace("bottom-7700", "bottom-8800"))
+    again = Center([dict(renamed(CHK), years=_reminted(chk_years())),
+                    dict(renamed(CARD), years=_reminted({2026: [item("DOCQXC0926", "2026-09-28", 4)]})),
+                    dict(renamed(DEBIT), years=None), dict(renamed(HOLDER), years=None)],
+                   years=[2026, 2025, 2024])
+    attach(app, again)
+    with redirect_stdout(io.StringIO()):
+        app.cmd_discover()
+    assert sorted(app.discovery.data) == sorted(first)
+    rec = next(v for v in first.values() if v["date"] == "2025-12-31")
+    got, out = take(again, tmp_path, digest=rec["account_digest"])
+    assert got and out.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1515,10 +1572,14 @@ def test_the_oldest_year_must_carry_the_end_of_menu_words():
 
 
 def test_the_account_digest_is_its_own_field_and_survives_without_the_ref():
+    digest = site.account_digest("Business Checking", "4321")
     d = docs.Document(title="Business Checking Statement", account="Business Checking",
-                      date="2026-09-30", account_ref=CHK["id"], doc_type="Statement")
-    assert d.account_digest == docs.account_digest_of(CHK["id"]) and len(d.account_digest) == 12
-    assert d.key.endswith(":" + d.account_digest)
+                      date="2026-09-30", account_ref=CHK["id"], doc_type="Statement",
+                      account_digest=digest)
+    assert len(digest) == 12 and "4321" not in digest
+    assert d.key == "id:Business Checking:2026-09-30:Statement:" + digest
+    assert site.account_digest("Business Checking", "") == ""
+    assert site.account_digest("Business Card", "4321") != digest
     rec = d.to_dict()
     moved = {k: v for k, v in rec.items() if k not in ("account_ref", "document_id")}
     assert docs.Document.from_dict(moved).key == d.key

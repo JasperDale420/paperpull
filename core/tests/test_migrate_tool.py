@@ -744,10 +744,10 @@ def test_one_history_named_for_several_places_is_refused(tmp_path):
 
 @pytest.mark.parametrize("minimal", [False, True])
 def test_chase_business_ids_never_leave_this_computer(tmp_path, minimal):
-    """Chase Business keeps its document center's account reference only to
-    reach a statement's account again, and records documentId empty, since
-    Chase mints a new one each session. Neither field is in any export,
-    full or --minimal, even on a record that holds an id. A moved history
+    """Chase Business records its account reference and documentId empty,
+    since Chase mints both anew each sign-in. Neither field is in any
+    export, full or --minimal, even on a record an earlier build wrote
+    with them. A moved history
     still skips the statement, which its key says on its own, and every
     export keeps the record's account_digest, which Rename reads to tell
     two accounts' files apart."""

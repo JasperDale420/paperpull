@@ -211,14 +211,15 @@ KEY_FIELDS = ("category", "doc_type", "date", "title", "account", "listed_accoun
               "occurrence", "document_id")
 
 # Fields one provider keeps only for this computer's runs, left out of every
-# export, full or --minimal. Chase Business keeps its document center's
-# account reference to reach a statement's account again, and it is private.
-# Its records keep documentId empty, since Chase mints a new one each
-# session, and the field is left out all the same so no record that holds
-# one can carry it. The key and the record's own account_digest hold a short
-# unsalted digest of the reference, never the reference, so a moved history
-# still skips the statement and Rename still tells two accounts' files apart
-# (chasebusiness_docs.Document.key and told_apart_by). Checked by
+# export, full or --minimal. Chase Business mints its account ids and its
+# statement ids anew each sign-in, so its records keep account_ref and
+# documentId empty, and both fields are left out all the same so no record
+# an earlier build wrote can carry one. The key and the record's own
+# account_digest hold a short unsalted digest of the account's class and
+# last four, never the digits, so a moved history still skips the statement
+# and Rename still tells two accounts' files apart
+# (chasebusiness_docs.Document.key and told_apart_by). The digest is no
+# secret, since a last four has only ten thousand values. Checked by
 # core/tests/test_migrate_tool.py.
 PROVIDER_PRIVATE_FIELDS = {"Chase Business": ("account_ref", "document_id")}
 

@@ -46,10 +46,16 @@ Statements are filed by date with the account's class, Business Checking,
 Business Card or Business Debit, read from the product word in the menu.
 An account's name and number are kept out of every file name, log and
 diagnostic file. A menu entry with no such word is passed over only when
-it shows the last four of an account that has one, which is how Chase
-lists a card's cardholder. Any other entry without one, a card whose name
-has no product word say, stops the list, and the Diagnose file counts
-such entries.
+it reads as a cardholder, an initial and a surname such as "J. SMITH
+(...1234)", and the menu also lists a Business Card. Any other entry
+without one, a card whose name has no product word say, stops the list,
+and the Diagnose file counts such entries.
+
+Chase gives each account a new id every time you sign in, so a statement
+is known by its account's class and last four instead. Two accounts of one
+class with the same last four stop the list, since nothing would tell
+them apart. The last four are never written to a file name or a log, only
+a short digest of them, and that digest is no secret.
 
 A list the app cannot read whole stops rather than being called complete.
 The account menu is read twice and both readings must agree, and the
@@ -70,10 +76,10 @@ known:
   current year in January say, is held until a year with statements in
   the same run shows what Chase answers on success. A run in which every
   year is empty stops rather than calling the list read.
-- Whether Chase keeps an account's id the same from one sign-in to the
-  next. A statement's record holds a digest of it, so if the id changed,
-  each sign-in would list every statement as new and save it again. Run
-  Discover after a fresh sign-in and check that it finds no new statements.
+- Seen live: Chase gives every account a new id at each sign-in, and the
+  cardholder's entry shows a last four of its own. Records are keyed by
+  class and last four for the first, and the cardholder is known by its
+  name's shape for the second.
 - Two statements of one account on one date stop the list on every run,
   since nothing on a row tells them apart. None has been seen.
 - The business card's statements: the card showed no statements in the
