@@ -86,10 +86,16 @@ Mobile is a separate bill, and its site has no PDF of a Mobile statement.
     (seen live 2026-10-13), checking again, and printing the page with
     receipt_pdf.print_page_to_pdf (Page.printToPDF), the way the Venmo app
     prints a month. The PDF's text must print the date, and its bytes may
-    not be another statement's. The statementId values are private words
+    not be another statement's. A failed answer to the Mobile list's own
+    statements or the statement's own data stops it (MobileWatch); other
+    operations' failures, such as the next-bill estimate whose tile then
+    reads "This info is currently not available. Please try again later."
+    (BENIGN_MESSAGES), are only logged. The statementId values are private words
     the moment the page lands, and no two dates may land on one id.
 
-SESSION: a 401 from the graph, a GraphQL answer with errors, the sign-in
+SESSION: a 401 from the graph, a GraphQL answer with errors to an
+operation an Internet statement is read from (Mobile: see MobileWatch,
+where another operation's errors are only logged), the sign-in
 page (/login, id.spectrum.net), a validateSession answer saying the session
 is not valid, or the idle-timeout dialog raise SessionExpired. A one-time
 passcode prompt raises OtpRequired. The run stops for the account holder at
@@ -393,14 +399,29 @@ def idle_dialog(page) -> bool:
     return any(m in hay for m in IDLE_MARKERS)
 
 
+# Page messages that carry a rate-limit phrase and are not one. The Mobile
+# list's estimated-next-bill tile, when its own answer fails, reads (live,
+# 2026-10-13): "Looking for your next bill? This info is currently not
+# available. Please try again later." That sentence, whole, is taken out
+# before the rate-limit phrases are looked for, so the same phrase anywhere
+# else on the page still counts.
+BENIGN_MESSAGES = [
+    re.compile(r"this info is currently not available\. please try again later\."),
+]
+
+
 def detect_security_challenge(page) -> Optional[str]:
     """Names a robot check or throttling notice on screen, or None. Visible
     text only. A one-time passcode prompt is not this: it raises
-    OtpRequired where it is met."""
-    hay = _body_text(page, 2500)
+    OtpRequired where it is met. A page message known to be benign
+    (BENIGN_MESSAGES) is not read as throttling; a robot check is looked
+    for on the whole text."""
+    hay = re.sub(r"\s+", " ", _body_text(page, 2500))
     for m in SECURITY_CHALLENGE_MARKERS:
         if m in hay:
             return f"Security challenge detected: '{m}'"
+    for benign in BENIGN_MESSAGES:
+        hay = benign.sub(" ", hay)
     for m in RATE_LIMIT_MARKERS:
         if m in hay:
             return f"Possible rate limiting detected: '{m}'"
@@ -1944,18 +1965,30 @@ def heading_says(state: dict, day: str, only: bool) -> str:
     return ""
 
 
+# The page's own GraphQL operations a Mobile statement depends on: the
+# Mobile list's statements and the statement's own data (heard live
+# 2026-10-13). A failed answer to one of these fails the press or the print.
+# Any other operation's failed answer (the next-bill estimate, alerts,
+# insurance) is only logged by name and counted, since the live list page
+# draws a "not available" tile when the estimate fails, and the statement
+# does not come from it. A 401 from any graph answer is a signed-out
+# session, as for every Watch.
+MOBILE_STATEMENT_OPERATIONS = {"fetchMobileDigitalStatementsForBillPresentment",
+                               "fetchMobileHistoricalStatement"}
+
+
 class MobileWatch(Watch):
     """The page's own GraphQL answers while a Mobile press or the print is
     under way. Kept, as Watch keeps them: every graph answer's status and
-    the session check, and every graph answer, of which only the status and
-    whether the JSON has an "errors" member are read, after the wait. Any
-    of them failing fails the statement, whatever operation it answered,
-    since a page drawn beside a failed answer may be drawn from an older
-    one. Nothing else of a request or response is looked at."""
+    the session check, and every graph answer with its operationName, of
+    which only the status and whether the JSON has an "errors" member are
+    read, after the wait. Nothing else of a request or response is looked
+    at."""
 
     def __init__(self, page):
         super().__init__(page, "")
         self.mine: list = []
+        self.others_failed: list = []
 
     def heard(self, response) -> None:
         super().heard(response)
@@ -1963,29 +1996,48 @@ class MobileWatch(Watch):
             request = response.request
             if request.url != GRAPH_URL or request.method != "POST":
                 return
+            body = json.loads(request.post_data or "")
         except Exception:
-            return
-        self.mine.append(response)
+            body = None
+        op = body.get("operationName") if isinstance(body, dict) else None
+        self.mine.append((op if isinstance(op, str) else "", response))
+
+    @staticmethod
+    def _fault(response) -> str:
+        try:
+            status = int(response.status)
+        except Exception:
+            status = 0
+        if status != 200:
+            return "came back %d" % status
+        try:
+            answer = response.json()
+        except Exception:
+            return "is not JSON"
+        if not isinstance(answer, dict) or answer.get("errors"):
+            return "carries errors"
+        return ""
 
     def failed(self) -> str:
         """SessionExpired for a 401 or a session check that says the session
-        is not valid. "" when every graph answer was a 200 JSON object
-        without errors, else our own words."""
+        is not valid. "" when every answer to a MOBILE_STATEMENT_OPERATIONS
+        operation was a 200 JSON object without errors, else our own words.
+        Other operations' failed answers are logged by name only."""
         self.check_session()
-        for response in list(self.mine):
-            try:
-                status = int(response.status)
-            except Exception:
-                status = 0
-            if status != 200:
-                return "a graph answer came back %d" % status
-            try:
-                answer = response.json()
-            except Exception:
-                return "a graph answer is not JSON"
-            if not isinstance(answer, dict) or answer.get("errors"):
-                return "a graph answer carries errors"
-        return ""
+        why = ""
+        for op, response in list(self.mine):
+            fault = self._fault(response)
+            if not fault:
+                continue
+            if op in MOBILE_STATEMENT_OPERATIONS:
+                why = why or "the statement's own answer %s" % fault
+            else:
+                # An operation's name is the page's own code word, never
+                # the account's. Anything else is not repeated.
+                name = redact(op) if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", op or "") else "unnamed"
+                self.others_failed.append(name)
+                log.info("another graph answer %s (%s), not one the statement depends on", fault, name)
+        return why
 
 
 class _Strays:

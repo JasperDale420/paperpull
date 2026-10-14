@@ -1657,6 +1657,32 @@ class MobileGuards(unittest.TestCase):
         self.assertTrue(site.heading_says({}, "2026-08-13", only=False))
 
 
+LIVE_TILE = ("Statement October 13 Auto Pay: Oct 30 $78.12 Looking for your next bill? "
+             "This info is currently not available. Please try again later.")
+
+
+class BenignMessages(unittest.TestCase):
+    def test_the_next_bill_tile_is_not_rate_limiting(self):
+        self.assertIsNone(site.detect_security_challenge(Page(body=LIVE_TILE)))
+        self.assertIsNone(site.detect_security_challenge(Page(body=LIVE_TILE.replace(" ", "\n  "))))
+
+    def test_the_phrase_elsewhere_still_is(self):
+        for body in ("Too many attempts. Please try again later.", LIVE_TILE + " Too many requests",
+                     LIVE_TILE + " Something went wrong, try again later.",
+                     "This info is currently not available. Please wait, then try again later.",
+                     "This info is currently not available Please try again later"):
+            self.assertIn("rate limiting", site.detect_security_challenge(Page(body=body)) or "", body)
+        self.assertIn("Security challenge",
+                      site.detect_security_challenge(Page(body=LIVE_TILE + " Are you a robot?")) or "")
+
+    def test_the_run_goes_on_past_the_tile(self):
+        app = make_app(tempfile.mkdtemp(), "--discover")
+        page = Page(body=LIVE_TILE)
+        with redirect_stdout(io.StringIO()) as said:
+            app.check_session(page)
+        self.assertNotIn("rate limiting", said.getvalue())
+
+
 class MobileListing(WithFakeClick):
     def test_the_finished_statements_are_listed_after_one_link_press(self):
         page = Page(mobile=mobile_rows())
@@ -1915,9 +1941,9 @@ class MobileTaking(WithFakeClick):
         for on_print in (moves, other_day, errors):
             self.stops(on_print=on_print)
 
-    def test_a_mobile_answer_that_is_not_an_answer_stops_the_run(self):
+    def test_a_failed_answer_of_the_statement_stops_the_run(self):
         for resp in (Resp("fetchMobileHistoricalStatement", answer={"errors": [{"message": "x"}]}),
-                     Resp("fetchMobileAccountInfoSpecMob", status=500),
+                     Resp("fetchMobileHistoricalStatement", status=500),
                      Resp("fetchMobileHistoricalStatement", answer=ValueError("not json"))):
             def on_row(p, i, resp=resp):
                 mobile_lands(p, i)
@@ -1929,17 +1955,52 @@ class MobileTaking(WithFakeClick):
                 p.emit("response", resp)
             page = self.stops(on_expand=on_expand)
             self.assertEqual(page.prints, 0)
-        # Any operation's failed answer fails the statement, one this app
-        # never heard of included, and so does one that comes while it prints.
-        for op in ("fetchMobileInsuranceInfo", "fetchCmsAlerts", "somethingNew"):
-            page = self.stops(on_expand=lambda p, op=op: p.emit(
-                "response", Resp(op, answer={"errors": [{"message": "x"}]})))
-            self.assertEqual(page.prints, 0)
-        self.stops(on_print=lambda p: (p.emit("response", Resp("somethingNew", status=503)), mobile_print(p))[1])
-        # Answers without errors, from any operation, are fine.
-        page = Page(mobile=mobile_rows(), on_expand=lambda p: p.emit(
-            "response", Resp("fetchMobileInsuranceInfo", answer={"data": {"x": 1}})))
-        self.assertTrue(self.take(page)[0])
+        self.stops(on_print=lambda p: (p.emit("response", Resp("fetchMobileHistoricalStatement", status=503)),
+                                       mobile_print(p))[1])
+        # The Mobile list's own statements answer failing stops the list.
+        page = Page(mobile=mobile_rows(), on_link=lambda p: (
+            p.emit("response", Resp("fetchMobileDigitalStatementsForBillPresentment",
+                                    answer={"errors": [{"message": "x"}]})),
+            setattr(p, "where", "mlist"), setattr(p, "url", f"https://{HOST}{site.MOBILE_LIST_PATH}")))
+        with self.assertRaises(site.ListStopped):
+            site.collect_download_docs(page, dl_dir=self.tmp)
+        # A 401 from any operation is a signed-out session.
+        page = Page(mobile=mobile_rows(), on_expand=lambda p: p.emit("response", Resp("fetchCmsAlerts", status=401)))
+        with self.assertRaises(site.SessionExpired):
+            self.take(page)
+
+    def test_another_operations_failed_answer_is_only_logged(self):
+        bad = {"errors": [{"message": "Account 8350990000055555 not found"}]}
+        others = ("fetchMobileBillPresentmentCurrentStatement", "fetchMobileInsuranceInfo", "fetchCmsAlerts",
+                  "somethingNew", "fetchMobile_" + MOB, "not a name; " + MOB)
+
+        def on_row(p, i):
+            mobile_lands(p, i)
+            for op in others:
+                p.emit("response", Resp(op, answer=bad))
+            p.emit("response", Resp("fetchMobileAccountInfoSpecMob", status=500))
+
+        def on_link(p):
+            p.emit("response", Resp("fetchMobileBillPresentmentCurrentStatement", answer=bad))
+            p.where, p.url = "mlist", f"https://{HOST}{site.MOBILE_LIST_PATH}"
+        seen = io.StringIO()
+        handler = logging.StreamHandler(seen)
+        logging.getLogger().addHandler(handler)
+        old = logging.getLogger().level
+        logging.getLogger().setLevel(logging.INFO)
+        try:
+            page = Page(mobile=mobile_rows(), on_mobile_row=on_row, on_link=on_link,
+                        on_expand=lambda p: p.emit("response", Resp("fetchCmsAlerts", answer=bad)))
+            ok, out, trace = self.take(page)
+        finally:
+            logging.getLogger().removeHandler(handler)
+            logging.getLogger().setLevel(old)
+        self.assertTrue(ok, "an unrelated answer's errors do not stop the statement")
+        self.assertEqual(page.prints, 1)
+        self.assertIn("fetchMobileInsuranceInfo", seen.getvalue())
+        self.assertNotIn(MOB, seen.getvalue())
+        self.assertNotIn("not found", seen.getvalue())
+        self.assertIn("fetchMobile_[name]", seen.getvalue(), "an operation name is redacted")
 
     def test_sections_that_do_not_all_expand_are_not_printed(self):
         def shape(toggles=1, toggle="expand", sections=6, open_=0):
