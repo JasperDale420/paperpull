@@ -559,7 +559,7 @@ STILL_LIVE = [
     "<p a'b onclick=alert(1) c'd>t</p>",
     "<p =\" onclick=alert(1)\">t</p>",
     "<p a= =\"><img src=x onerror=alert(1)>\">t</p>",
-    "<p a= \"><img src=x onerror=alert(1)>\">t</p>",
+    "<p a=\u00a0\"><img src=x onerror=alert(1)>\">t</p>",
     "<a href='&#106;avascript:alert(1)'>a</a>",
     "<a href='&#x6A;avascript:alert(1)'>a</a>",
     "<a href='&#0000106avascript:alert(1)'>a</a>",
@@ -571,6 +571,23 @@ STILL_LIVE = [
     "<a href=&#106;avascript:alert(1)>a</a>",
     "<form><button formaction='&#106;avascript:alert(1)'>x</button></form>",
 ]
+# A browser reads the body of these as text up to the element's own end
+# tag, in any case and with a space or "/" before its ">". A "<!--" or a
+# quote there opens nothing, so the tag after the end tag is live.
+RAW_TEXT = ("style", "title", "textarea", "xmp", "noembed", "noframes")
+RAW_TEXT_CASES = [
+    case
+    for name in RAW_TEXT
+    for case in (f"<{name}><!--</{name}><img src=x onerror=alert(1)>-->",
+                 f"<{name.upper()}><!--</{name.upper()}><img src=x onerror=alert(1)>-->",
+                 f"<{name}><!--</{name} ><img src=x onerror=alert(1)>-->",
+                 f"<{name}><!--</{name}\n/><img src=x onerror=alert(1)>-->",
+                 f"<{name}><p a=\"</{name}><img src=x onerror=alert(1)>\">t</p>")
+]
+# A long s matches "s" in a case-blind Python pattern, but a browser ends
+# the element on its own name in ASCII letters only.
+RAW_TEXT_CASES.append("<style></\u017ftyle><!--</style><img src=x onerror=alert(1)>-->")
+STILL_LIVE += RAW_TEXT_CASES
 
 
 @pytest.mark.parametrize("html", STILL_LIVE)
@@ -583,6 +600,65 @@ def test_a_handler_or_script_url_a_misread_tag_hid_is_taken_out(html):
     low = _h.unescape(out).lower().replace("\t", "").replace("\n", "")
     for bad in ("onerror", "onclick", "javascript:"):
         assert bad not in low, (bad, out)
+
+
+def _live_in_a_browser(pages):
+    """For each page, the elements bundled Chromium finds holding an on*
+    attribute or a javascript: URL once the strip has run, read with
+    JavaScript off and every request aborted, as the statement is drawn."""
+    from playwright.sync_api import sync_playwright
+    found = {}
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        try:
+            ctx = browser.new_context(java_script_enabled=False)
+            ctx.route("**/*", lambda route: route.abort())
+            page = ctx.new_page()
+            for html in pages:
+                page.set_content(receipt_pdf.inert_html("<html><head></head><body>" + html + "</body></html>", ""))
+                found[html] = page.evaluate("""() => {
+                    const live = [];
+                    for (const el of document.querySelectorAll('*')) {
+                        for (const a of el.attributes) {
+                            const v = a.value.replace(/[\\t\\n\\r]/g, '').replace(/^[\\x00-\\x20]+/, '');
+                            if (/^on/i.test(a.name) || /^javascript:/i.test(v)) live.push(el.tagName + ' ' + a.name);
+                        }
+                    }
+                    return live;
+                }""")
+        finally:
+            browser.close()
+    return {html: live for html, live in found.items() if live}
+
+
+def test_no_handler_follows_a_raw_text_element_in_a_real_parse():
+    """Chromium's own reading of each page after the strip leaves nothing
+    live behind a style, title, textarea, xmp, noembed or noframes element."""
+    assert _live_in_a_browser(RAW_TEXT_CASES) == {}
+
+
+def test_the_same_names_in_svg_or_mathml_hold_nothing_live_either():
+    """Inside svg or math these names hold markup, not text, and an img
+    there breaks out of the svg as a live tag. The body of each is written
+    as text, so it is inert whichever way the browser reads it."""
+    pages = ["<svg><style><img src=x onerror=alert(1)></style></svg>",
+             "<svg><title><img src=x onerror=alert(1)></title></svg>",
+             "<math><style><img src=x onerror=alert(1)></style></math>",
+             "<svg><style/><img src=x onerror=alert(1)></svg>",
+             "<svg><style><a title=\"</style><p x=\"><img src=x onerror=alert(1)>\"></style></svg>",
+             "<svg><style><!--</style><p a=\"--><img src=x onerror=alert(1)>\"></svg>"]
+    assert _live_in_a_browser(pages) == {}
+
+
+def test_a_raw_text_body_with_no_tag_in_it_is_left_as_it_was():
+    """Rules a style holds inside a comment that closes there, as older
+    pages write them, are kept as they are."""
+    page = ("<title>Statement &amp; summary</title><style>/* a > b */ td>p{color:#333} "
+            "a[href^='https']{color:blue} p:before{content:\"a < b\"}</style>"
+            "<style type=\"text/css\"><!--\nbody{color:#000}\n--></style>"
+            "<textarea>1 < 2</textarea><p onclick=x>t</p>")
+    out = receipt_pdf.inert_html(page, "")
+    assert page.replace("<p onclick=x>", "<p >") in out
 
 
 def test_a_comment_and_the_values_around_it_are_left_as_they_were():
