@@ -15,10 +15,21 @@ is forty-five characters long.
 The key only moves for an account long enough to have been cut, so an
 archive of short names is untouched, and the rest are carried over the first
 time the app runs. Both halves are checked here.
+
+A key that tells two accounts apart is no use when discovery never hands it
+the account. E*TRADE's key held one for years and passed every check here,
+built by hand, while its discovery dropped the account the list gave it, so
+two accounts' statements of one day were one document (#96). So an app's
+own discovery is driven too, from the list its site hands it, and has to
+keep both accounts' statements, each with its account.
+
+E*TRADE's checks of the move off a cut key skip, since no E*TRADE key ever
+held an account before #96, so none was ever cut.
 """
 import importlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -102,12 +113,83 @@ def test_an_account_that_always_fitted_keeps_the_key_it_had(app):
     if not uses_the_account(Document):
         pytest.skip("its key carries no account")
     from paperpull_core.storage import sanitize_component
-    for account in ("Checking", "Freedom Unlimited (...1234)",
-                    "Kids Savings Account (...5678)"):
+    for account, tail in (("Checking", "Checking"), ("Freedom Unlimited (...1234)", "1234"),
+                          ("Kids Savings Account (...5678)", "5678")):
         key = Document(category="Statement", date="2026-03-31",
                        title="Statement", account=account).key
+        if app.name in TAIL_KEYED:
+            assert key.endswith(":" + tail), (
+                "%s's key no longer ends with the account's masked digits: %s" % (app.name, key))
+            continue
         assert sanitize_component(account) in key, (
             "%s no longer carries a short account whole: %s" % (app.name, key))
+
+
+# Apps whose key holds the masked digits an account's label ends with rather
+# than the whole label, and the whole label only when it shows none, each
+# with why that keeps every key it ever wrote.
+TAIL_KEYED = {
+    "etrade": "the words before E*TRADE's masked digits are a nickname a person can "
+              "change, and until #96 no E*TRADE key held an account at all, so none "
+              "held a label whole to keep",
+}
+
+
+def test_every_tail_keyed_app_is_one():
+    assert set(TAIL_KEYED) <= {app.name for app in APPS}
+
+
+# -- discovery's own path -------------------------------------------------------
+
+TWO = PAIRS[0]
+
+
+def _etrade_discovers(mod, tmp_path: Path, monkeypatch) -> dict:
+    """E*TRADE's own discovery, cmd_discover, over the list its site hands
+    it, two accounts' Brokerage Statements of one day. Only the page is
+    stood in for."""
+    storage = sys.modules["storage"]            # the app's own, loaded with it
+    from paperpull_core import doc_types
+    app = object.__new__(mod.App)
+    app.args = SimpleNamespace(start_date=None, end_date=None)
+    app.config = {"document_types": ["Statement"], "owner": ""}
+    app.paths = storage.Paths(tmp_path)
+    app.paths.ensure()
+    app.progress = storage.JsonStore(app.paths.progress_json)
+    app.discovery = storage.JsonStore(app.paths.discovery_json)
+    app.rules = doc_types.load_rules()
+    app.stats = {"skipped_out_of_scope": 0, "discovered": 0}
+    app.page = lambda: None
+    app.check_session = lambda page: None
+    listed = [mod.site.RawDoc(title="Brokerage Statement", account=account,
+                              date_text="2026-03-31", kind="statement") for account in TWO]
+    monkeypatch.setattr(mod.site, "goto_documents", lambda page: True)
+    monkeypatch.setattr(mod.site, "collect_download_docs", lambda page: list(listed))
+    app.cmd_discover(quiet=True)
+    return app.discovery.data
+
+
+# Apps whose own discovery is driven here, each by a function that lists two
+# accounts' statements of one title and day through it and returns the
+# records it kept. E*TRADE's first, since its discovery is the one found
+# dropping the account (#96). Another app's discovery reads its page its own
+# way, so each is added with a function of its own.
+DISCOVERS = {"etrade": _etrade_discovers}
+
+
+def test_discovery_is_driven_for_some_app():
+    """Not a census of nothing."""
+    assert "etrade" in DISCOVERS and set(DISCOVERS) <= {app.name for app in APPS}
+
+
+@pytest.mark.parametrize("name", sorted(DISCOVERS))
+def test_discovery_itself_keeps_two_accounts_statements_of_one_day_apart(name, tmp_path, monkeypatch):
+    mod, Document = document_class(REPO / "apps" / name)
+    records = DISCOVERS[name](mod, tmp_path, monkeypatch)
+    assert sorted(r.get("account", "") for r in records.values()) == sorted(TWO), (
+        "%s's discovery kept %d record(s) for two accounts' statements of one day, "
+        "and not each with its account" % (name, len(records)))
+    assert len({Document.from_dict(r).key for r in records.values()}) == 2, sorted(records)
 
 
 # -- carrying an existing archive over -----------------------------------------

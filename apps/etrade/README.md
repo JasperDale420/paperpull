@@ -163,6 +163,6 @@ paperpull etrade pilot            REM once the site layer is confirmed
 
 - Whatever the documents area lists. Statements, trade confirmations and tax forms, filed to `Statements\` (confirmations included, named Trade Confirmation) and `Tax Documents\`.
 - Trade confirmations arrive per trade and can run to hundreds. If you only want statements, drop nothing yet, the first survey shows how they are separated and the second round adds a switch.
-- E*TRADE shows documents one account at a time behind an account picker, most likely. The first survey shows what that picker looks like, and the second round drives it.
+- The documents list shows every account on the sign-in together, each document's account in a column of its own. Each statement keeps that account, which a naming pattern can use as `{account}`. When the sign-in has more than one account, a file's name and the index's Document Summary end with the account, and a sign-in with one account keeps the names it always had. A download takes only the link naming its own account, so two accounts' statements of one title and day are each saved as their own (#96). With one account, statements saved before keep their records and names. With more than one, which account a statement saved before belongs to cannot be told, so those files stay as they are and each account's statements are downloaded once more, named with the account.
 - Delete-safe and multi-account like every PaperPull app
   (`paperpull etrade add-account NAME`).

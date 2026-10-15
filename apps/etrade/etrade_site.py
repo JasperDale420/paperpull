@@ -575,12 +575,17 @@ def expand_all(page) -> None:
 @dataclass
 class RawDoc:
     title: str
+    # The account the list's Account column shows for the document, kept
+    # whole, since it is what tells one account's statement from another's
+    # (#96). It never goes into a trace or a log.
     account: str = ""
     date_text: str = ""
     href: str = ""
     text: str = ""
     row_index: int = -1
     kind: str = "doc"
+    # The list's own ids for the document, "<documentGuid>|<documentId>".
+    guid: str = ""
 
 
 # The date a bill control belongs to. The control's own name first, then
@@ -640,8 +645,17 @@ def date_shape(value) -> str:
 
 def _docs_from_api(body: dict) -> List[dict]:
     """The documents in one searchItems answer, as {date, title, kind,
-    hint, account}. The guid rides as the hint. It names a document, not
-    a person, and the download will need it."""
+    hint, guid, account}. The guid rides as the hint and as the guid. It
+    names a document, not a person.
+
+    The account is displayMultipleAccounts, what the list's Account column
+    shows, kept whole with its spacing tidied. It used to go through the
+    redaction meant for diagnostic files and be cut to forty characters,
+    which turned the masked tail "...1234" into "...####" and left two
+    accounts reading the same, and then discovery dropped it anyway (#96).
+    It is the person's own label on their own machine, so it is kept for
+    the record and the file name, and it never goes into a trace or a
+    log. keyAccountNo is not read, since no survey has shown its shape."""
     out = []
     for e in (body or {}).get("defaultDocumentList") or (body or {}).get("resultList") or []:
         if not isinstance(e, dict):
@@ -652,9 +666,100 @@ def _docs_from_api(body: dict) -> List[dict]:
         title = str(e.get("documentTitle") or e.get("documentDisplayName") or e.get("documentTypeName") or "Document").strip()
         kind = str(e.get("documentTypeName") or "")
         hint = "|".join(str(e.get(k) or "") for k in ("documentGuid", "documentId"))
-        out.append({"date": iso, "title": title, "kind": kind, "hint": hint,
-                    "account": redact(str(e.get("displayMultipleAccounts") or ""))[:40]})
+        account = re.sub(r"\s+", " ", str(e.get("displayMultipleAccounts") or "")).strip()
+        out.append({"date": iso, "title": title, "kind": kind, "hint": hint, "guid": hint,
+                    "account": account})
     return out
+
+
+# The masked tail of an account as a list shows it, "-1234", "- 1234",
+# "...1234", "(...1234)", "****1234" or "xx1234", at the end of the label or
+# of one account in a label that names several, before a comma or a
+# semicolon. Digits printed any other way, a year in a nickname, are not
+# one.
+_ACCOUNT_TAIL_RE = re.compile(
+    r"(?:-|\.{2,}|\*{2,}|[xX•]{2,})\s*(\d{3,6})\)?\s*(?=[,;]|$)")
+
+
+def account_tails(label: str) -> List[str]:
+    """The masked tails a list's account label carries, in order, or none.
+    The words before a tail are the account's name, which a person can
+    change on E*TRADE as a nickname, so the tail is what says which
+    account it is (#96)."""
+    return [m.group(1) for m in _ACCOUNT_TAIL_RE.finditer(re.sub(r"\s+", " ", label or "").strip())]
+
+
+def account_form(label: str) -> str:
+    """An account's label in one form whatever its spacing, capitals or way
+    of masking, "invented brokerage -1111" for "Invented Brokerage - 1111"
+    or "INVENTED BROKERAGE ...1111", to compare two labels whole."""
+    text = re.sub(r"\s+", " ", label or "").strip().lower()
+    return _ACCOUNT_TAIL_RE.sub(lambda m: "-" + m.group(1), text)
+
+
+def twin_labels(labels) -> set:
+    """The labels, each in account_form, that show the same masked tails as
+    another label naming a different account, "Invented Brokerage -1111"
+    beside "Invented Roth IRA -1111". Their tails cannot tell them apart, so
+    each is known by its whole label. Over every label the lists named, this
+    is what a download reads, where it can only add refusals (_for_this)."""
+    by_tails: dict = {}
+    for label in labels or []:
+        tails = tuple(account_tails(label))
+        if tails:
+            by_tails.setdefault(tails, set()).add(account_form(label))
+    return {form for forms in by_tails.values() if len(forms) > 1 for form in forms}
+
+
+def _listed_fields(d) -> Tuple[str, str, str]:
+    """(date, title, account) of a listed document, a RawDoc or a dict from
+    _docs_from_api."""
+    if isinstance(d, dict):
+        date, title, account = d.get("date") or d.get("date_text"), d.get("title"), d.get("account")
+    else:
+        date, title, account = getattr(d, "date_text", ""), getattr(d, "title", ""), getattr(d, "account", "")
+    return str(date or ""), str(title or ""), re.sub(r"\s+", " ", str(account or "")).strip()
+
+
+def twins_on_one_day(docs) -> set:
+    """The labels, in account_form, that show the same masked tails as
+    another label the lists give a document of the same date and title.
+    Only there can the tails not keep two documents' keys apart, so only
+    those are keyed by their whole label and counted as accounts of their
+    own. One account the lists word two ways, an older nickname on older
+    documents or a tax form's own wording, never shares a date and title
+    with itself, and was taken for two accounts, so its history was not
+    moved and every statement was taken again (second review of #96)."""
+    by_day: dict = {}
+    for d in docs or []:
+        date, title, account = _listed_fields(d)
+        if account:
+            by_day.setdefault((date, _norm(title)), []).append(account)
+    return {form for labels in by_day.values() for form in twin_labels(labels)}
+
+
+def accounts_in(docs) -> set:
+    """The accounts a list's documents belong to. When any label shows a
+    masked tail, each account is its tail, or its whole label when another
+    label shows the same tail on a document of the same date and title
+    (twins_on_one_day), and a label showing none, "Multiple Accounts" on a
+    tax form, adds no account. Only when no label shows a tail is each
+    account its whole label. A label naming several accounts counts each of
+    them. A label with no digits beside an account's own made a sign-in of
+    one account count as two (second review of #96)."""
+    labels = [_listed_fields(d)[2] for d in docs or []]
+    twins = twins_on_one_day(docs)
+    tailed = any(account_tails(label) for label in labels)
+    found = set()
+    for label in labels:
+        if not label:
+            continue
+        tails = account_tails(label)
+        if tails:
+            found.update([account_form(label)] if account_form(label) in twins else tails)
+        elif not tailed:
+            found.add(account_form(label))
+    return found
 
 
 def goto_docs_capturing(page, capture: list) -> bool:
@@ -1074,15 +1179,22 @@ _LISTED: dict = {}
 # same date is never tried for this one.
 _LISTED_TITLES: dict = {}
 
+# The accounts each date and title carried in those lists, by (date, the
+# title as _norm writes it), each account as _norm writes its label. Two
+# accounts can each have a statement of one title on one day, and then
+# only a link naming this document's own account is its own (#96).
+_LISTED_ACCOUNTS: dict = {}
+
 
 def _note_listed(bodies) -> None:
     """Count the documents per date in searchItems answers, and keep their
-    titles."""
+    titles and the accounts of each title."""
     for body in bodies or []:
         counts: dict = {}
         for d in _docs_from_api(body):
             counts[d["date"]] = counts.get(d["date"], 0) + 1
             _LISTED_TITLES.setdefault(d["date"], set()).add(d["title"])
+            _LISTED_ACCOUNTS.setdefault((d["date"], _norm(d["title"])), set()).add(_norm(d["account"]))
         for day, n in counts.items():
             _LISTED[day] = max(_LISTED.get(day, 0), n)
 
@@ -1099,8 +1211,15 @@ def _alone_that_day(iso_date: str, title: str = "") -> bool:
     this document when the one listed that day was a different document,
     which a list read later on a page with other filters could give (#36,
     review). A title this file made up, for a document found without a
-    list, names nothing, so there the count decides."""
+    list, names nothing, so there the count decides.
+
+    For a document of one account, the lists also have to have given that
+    date and title to this account alone (_FOR), so the only row of a date
+    is never taken for it when it may be another account's (#96)."""
     if _LISTED.get(iso_date) != 1:
+        return False
+    held = _for_this(title)
+    if held is not None and held["shared"]:
         return False
     titles = {_norm(t) for t in _LISTED_TITLES.get(iso_date, ())}
     if not titles or not title:
@@ -1149,6 +1268,7 @@ def collect_download_docs(page) -> List[RawDoc]:
     del trace[:]
     _LISTED.clear()
     _LISTED_TITLES.clear()
+    _LISTED_ACCOUNTS.clear()
     if goto_docs_capturing(page, bodies):
         trace.append({"note": "default list", "lists": len(bodies),
                       "dates": sorted({d["date"] for b in bodies for d in _docs_from_api(b)},
@@ -1162,14 +1282,17 @@ def collect_download_docs(page) -> List[RawDoc]:
         _note_listed(bodies)
         for body in bodies:
             for d in _docs_from_api(body):
-                key = (d["date"], d["title"])
+                # Two accounts can each have a statement of one title on one
+                # day. Kept by date and title alone, the second account's
+                # was dropped here and never listed (#96).
+                key = (d["date"], d["title"], _norm(d["account"]))
                 if key in seen:
                     continue
                 seen.add(key)
                 tax = bool(re.search(r"1099|1098|5498|tax", d["title"] + " " + d["kind"], re.I))
                 docs.append(RawDoc(title=d["title"], account=d["account"], date_text=d["date"],
                                    href=d["hint"], text=f"E*TRADE {d['title']} {_human_date(d['date'])}",
-                                   kind="tax" if tax else "statement"))
+                                   kind="tax" if tax else "statement", guid=d["guid"]))
         trace.append({"note": "discovery result", "documents": len(docs),
                       "dates": sorted({d.date_text for d in docs}, reverse=True)[:60]})
         if docs:
@@ -1255,6 +1378,7 @@ _REFUSALS = (
     "the control sits outside any one row",
     "a control on the page could not be read",
     "a row of this date could not be read",
+    "the row may be another account's",
 )
 
 # Why a row may hold more than this document, in the only words that may
@@ -1293,7 +1417,7 @@ def _is_insert_text(texts, title: str = "", labels=()) -> bool:
         text = _norm(word)
         if not text:
             continue
-        if is_label and names_title(text, title):
+        if is_label and _names_any(text, title):
             text = _FOR_ACCOUNT_RE.sub(" pdf", text)
         if mine:
             text = text.replace(mine, " ")
@@ -1317,31 +1441,167 @@ def _is_insert(cand: dict, title: str = "") -> bool:
                            [cand.get("aria")] + [o.get("aria") for o in outer])
 
 
-def names_title(name: str, title: str) -> bool:
-    """Whether a control's name or text names the document `title`. The
-    whole of it is the title, the title then PDF, or the title then PDF for
-    an account, the way his recording named the link. It used to accept the
-    title then PDF then any words at all, so a cell holding the document's
-    link beside the other document's, or an insert, passed for the
-    document's own name, and the words after PDF never reached the guard
-    (#36, review)."""
+def _names_any(name: str, title: str) -> bool:
+    """Whether a control's name or text names the document `title`, for any
+    account. The whole of it is the title, the title then PDF, or the title
+    then PDF for an account, the way his recording named the link. It used
+    to accept the title then PDF then any words at all, so a cell holding
+    the document's link beside the other document's, or an insert, passed
+    for the document's own name, and the words after PDF never reached the
+    guard (#36, review)."""
+    return _for_part(name, title) is not None
+
+
+def _for_part(name: str, title: str) -> Optional[str]:
+    """The account a name gives the document `title` after "PDF for", "" when
+    it names the document with no account, and None when it does not name
+    the document at all."""
     if not title:
-        return False
+        return None
     name = re.sub(r"\s+", " ", name or "").strip()
-    return bool(_title_name_re(title).match(name))
+    found = re.match(r"^\s*" + escape_for_locator(title.strip()) + r"(?:\s+pdf(?:\s+for\s+(\S.*?))?)?\s*$",
+                     name, re.I)
+    if not found:
+        return None
+    return (found.group(1) or "").strip()
+
+
+# The document download_bill is taking, while it takes it, as {date, title,
+# account}, the title and the account as _norm writes them. Empty when it
+# takes a document of no known account, and then every name is read the
+# way it always was. A module's state like _LISTED, since every step that
+# chooses what to press reads the name through names_title (#96).
+_FOR: dict = {}
+
+
+def _for_this(title: str) -> Optional[dict]:
+    """{account, shared, by_label, others} when `title` is the title of the
+    document of one account being taken, else None. shared says the lists
+    did not give its date and title to this account alone, so another
+    account may have a document of the same title that day, or the lists
+    were not read. by_label says another account the lists named shows the
+    same masked tail, so only the whole label tells them apart. others are
+    the other accounts the lists named, each in account_form."""
+    if not _FOR.get("account") or _norm(title) != _FOR.get("title"):
+        return None
+    mine = _FOR["account"]
+    listed = _LISTED_ACCOUNTS.get((_FOR.get("date"), _FOR.get("title")), set())
+    shared = {account_form(a) for a in listed} != {account_form(mine)}
+    everyone = {a for accounts in _LISTED_ACCOUNTS.values() for a in accounts if a} | {mine}
+    return {"account": mine, "shared": shared,
+            "by_label": account_form(mine) in twin_labels(everyone),
+            "others": {account_form(a) for a in everyone} - {account_form(mine)}}
+
+
+def _same_account(named: str, held: dict) -> bool:
+    """Whether the account a name gives after "PDF for" is the account of
+    the document being taken. By the masked tails the two show, since a
+    link can write the account another way than the list does, "Invented
+    Brokerage - 1111" or in capitals beside the list's "Invented Brokerage
+    -1111", and by the whole label, in account_form, when neither shows a
+    tail or another account the lists named shows the same tail. One
+    showing a tail and the other none is not the same (review of #96)."""
+    if held["by_label"]:
+        return account_form(named) == account_form(held["account"])
+    mine, theirs = account_tails(held["account"]), account_tails(named)
+    if mine or theirs:
+        return mine == theirs
+    return account_form(named) == account_form(held["account"])
+
+
+def _row_is_this_accounts(words, row_texts, title: str) -> bool:
+    """Whether a control whose words are `words`, in a row that says
+    `row_texts`, may be this account's document. A control naming the
+    document for this account may. Any other, one naming the document with
+    no account, a View or a box, may only when nothing the row says shows
+    another account, neither a masked tail other than this account's nor
+    the label of another account the lists named. The lists can leave out
+    another account's statement of the day, and its row, its link naming
+    no account, was taken for this one's (review of #96). A row whose words
+    could not be read may be anyone's, and so may one when another account
+    shows this account's tail. Outside a download of one account, every
+    control may."""
+    held = _for_this(title)
+    if held is None:
+        return True
+    for word in words or ():
+        found = _for_part(word, title)
+        if found and _same_account(found, held):
+            return True
+    if row_texts is None or held["by_label"]:
+        return False
+    pieces = [p for t in row_texts if isinstance(t, str) for p in re.split(r"[\n\t|]+", t) if p.strip()]
+    if any(account_form(p) in held["others"] for p in pieces):
+        return False
+    shown = {tail for p in pieces for tail in account_tails(p)}
+    return shown <= set(account_tails(held["account"]))
+
+
+def names_title(name: str, title: str) -> bool:
+    """Whether a control's name or text names the document `title` (see
+    _names_any). While download_bill takes a document of one account, a
+    name that gives another account after "PDF for" is not its name, and
+    when another account may have a document of the same title and day, a
+    name is the document's only when it gives this account, exactly, as
+    "<title> PDF for <account>". Two accounts' statements of one day used to
+    be one document here, and of two rows naming it the download refused
+    both, or took whichever one the page showed (#96)."""
+    found = _for_part(name, title)
+    if found is None:
+        return False
+    held = _for_this(title)
+    if held is None:
+        return True
+    if not found:
+        return not held["shared"]
+    return _same_account(found, held)
+
+
+def _account_ok(words, title: str) -> bool:
+    """Whether a control may be this document's by every word it carries,
+    what it shows and its labels together, while download_bill takes a
+    document of one account. No word may name the document for another
+    account, and when another account may have a document of the same title
+    and day, one word has to name it for this account exactly. A link
+    showing the title with a label for another account showed the title
+    alone, which reads as this document's name (#96). Outside a download of
+    one account, every control may."""
+    held = _for_this(title)
+    if held is None:
+        return True
+    exact = False
+    for word in words:
+        found = _for_part(word, title)
+        if not found:
+            continue
+        if not _same_account(found, held):
+            return False
+        exact = True
+    return exact or not held["shared"]
+
+
+def _js_title(title: str) -> list:
+    """The title as the page scripts take it, with the account, whether it
+    is shared and whether only its whole label tells it apart, while
+    download_bill takes a document of one account, so a script reads a
+    name the way names_title does."""
+    held = _for_this(title)
+    return [title or "", held["account"] if held else "", bool(held and held["shared"]),
+            bool(held and held["by_label"])]
 
 
 def _title_name_re(title: str):
-    """names_title as a pattern, for a locator's accessible name."""
+    """_names_any as a pattern, for a locator's accessible name."""
     return re.compile(r"^\s*" + escape_for_locator(title.strip()) + r"(\s+pdf(\s+for\s+\S.*)?)?\s*$", re.I)
 
 
 def _guard_word(word: str, title: str = "") -> str:
     """One of an element's words as the guard reads it. A word that names
     the document loses the account after "PDF for", which is the account's
-    name and not what the link does. Every other word is read whole."""
+    name and not what the link does, whichever account it is. Every other
+    word is read whole."""
     w = re.sub(r"\s+", " ", word or "").strip()
-    if w and names_title(w, title):
+    if w and _names_any(w, title):
         w = _FOR_ACCOUNT_RE.sub(" PDF", w)
     return w
 
@@ -1499,8 +1759,10 @@ def _control_for(page, iso: str, title: str = "", trace: Optional[list] = None):
     if not matches:
         return None, ""
     if title:
+        # A control naming this title for another account is that account's
+        # document, whatever else it shows (#96).
         named = [m for m in matches if any(names_title(w, title) for w in m[2])
-                 and _guard_allows(m[2], title)]
+                 and _account_ok(m[2], title) and _guard_allows(m[2], title)]
         if len(named) == 1:
             around = _around(named[0][0], title)
             if not around:
@@ -1513,12 +1775,15 @@ def _control_for(page, iso: str, title: str = "", trace: Optional[list] = None):
             if not _in_one_row(around):
                 _refuse(trace, "control", "the control sits outside any one row", iso, len(matches), 1)
                 return None, ""
+            if not _row_is_this_accounts(named[0][2], around.get("texts"), title):
+                _refuse(trace, "control", "the row may be another account's", iso, len(matches), 1)
+                return None, ""
             return named[0][0], _guard_word(named[0][1], title)
         if len(named) > 1:
             _refuse(trace, "control", "more than one control of this date names this document",
                     iso, len(matches), len(named))
             return None, ""
-    if len(matches) == 1 and _alone_that_day(iso, title) \
+    if len(matches) == 1 and _alone_that_day(iso, title) and _account_ok(matches[0][2], title) \
             and not _names_another(matches[0][2], title, iso) and _guard_allows(matches[0][2], title):
         el, name, (aria, text) = matches[0]
         mine = {"text": (text or "").strip(), "aria": (aria or "").strip()}
@@ -1531,6 +1796,9 @@ def _control_for(page, iso: str, title: str = "", trace: Optional[list] = None):
             return None, ""
         if not _in_one_row(around):
             _refuse(trace, "control", "the control sits outside any one row", iso, 1, 0)
+            return None, ""
+        if not _row_is_this_accounts(matches[0][2], around.get("texts"), title):
+            _refuse(trace, "control", "the row may be another account's", iso, 1, 0)
             return None, ""
         if _says_only_an_action(mine) or _lone_control_may_be_pressed(around, iso, title, mine):
             return el, name
@@ -1546,7 +1814,7 @@ def _around(el, title: str) -> dict:
     itself and what the row around it says, or {} when that could not be
     read, which every caller takes as a reason not to press it."""
     try:
-        got = el.evaluate(_AROUND_CONTROL_JS, title or "")
+        got = el.evaluate(_AROUND_CONTROL_JS, _js_title(title))
     except Exception as e:
         log.info("could not read around a control: %s", type(e).__name__)
         return {}
@@ -1778,7 +2046,7 @@ def _text_shape(text: str, title: str = "") -> str:
     t = re.sub(r"\s+", " ", text or "").strip()
     if not t:
         return ""
-    if names_title(t, title):
+    if _names_any(t, title):
         return "<the title>"
     known = _ROW_WORDS.get(t.lower())
     if known:
@@ -2246,6 +2514,10 @@ def _named_link(row, title: str, trace: Optional[list] = None):
                 continue
             if _is_insert_text((shows,), title, labels):
                 continue
+            # The link has to be this account's by every word it carries, its
+            # label as well as what it shows (#96).
+            if not _account_ok((shows,) + labels, title):
+                continue
             if not _guard_allows((shows,) + labels, title):
                 continue
             around = _around(el, title)
@@ -2256,6 +2528,14 @@ def _named_link(row, title: str, trace: Optional[list] = None):
                 if trace is not None:
                     trace.append({"note": "a link naming this document holds something else that "
                                           "could be pressed, so it was passed over"})
+                continue
+            # A link naming no account, in a row showing another account,
+            # is that account's (review of #96).
+            if not _row_is_this_accounts((shows,) + labels, around.get("texts") if around.get("row") else None,
+                                         title):
+                if trace is not None:
+                    trace.append({"note": "a link naming this document sits in a row that may be "
+                                          "another account's, so it was passed over"})
                 continue
             return el, False
     return None, unread or unmade == len(looks)
@@ -2353,7 +2633,7 @@ def _row_link_for(page, iso_date: str, title: str, trace: Optional[list] = None)
             row = shown[0]
             words = [row.inner_text(timeout=2000) or ""]
             try:
-                words += [w for w in (row.evaluate(_ROW_WORDS_JS, title or "") or []) if isinstance(w, str)]
+                words += [w for w in (row.evaluate(_ROW_WORDS_JS, _js_title(title)) or []) if isinstance(w, str)]
             except Exception as e:
                 log.info("could not read the row's words: %s", type(e).__name__)
             if _dates_in(" | ".join(words)) - {iso_date}:
@@ -2376,6 +2656,8 @@ def _row_link_for(page, iso_date: str, title: str, trace: Optional[list] = None)
                     continue
                 if not (text or aria) or _is_insert_text((text,), title, (aria,)) \
                         or _names_another((text, aria), title, iso_date) \
+                        or not _account_ok((text, aria), title) \
+                        or not _row_is_this_accounts((text, aria), words, title) \
                         or not _guard_allows((text, aria), title):
                     continue
                 usable.append((el, {"text": text, "aria": aria}))
@@ -2410,11 +2692,53 @@ def _row_link_for(page, iso_date: str, title: str, trace: Optional[list] = None)
 # What a press could land on, whether an element names the document, and
 # what a row says, for every script below that decides what may be
 # pressed, so each of them judges it the same way. A script that splices
-# this in has the document's title, or "", in scope as `title`.
+# this in has the document's title in scope as `docName`, either the title or
+# "", or what _js_title gives, the title with the account of the document
+# being taken and whether another account may have a document of the same
+# title and day (#96).
 _PRESS_JS = r"""
+  const [title, account, shared, byLabel] = Array.isArray(docName)
+    ? [String(docName[0] || ''), String(docName[1] || ''), !!docName[2], !!docName[3]]
+    : [String(docName || ''), '', false, false];
   const own = (el) => Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent.trim()).filter(Boolean).join(' ');
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const titleRe = title ? new RegExp('^\\s*' + esc(title.trim()) + '(\\s+pdf(\\s+for\\s+\\S.*)?)?\\s*$', 'i') : null;
+  const titleRe = title ? new RegExp('^\\s*' + esc(title.trim()) + '(\\s+pdf(\\s+for\\s+(\\S.*?))?)?\\s*$', 'i') : null;
+  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  // The account words give the title after "PDF for", '' when they name it
+  // with no account, null when they do not name it (_for_part).
+  const forOf = (s) => {
+    if (!titleRe) return null;
+    const m = titleRe.exec((s || '').replace(/\s+/g, ' ').trim());
+    return m ? (m[3] || '').trim() : null;
+  };
+  // An account's masked tails and its label in one form (account_tails,
+  // account_form), and whether the account a name gives is this one, by
+  // its tails, or by its whole label when neither shows a tail or another
+  // account shows the same tail (_same_account).
+  const TAIL = /(?:-|\.{2,}|\*{2,}|[xX•]{2,})\s*(\d{3,6})\)?\s*(?=[,;]|$)/g;
+  const tailsOf = (s) => Array.from(norm(s).matchAll(TAIL)).map(m => m[1]);
+  const form = (s) => norm(s).replace(TAIL, (m, d) => '-' + d);
+  const sameAccount = (f) => {
+    if (byLabel) return form(f) === form(account);
+    const mine = tailsOf(account), theirs = tailsOf(f);
+    if (mine.length || theirs.length) return mine.join('+') === theirs.join('+');
+    return form(f) === form(account);
+  };
+  // The words of one element may be this account's document. None of them
+  // names the title for another account, and when another account may have
+  // a document of the same title and day, one names it for this account
+  // (_account_ok).
+  const accountOk = (words) => {
+    if (!account) return true;
+    let exact = false;
+    for (const w of words) {
+      const f = forOf(w);
+      if (!f) continue;
+      if (!sameAccount(f)) return false;
+      exact = true;
+    }
+    return exact || !shared;
+  };
   const shown = (el) => {
     try { if (el.checkVisibility) return el.checkVisibility(); } catch (e) { /* an older engine */ }
     return !!(el.getClientRects && el.getClientRects().length);
@@ -2456,17 +2780,23 @@ _PRESS_JS = r"""
   // the title, the title then PDF, or "<title> PDF for <account>". Its own
   // text nodes alone used to count too, whatever its children added, so a
   // link reading the title with "Privacy Notice" in a span inside it was
-  // pressed as the document's name (review). This decides every press.
+  // pressed as the document's name (review). This decides every press. For
+  // a document of one account, the element has to be that account's by
+  // all its words, its label as well as what it shows (#96).
   const namesTitle = (el) => {
     if (!titleRe || !el.getAttribute) return false;
     const t = wordsIn(el);
     const aria = (el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-    return (t.length < 200 && titleRe.test(t)) || titleRe.test(aria);
+    const shows = t.length < 200 ? t : '';
+    return (titleRe.test(shows) || titleRe.test(aria)) && accountOk([shows, aria]);
   };
   // For choosing which row is the document's, an element whose own text
   // nodes are the title counts as well, a title printed beside smaller
-  // words. It never decides what is pressed.
-  const printsTitle = (el) => namesTitle(el) || (!!titleRe && !!el.getAttribute && titleRe.test(own(el)));
+  // words. It never decides what is pressed. Printed bare, the title says
+  // nothing of the account, so it counts only when no other account may
+  // have a document of the same title and day.
+  const printsTitle = (el) => namesTitle(el) || (!!titleRe && !!el.getAttribute && titleRe.test(own(el))
+    && accountOk([own(el), (el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim()]));
   // Something a press could land on and set off, whatever it says.
   const PRESS_TAGS = ['a', 'button', 'input', 'select', 'textarea', 'summary', 'label'];
   const PRESS_ROLES = ['button', 'link', 'checkbox', 'menuitem', 'menuitemradio', 'menuitemcheckbox',
@@ -2589,7 +2919,7 @@ _PRESS_JS = r"""
 # the date and ignore the title, and on a date with two documents that
 # clicked the other one's control (#36, review). When it cannot tell which
 # row is the document's it says so in counts and chooses nothing.
-_ROW_BY_DATE_JS = r"""([dates, title, alone]) => {""" + _PRESS_JS + r"""
+_ROW_BY_DATE_JS = r"""([dates, docName, alone]) => {""" + _PRESS_JS + r"""
   const forms = dates.filter(Boolean);
   const dateRes = forms.map(d => new RegExp('(^|[^0-9/])' + esc(d) + '($|[^0-9/])'));
   const anyDate = /(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}|\b\d{1,2}\/\d{1,2}\/\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b/gi;
@@ -2729,7 +3059,7 @@ _ROW_BY_DATE_JS = r"""([dates, title, alone]) => {""" + _PRESS_JS + r"""
 # where the page's bulk Download sits (review). What the lone control step
 # and the row link step judge it by. It is compared in Python and never
 # written down.
-_AROUND_CONTROL_JS = r"""(el, title) => {""" + _PRESS_JS + r"""
+_AROUND_CONTROL_JS = r"""(el, docName) => {""" + _PRESS_JS + r"""
   const dateRe = /(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}\/\d{1,2}\/\d{2,4}|\d{4}-\d{2}-\d{2}/i;
   const above = (a, b) => { for (let n = up(b); n; n = up(n)) { if (n === a) return true; } return false; };
   const out = {clean: clean(el, 0), row: false, texts: [], controls: [], dated: 0};
@@ -2753,7 +3083,7 @@ _AROUND_CONTROL_JS = r"""(el, title) => {""" + _PRESS_JS + r"""
 # slots. A row's innerText leaves out what a web component draws in its
 # shadow root, so a title printed there went unseen. Compared in Python and
 # never written down.
-_ROW_WORDS_JS = r"""(row, title) => {""" + _PRESS_JS + r"""
+_ROW_WORDS_JS = r"""(row, docName) => {""" + _PRESS_JS + r"""
   const out = [];
   sayInto(row, 0, out);
   return out;
@@ -2773,7 +3103,7 @@ def _row_by_date(page, iso_date: str, title: str):
     dates = [f"{m}/{d}/{y}", f"{m}/{d}/{y[2:]}", _human_date(iso_date),
              f"{int(m)}/{int(d)}/{y}", f"{int(m)}/{int(d)}/{y[2:]}"]
     try:
-        h = page.evaluate_handle(_ROW_BY_DATE_JS, [dates, title or "", _alone_that_day(iso_date, title)])
+        h = page.evaluate_handle(_ROW_BY_DATE_JS, [dates, _js_title(title), _alone_that_day(iso_date, title)])
         props = h.get_properties()
         if not props:
             return None
@@ -2834,7 +3164,7 @@ def _document_rows(iso_date: str, title: str, found: dict) -> int:
             words = [w for w in (c["text"], c["aria"]) if _norm(w)]
             if not words:
                 continue
-            own = next((t for t in sorted(titles) if any(names_title(w, t) for w in words)), title)
+            own = next((t for t in sorted(titles) if any(_names_any(w, t) for w in words)), title)
             if _is_insert(c, own) or not _guard_allows(words, own):
                 continue
             if _says_only_an_action(c) or any(_mentions(w, t) for w in words for t in titles):
@@ -3114,6 +3444,15 @@ def _try_every_way(page, dl_dir, iso_date: str, out_path: Path, title: str, trac
         words = [c.get("text"), c.get("aria"), c.get("label")] + [o.get(k) for o in outer for k in ("text", "aria")]
         if _is_insert(c, title) or not _guard_allows(words, title):
             return True
+        # Never anything that names this title for another account, nor a
+        # name that does not give this account when another account may
+        # have a document of the same title and day (#96).
+        if not _account_ok(words, title):
+            return True
+        # Nor, in a row showing another account, anything that does not
+        # name this one (review of #96).
+        if not _row_is_this_accounts(words, found.get("texts"), title):
+            return True
         # What is pressed has to look like a document action, the rule
         # is_safe_control holds every other step to. The row walk asked only
         # that a candidate pass the guard, so a row's one control pressed as
@@ -3233,7 +3572,7 @@ def _try_every_way(page, dl_dir, iso_date: str, out_path: Path, title: str, trac
 
 
 def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
-                  trace: Optional[list] = None) -> bool:
+                  trace: Optional[list] = None, account: str = "") -> bool:
     """Save the document dated `iso_date` and titled `title`. The period
     picker is first set to the period that lists it. A PDF link on the row
     is fetched from inside the page. Otherwise the row's own control is
@@ -3243,59 +3582,74 @@ def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
     document, and when it cannot tell which that is it presses nothing.
 
     `dl_dir` is where the attached browser saves a download, watched
-    after every click."""
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    # Every control pressed for this document, through every attempt below.
-    tried: list = []
-    if not goto_documents(page):
-        log.info("could not open the documents page for %s", iso_date)
-        return False
-    # The list shows one period at a time, whichever was applied last. That
-    # used to be the oldest year, since this walked every period the way
-    # discovery does, so the period that lists this document is chosen.
-    if "accountdocs" in (page.url or ""):
-        show_period_for(page, iso_date, trace)
-    el, label = _row_link_for(page, iso_date, title, trace)
-    if el is not None and is_safe_control(label):
-        unsure: list = []
-        if _catch_pdf(page, el, label, out_path, trace, dl_dir, tried, unsure=unsure):
-            return True
-        # Turned off on the page, so nothing was pressed for the document,
-        # and nothing else is pressed for it either. A press that may have
-        # been made ends this document too, so its own control is not
-        # pressed again (review of 0.45.0).
-        if _TURNED_OFF in tried or unsure:
-            return False
-    expand_all(page)
+    after every click.
 
-    el, label = _control_for(page, iso_date, title, trace)
-    if el is None:
-        log.info("no document control by name for %s, looking for its row by date", iso_date)
-        return _try_every_way(page, dl_dir, iso_date, out_path, title, trace, tried)
-    if not is_safe_control(label):
-        log.info("refusing unsafe control %r for %s", label, iso_date)
-        return False
-
+    `account` is the account the list gave the document, what its Account
+    column shows. While it is taken, a name that gives another account
+    after "PDF for" is never its name, and when the lists did not give its
+    date and title to this account alone, only a name giving this account
+    exactly is, "<title> PDF for <account>" (names_title, _account_ok). Two
+    accounts' statements of one day were one document, and of two rows
+    naming it the download refused both, or took whichever one the page
+    showed (#96)."""
+    _FOR.clear()
+    if account and title:
+        _FOR.update(date=iso_date, title=_norm(title), account=_norm(account))
     try:
-        href = el.get_attribute("href") or ""
-    except Exception:
-        href = ""
-    if href and not href.lower().startswith(("javascript", "#")):
-        from urllib.parse import urljoin
-        target = urljoin(page.url, href)
-        # A link on the provider's own hosts is fetched through the session
-        # first. A PDF answer is the document. Anything else means the link
-        # is a page or a handoff, and the click below follows it.
-        if is_safe_url(target):
-            body = _fetch_pdf(page, target, zip_ok=True)
-            if body:
-                out_path.write_bytes(body)
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        # Every control pressed for this document, through every attempt below.
+        tried: list = []
+        if not goto_documents(page):
+            log.info("could not open the documents page for %s", iso_date)
+            return False
+        # The list shows one period at a time, whichever was applied last. That
+        # used to be the oldest year, since this walked every period the way
+        # discovery does, so the period that lists this document is chosen.
+        if "accountdocs" in (page.url or ""):
+            show_period_for(page, iso_date, trace)
+        el, label = _row_link_for(page, iso_date, title, trace)
+        if el is not None and is_safe_control(label):
+            unsure: list = []
+            if _catch_pdf(page, el, label, out_path, trace, dl_dir, tried, unsure=unsure):
                 return True
-            if trace is not None:
-                trace.append({"note": "the control's own link did not answer with a PDF",
-                              "url": mask_href(target)})
-    return _catch_pdf(page, el, label, out_path, trace, dl_dir, tried)
+            # Turned off on the page, so nothing was pressed for the document,
+            # and nothing else is pressed for it either. A press that may have
+            # been made ends this document too, so its own control is not
+            # pressed again (review of 0.45.0).
+            if _TURNED_OFF in tried or unsure:
+                return False
+        expand_all(page)
+
+        el, label = _control_for(page, iso_date, title, trace)
+        if el is None:
+            log.info("no document control by name for %s, looking for its row by date", iso_date)
+            return _try_every_way(page, dl_dir, iso_date, out_path, title, trace, tried)
+        if not is_safe_control(label):
+            log.info("refusing unsafe control %r for %s", label, iso_date)
+            return False
+
+        try:
+            href = el.get_attribute("href") or ""
+        except Exception:
+            href = ""
+        if href and not href.lower().startswith(("javascript", "#")):
+            from urllib.parse import urljoin
+            target = urljoin(page.url, href)
+            # A link on the provider's own hosts is fetched through the session
+            # first. A PDF answer is the document. Anything else means the link
+            # is a page or a handoff, and the click below follows it.
+            if is_safe_url(target):
+                body = _fetch_pdf(page, target, zip_ok=True)
+                if body:
+                    out_path.write_bytes(body)
+                    return True
+                if trace is not None:
+                    trace.append({"note": "the control's own link did not answer with a PDF",
+                                  "url": mask_href(target)})
+        return _catch_pdf(page, el, label, out_path, trace, dl_dir, tried)
+    finally:
+        _FOR.clear()
 
 
 # ---------------------------------------------------------------------------
