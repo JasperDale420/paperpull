@@ -7,6 +7,16 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Fixed
+- **First Horizon Bank no longer misses an account panel the page draws a
+  little late.** Once every panel is read, the page now settles twice and
+  is read after each, and both reads must show the same panels. Before, a
+  panel drawn half a second past the one read was missed and the list was
+  called whole. A panel drawn after the second read is still not seen, as
+  the app's known ceilings say.
+
 ## [0.52.0] - 2026-10-14
 
 Six providers arrive, First Horizon Bank checking statements, Chase

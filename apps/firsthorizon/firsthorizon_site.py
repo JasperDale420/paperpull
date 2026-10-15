@@ -71,6 +71,10 @@ KNOWN CEILINGS (left until a live run shows otherwise)
     the list.
   * A panel the page hides, or draws only after the list is read, stops
     the list, so a hidden account is never listed.
+  * A panel drawn late is seen only until the walk ends. The page then
+    settles twice, 1.5 seconds each, and a panel drawn after the second
+    read is not seen. With one account that is 4.5 seconds after load when
+    its panel is open on load, and 6 seconds when it is pressed open.
   * A panel expanded when the page loads is bound to its answer only when
     the dates make the pairing unique; otherwise the list stops. A panel is
     never collapsed to recover.
@@ -1193,13 +1197,27 @@ def _shape(panels: list) -> list:
             for p in panels]
 
 
+def _held_still(page, run: Run, panels: list, why: str) -> None:
+    """The page settles twice once the panels are walked, and is read after
+    each. Both reads must show the panels walked, so they agree with each
+    other too, or the list stops with `why`. The wait is two SETTLE_MS in
+    all, never past the deadline. A panel the page draws in that time, late
+    ones among them, is private before the list stops."""
+    for _ in range(2):
+        _settle(page, run)
+        now = _read(page)
+        _guard_titles(now)
+        if _shape(now.get("panels") or []) != _shape(panels):
+            raise ListStopped(why)
+
+
 def collect_download_docs(page, run: Optional[Run] = None) -> List[RawDoc]:
     """Every statement of every account panel. Panels the page opened by
     itself are read from the answers heard as it loaded, and each closed one
     is pressed open once. A title not of the surveyed shape is skipped and
-    the list is then not called whole. Once the walk is done the page is
-    read again after it settles, and a panel that is not one of the panels
-    walked, as one the page drew late, stops the list. Raises ListStopped
+    the list is then not called whole. Once the walk is done the page
+    settles twice and is read after each (_held_still), and a panel that is
+    not one of the panels walked, as one the page drew late, stops the list. Raises ListStopped
     holding what was read, SessionExpired for a signed-out session and
     DeadlineReached."""
     run = run or Run()
@@ -1222,11 +1240,7 @@ def collect_download_docs(page, run: Optional[Run] = None) -> List[RawDoc]:
             seen.add(b.account_id)
             docs.extend(_rawdocs(b))
             log.info("%s: %d statement(s)", b.product, len(b.statements))
-        _settle(page, run)
-        now = _read(page)
-        _guard_titles(now)
-        if _shape(now.get("panels") or []) != _shape(panels):
-            raise ListStopped("the account panels changed while the list was read")
+        _held_still(page, run, panels, "the account panels changed while the list was read")
     except ListStopped as stop:
         raise ListStopped(str(stop), docs)
     if skipped:
@@ -1296,11 +1310,7 @@ def _reach_card(page, run: Run, account_id: str, product: str, document_id: str,
         # The account is called not on the page only when the panels held
         # still while they were walked. A panel drawn late may be the
         # account's own, so the run stops rather than send it to review.
-        _settle(page, run)
-        now = _read(page)
-        _guard_titles(now)
-        if _shape(now.get("panels") or []) != _shape(panels):
-            raise ListStopped("the account panels changed while the account was sought")
+        _held_still(page, run, panels, "the account panels changed while the account was sought")
         if trace is not None:
             trace.append({"note": "the account is not on the page"})
         return None
