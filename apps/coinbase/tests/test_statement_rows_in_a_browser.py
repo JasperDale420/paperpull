@@ -70,7 +70,7 @@ def test_that_row_stops_the_listing_rather_than_dropping_its_month(page, monkeyp
     assert [d.date_text for d in stopped.value.docs] == ["2026-09-30"]
 
 
-# The Credit Card tab's list: one row per month, its text "<Month YYYY>" and
+# The Credit Card tab's list, one row per month, its text "<Month YYYY>" and
 # a button of an icon glyph and "PDF", with no data-testid. Invented.
 CARD_BUTTON = "<div><button type='button'>\U000f0382 PDF</button></div>"
 

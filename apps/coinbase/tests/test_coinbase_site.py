@@ -1202,7 +1202,7 @@ class CardPage:
         self.shown = list(self.rows_drawn)
 
     def press_pdf(self, label):
-        """What pressing a row's PDF button does on the live page: the page
+        """What pressing a row's PDF button does on the live page. The page
         asks for the statement's address and the tab goes there."""
         iso = self.dates[[label_of(d) for d in self.dates].index(label)] \
             if label in [label_of(d) for d in self.dates] else "2026-01-12"
@@ -1567,7 +1567,7 @@ class CardList(unittest.TestCase):
 
 
 class CardDownload(unittest.TestCase):
-    """One card statement: the row's own PDF button, the address the page
+    """One card statement, the row's own PDF button, the address the page
     was handed, fetched in the tab, checked, and back to the list."""
 
     ISO = "2026-09-12"
@@ -1699,7 +1699,7 @@ class CardDownload(unittest.TestCase):
         self.assertIsNotNone(saved)
         self.assertIn({"note": "the statement's address was read from the tab"}, trace)
         # Live the answer is the page's GET persisted query alone, and its
-        # body is gone the same way: the row's id is read from the address.
+        # body is gone the same way, so the row's id is read from the address.
         page = CardPage()
         got = _get_answer(page, RuntimeError("no body"), site.CARD_ROW_QUERY,
                           {"accountUuid": CARD_ACCOUNT, "statementId": page.sids[1]})

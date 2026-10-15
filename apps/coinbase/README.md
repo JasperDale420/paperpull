@@ -51,7 +51,11 @@ address.
   named `<closing date> Coinbase One Card Statement.pdf`. A popup, a
   download, the browser going anywhere else, or an answer naming another
   statement or another date stops the run. An account whose Statements
-  page shows no Credit Card tab has no card statements listed.
+  page shows no Credit Card tab has no card statements listed. A card list
+  that cannot be read whole, or that names more than one card account,
+  leaves only the card statements. The monthly statements and tax
+  documents are still taken, and the run ends as one that did not finish,
+  so the card statements are asked for again on the next run.
 
 The statements list is called whole only when it reaches back to the month
 of the account's first transaction, and a tax list that names another year
@@ -72,12 +76,12 @@ tests cover the guard, the hosts, the statement rows and their months, the
 tax lists, the press of a statement's PDF button and what it brings, and
 filing a statement only under its own month.
 
-Coinbase One Card statements: run live on the same account on 2026-10-15.
+Coinbase One Card statements ran live on the same account on 2026-10-15.
 Discover listed the Credit Card tab's 13 statements, October 2025 to
 October 2026, beside the account statements, Pilot took the first and Run
 All the rest, every one a PDF naming "Coinbase One Card" and its closing
 date, with the account statements and tax documents untouched. The run
-showed two things the survey had not: on a repeat visit the page gets its
+showed two things the survey had not. On a repeat visit the page gets its
 list and a statement's address through its GET persisted query alone, with
 no POST after it, so both are heard, and the tab's move to the statement's
 address evicts that answer's body before it can be read, so the address is

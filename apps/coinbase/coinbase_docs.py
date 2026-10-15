@@ -1059,7 +1059,7 @@ class App:
                               ("table rows", "table tbody tr"),
                               ("pdf links", "a[href*='.pdf']"),
                               ("download attrs", "a[download]"),
-                              # Counted, never pressed: Transactions and Credit Card.
+                              # Transactions and Credit Card, counted and never pressed.
                               ("sub-navigation links", site.CARD_LINK_CSS)]:
                 try:
                     info["row_counts"][name] = page.locator(sel).count()

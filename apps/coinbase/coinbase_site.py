@@ -95,11 +95,16 @@ KNOWN CEILINGS (ponytail: left as they are until a run shows otherwise)
     tab opens. When that answer carries a pageInfo it has to say there is
     no next page, and when it carries none its months have to follow one
     another with no month missing. Whether the answer carries a pageInfo
-    was not seen on the survey.
+    was not seen on the survey. Only one card account is read, and an
+    answer naming more than one is a card list this cannot read.
   * An account whose Statements page shows no Credit Card tab lists no card
     statement. One whose tab answers no card (creditCard null, or no card
     account) lists none too. That reading of an account without a card is
     not surveyed.
+  * A card list this cannot read whole leaves only the card statements,
+    none of them listed (CardListUnread). The monthly statements and tax
+    documents are listed and taken as usual, and the run ends as one that
+    did not finish, so the card statements are asked for again next time.
   * "Last 30 days" is skipped by design, it is not a statement. A list
     showing it twice is a list this cannot read.
   * The statements list is called whole only when its oldest month is the
@@ -1310,7 +1315,7 @@ _MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", 
 # areas, which a label is read without.
 _GLYPHS_RE = re.compile("[\\s-\U000f0000-\U000ffffd\U00100000-\U0010fffd]")
 
-# Whether a button is a card row's PDF button: a BUTTON, not the
+# Whether a button is a card row's PDF button, a BUTTON that is not the
 # Transactions tab's own PDF button, whose text is an icon and "PDF". The
 # same reading as is_card_pdf_label.
 _IS_CARD_PDF_JS = r"""(x) => x && x.tagName === 'BUTTON'
@@ -1350,8 +1355,8 @@ def _no_fragment(url) -> str:
 
 
 def is_card_tab(text: str, href) -> bool:
-    """The Statements page's own Credit Card tab: its text exactly "Credit
-    Card", and no address or exactly the card list's. A "Credit Card" link
+    """The Statements page's own Credit Card tab, its text exactly "Credit
+    Card" and no address or exactly the card list's. A "Credit Card" link
     with any other address, the product page's /creditcard say, is not it.
     Its words are never put to is_safe_control, which refuses "card" for
     every other control and goes on doing so."""
@@ -1363,15 +1368,15 @@ def is_card_tab(text: str, href) -> bool:
 
 
 def is_card_pdf_label(name: str) -> bool:
-    """A card statement row's PDF button, read by its words: an icon and
-    "PDF", nothing else, and the guard's own verdict on them too."""
+    """A card statement row's PDF button, read by its words, an icon and
+    "PDF" and nothing else, with the guard's own verdict on them too."""
     if not name or not is_safe_control(name):
         return False
     return _GLYPHS_RE.sub("", name) == "PDF"
 
 
 def is_card_statement_url(url, iso: str) -> bool:
-    """The one address a card statement is taken from: https on exactly
+    """The one address a card statement is taken from, https on exactly
     statements.cardless.com, no port and no user, a path of one token, the
     statement's own closing date `iso` and "_Coinbase.pdf". It is applied
     to the address the page itself was handed for the statement it pressed,
@@ -1387,8 +1392,8 @@ def is_card_statement_url(url, iso: str) -> bool:
         return False
     if parts.netloc.lower() != CARD_STATEMENT_HOST or parts.fragment or ("?" in url and not parts.query):
         return False
-    # The address is signed: its query is exactly the three signing keys,
-    # each once with a value, or (for a bare address) nothing at all.
+    # The address is signed, so its query is exactly the three signing
+    # keys, each once with a value, or (for a bare address) nothing at all.
     try:
         pairs = parse_qsl(parts.query, keep_blank_values=True, strict_parsing=bool(parts.query))
     except ValueError:
@@ -1428,9 +1433,9 @@ def _listen(page) -> Tuple[list, object]:
     persisted queries and POSTs alike, and what it hears. Each answer is
     read as it comes, inside the listener,
     because the press of a card PDF button sends the tab on at once and a
-    navigation takes the bodies with it. Kept for each: the operation the
-    request names, the statementId its variables name, the status and the
-    answer, None when it could not be read. Nothing of it is logged."""
+    navigation takes the bodies with it. Kept for each are the operation
+    the request names, the statementId its variables name, the status and
+    the answer, None when it could not be read. Nothing of it is logged."""
     heard: list = []
 
     def on_response(res):
@@ -1463,7 +1468,7 @@ def _listen(page) -> Tuple[list, object]:
         except Exception:
             entry["body"] = None
         if method == "GET" and entry["status"] == 200 and _is_hash_miss(entry["body"]):
-            # Not an answer: the server did not know the hash (said with a
+            # Not an answer. The server did not know the hash (said with a
             # 200, as live), and the page asks again by POST. Hearing it as
             # an error would stop a list the POST then answers whole. The
             # same words on any other status are heard as the error they are.
@@ -1484,7 +1489,7 @@ def _no_duplicate_keys(pairs):
 
 
 def _sent_in_address(url) -> Optional[dict]:
-    """What a GET persisted query names in its address: operationName and
+    """What a GET persisted query names in its address, operationName and
     variables (a JSON object), or None when the address cannot be read, or
     names operationName or variables more than once, or its JSON names a
     key twice. An ambiguous address is no answer at all."""
@@ -1519,7 +1524,7 @@ def _is_hash_miss(body) -> bool:
 
 
 def _clean(entry: dict) -> bool:
-    """An answer heard whole: status 200, a JSON object, and no errors."""
+    """An answer heard whole, status 200, a JSON object and no errors."""
     body = entry.get("body")
     return entry.get("status") == 200 and isinstance(body, dict) and not body.get("errors")
 
@@ -1533,7 +1538,7 @@ def _card_of(body):
 
 
 def _has_no_card(body) -> bool:
-    """An answer that says this account has no card: creditCard null, or a
+    """An answer that says this account has no card, creditCard null or a
     list of card accounts that is empty."""
     try:
         viewer = body["data"]["viewer"]
@@ -2044,7 +2049,7 @@ def load_statements_for_card(page) -> bool:
 
 
 def where_landed(page) -> str:
-    """Where the tab is, for a file a tester may send: the redacted address
+    """Where the tab is, for a file a tester may send, the redacted address
     on Coinbase's own hosts, and only the host anywhere else, since the
     card statement's address is signed."""
     url = getattr(page, "url", "") or ""

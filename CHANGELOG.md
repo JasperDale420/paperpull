@@ -22,9 +22,13 @@ All notable changes to PaperPull are recorded here. Versioning follows
   Card and prints that closing date. A popup, a download, the tab going
   anywhere else, or an answer naming another statement or another date
   stops the run. The statement's id, the card account's id, the signed
-  address and the amounts are never logged or kept. Your monthly account
-  statements and tax documents are taken exactly as before. Run live on one account on 2026-10-15, where it saved all
-  13 statements beside the account statements and tax documents.
+  address and the amounts are never logged or kept. A card list that
+  cannot be read whole, or that names more than one card account, leaves
+  only the card statements, for the next run. Your monthly account
+  statements and tax documents are still taken exactly as before, and the
+  run then ends as one that did not finish. Run live on one account on
+  2026-10-15, where it saved all 13 card statements beside the account
+  statements and tax documents.
 
 ## [0.52.0] - 2026-10-14
 
