@@ -89,7 +89,8 @@ class Document:
         # document_id, which would make the key the id alone.
         self.guid = guid
         # Whether the key holds the whole label rather than its masked tail,
-        # set when another account the lists named shows the same tail.
+        # set when another label shows the same tail on a document of the
+        # same date and title, where the tail cannot keep the keys apart.
         self.whole_label = bool(whole_label)
         self.category = category
         self.summary = summary
@@ -125,8 +126,8 @@ class Document:
         are a nickname a person can change on E*TRADE, and a key that moved
         with the nickname would download every statement again. A label
         with no masked digits is kept whole, and so is one whose tail
-        another account the lists named shows too (whole_label), so the two
-        never share a key. Until #96 the account never reached the record,
+        another label shows on a document of the same date and title
+        (whole_label), so the two never share a key. Until #96 the account never reached the record,
         so every key ended in "Unnamed", and adopt_account_keys moves those
         for a sign-in of one account."""
         if self.document_id:
@@ -468,7 +469,8 @@ class App:
         account's label>", which puts it in the file name and the index's
         Document Summary. A sign-in of one account keeps the summary, and
         so the names, it always had. `twins` are the labels, in
-        site.account_form, whose masked tail another account shows too, and
+        site.account_form, whose masked tail another label shows on a
+        document of the same date and title (site.twins_on_one_day), and
         such a document is keyed by its whole label (Document.whole_label)."""
         title = re.sub(r"\s+", " ", (r.title or "")).strip()
         if not title:
@@ -562,7 +564,7 @@ class App:
         # How many accounts the lists name, which decides whether a file
         # name says the account. Only the count is ever logged (#96).
         accounts = len(site.accounts_in(docs))
-        twins = site.twin_labels([r.account for r in docs])
+        twins = site.twins_on_one_day(docs)
         listed = [d for d in (self._document_of(r, site.BILLING_URL, accounts > 1, twins) for r in docs)
                   if d is not None]
         self._adopt_account_keys(listed, accounts)

@@ -701,7 +701,8 @@ def twin_labels(labels) -> set:
     """The labels, each in account_form, that show the same masked tails as
     another label naming a different account, "Invented Brokerage -1111"
     beside "Invented Roth IRA -1111". Their tails cannot tell them apart, so
-    each is known by its whole label."""
+    each is known by its whole label. Over every label the lists named, this
+    is what a download reads, where it can only add refusals (_for_this)."""
     by_tails: dict = {}
     for label in labels or []:
         tails = tuple(account_tails(label))
@@ -710,19 +711,54 @@ def twin_labels(labels) -> set:
     return {form for forms in by_tails.values() if len(forms) > 1 for form in forms}
 
 
+def _listed_fields(d) -> Tuple[str, str, str]:
+    """(date, title, account) of a listed document, a RawDoc or a dict from
+    _docs_from_api."""
+    if isinstance(d, dict):
+        date, title, account = d.get("date") or d.get("date_text"), d.get("title"), d.get("account")
+    else:
+        date, title, account = getattr(d, "date_text", ""), getattr(d, "title", ""), getattr(d, "account", "")
+    return str(date or ""), str(title or ""), re.sub(r"\s+", " ", str(account or "")).strip()
+
+
+def twins_on_one_day(docs) -> set:
+    """The labels, in account_form, that show the same masked tails as
+    another label the lists give a document of the same date and title.
+    Only there can the tails not keep two documents' keys apart, so only
+    those are keyed by their whole label and counted as accounts of their
+    own. One account the lists word two ways, an older nickname on older
+    documents or a tax form's own wording, never shares a date and title
+    with itself, and was taken for two accounts, so its history was not
+    moved and every statement was taken again (second review of #96)."""
+    by_day: dict = {}
+    for d in docs or []:
+        date, title, account = _listed_fields(d)
+        if account:
+            by_day.setdefault((date, _norm(title)), []).append(account)
+    return {form for labels in by_day.values() for form in twin_labels(labels)}
+
+
 def accounts_in(docs) -> set:
-    """The accounts a list's documents belong to, each by its masked tail,
-    or by its whole label when it shows none or another label shows the same
-    tail. A label naming several accounts counts each of them."""
-    labels = [re.sub(r"\s+", " ", (d.get("account") if isinstance(d, dict) else getattr(d, "account", "")) or "").strip()
-              for d in docs or []]
-    twins = twin_labels(labels)
+    """The accounts a list's documents belong to. When any label shows a
+    masked tail, each account is its tail, or its whole label when another
+    label shows the same tail on a document of the same date and title
+    (twins_on_one_day), and a label showing none, "Multiple Accounts" on a
+    tax form, adds no account. Only when no label shows a tail is each
+    account its whole label. A label naming several accounts counts each of
+    them. A label with no digits beside an account's own made a sign-in of
+    one account count as two (second review of #96)."""
+    labels = [_listed_fields(d)[2] for d in docs or []]
+    twins = twins_on_one_day(docs)
+    tailed = any(account_tails(label) for label in labels)
     found = set()
     for label in labels:
         if not label:
             continue
         tails = account_tails(label)
-        found.update(tails if tails and account_form(label) not in twins else [account_form(label)])
+        if tails:
+            found.update([account_form(label)] if account_form(label) in twins else tails)
+        elif not tailed:
+            found.add(account_form(label))
     return found
 
 

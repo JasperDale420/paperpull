@@ -24,14 +24,17 @@ All notable changes to PaperPull are recorded here. Versioning follows
   account, matched by the account's last digits, or by its whole name when
   it shows none. On a sign-in with one account, the statements saved before
   keep their records and file names the first time you Discover, so nothing
-  is downloaded again. On a sign-in with more than one account, which
-  account a statement saved before belongs to cannot be told, so those
-  files stay as they are and each account's statements are downloaded once
-  more, named with the account. When an account's name ends with its last
-  digits, changing its nickname on E*TRADE does not make its statements
-  download again. Discovery logs how many accounts it found and never their
-  names, and a failed download is logged by its date and title. Thanks to
-  @appchamp for the report.
+  is downloaded again. A closed account that no list names any more leaves
+  a sign-in that reads as one account, so a statement 0.52.0 kept as one
+  record for both accounts moves to the open account and is not fetched
+  again, the same as 0.52.0 left it. On a sign-in with more than one
+  account, which account a statement saved before belongs to cannot be
+  told, so those files stay as they are and each account's statements are
+  downloaded once more, named with the account. When an account's name ends
+  with its last digits, changing its nickname on E*TRADE does not make its
+  statements download again. Discovery logs how many accounts it found and
+  never their names, and a failed download is logged by its date and title.
+  Thanks to @appchamp for the report.
 
 ## [0.52.0] - 2026-10-14
 

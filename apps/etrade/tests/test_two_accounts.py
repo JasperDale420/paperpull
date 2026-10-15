@@ -278,6 +278,49 @@ def test_two_accounts_with_one_masked_tail_never_share_a_key(app):
         "Account Statement - " + FIRST, "Account Statement - " + twin]
 
 
+def test_two_accounts_sharing_digits_on_one_day_keep_two_keys_and_a_label_with_none_adds_none(app, caplog):
+    """The one case the digits cannot keep two keys apart, two labels with
+    one tail on documents of the same date and title, beside a tax form
+    whose label shows no digits. That label is no account of its own."""
+    caplog.set_level(logging.INFO)
+    twin = "Invented Roth IRA -1111"
+    app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(BROKERAGE, twin, "g2"),
+                _raw("Form 1099 Composite", "Multiple Accounts", "g3", day="2025-02-16"))
+    assert {_key(BROKERAGE, FIRST), _key(BROKERAGE, twin)} <= set(app.discovery.data)
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "2 account(s)" in said, said
+
+
+def test_one_account_worded_two_ways_moves_its_history_one_to_one(app):
+    """The second review's case. Older documents keep the nickname the
+    account had then. Same digits on documents that never share a date and
+    title are one account, keyed by the digits, so its history moves and
+    nothing is taken again or renamed."""
+    old = "Old Nickname -1111"
+    days = ("2025-06-30", "2025-07-31", "2025-08-31")
+    files = [_saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % day, day=day) for day in days]
+    app.listing(_raw(BROKERAGE, old, "g1", day=days[0]), _raw(BROKERAGE, old, "g2", day=days[1]),
+                _raw(BROKERAGE, FIRST, "g3", day=days[2]))
+    for day, path in zip(days, files):
+        rec = app.progress.data[_key(BROKERAGE, "1111", day)]
+        assert (rec["downloaded_ok"], rec["pdf_path"], rec["summary"]) == (True, str(path), "Account Statement")
+    assert not [d for d in app._select() if not app._already_done(d)]
+    result = renaming.run_for(app, apply_changes=True, say=lambda *_a: None)
+    assert result.renamed == 0 and all(p.exists() for p in files)
+
+
+def test_a_label_with_no_digits_beside_an_accounts_own_keeps_it_one_account(app):
+    """A tax form labeled "Multiple Accounts" made a sign-in of one account
+    count as two, so its history was not moved and was taken again."""
+    days = ("2025-07-31", "2025-08-31")
+    for day in days:
+        _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % day, day=day)
+    app.listing(_raw(BROKERAGE, FIRST, "g1", day=days[0]), _raw(BROKERAGE, FIRST, "g2", day=days[1]),
+                _raw("Form 1099 Composite", "Multiple Accounts", "g3", day="2025-02-16"))
+    taken = [(d.title, d.summary) for d in app._select() if not app._already_done(d)]
+    assert taken == [("Form 1099 Composite", "1099 Tax Form")], taken
+
+
 @pytest.mark.parametrize("done", [False, True])
 def test_a_title_and_day_two_accounts_share_is_left_where_it_is(app, done):
     """Which account's statement a record of both kept cannot be told, so
