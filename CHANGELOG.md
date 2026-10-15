@@ -15,10 +15,18 @@ All notable changes to PaperPull are recorded here. Versioning follows
   Macs with an Intel processor, signed and notarized the same way, so an
   Intel Mac no longer has to run PaperPull from a checkout. The macOS
   workflow builds the two side by side, each on a GitHub runner of its own
-  architecture, so a release takes no longer, and each is smoke-tested on
-  the hardware it is for. `packaging/build_macos.py` takes `--arch arm64` or
-  `--arch x86_64`, the Mac's own when left out, and an Apple Silicon Mac can
-  build the Intel one through Rosetta.
+  architecture, and each is smoke-tested on the hardware it is for.
+  `packaging/build_macos.py` takes `--arch arm64` or `--arch x86_64`, the
+  Mac's own when left out, and an Apple Silicon Mac can build the Intel one
+  through Rosetta.
+
+### Changed
+- **A release goes out with every download or not at all.**
+  `tools/release.sh` stops before publishing, naming the file, when any of
+  the five downloads did not come down, and it puts the two Mac disk images
+  next to each other in the Assets list. The Python inside each Mac package
+  is checked against the SHA-256 that python-build-standalone publishes
+  before anything is built from it.
 
 ## [0.52.0] - 2026-10-14
 

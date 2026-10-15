@@ -2,14 +2,14 @@
 # Silicon runner and x86_64 on a clean Intel one (#88), signs each with the
 # Developer ID certificate held in the repository's secrets, has Apple
 # notarize it, and staples the ticket on. The two run side by side, so the
-# Intel build adds no time to a release, and each is smoke-tested on the
-# hardware it is for.
+# Intel build runs alongside the other rather than after it, and each is
+# smoke-tested on the hardware it is for.
 #
 # When the certificate secret is absent the signing steps skip themselves
 # and the dmg is unsigned, so a fork without the secrets still builds.
 #
-# Nothing here publishes. The artifacts sit on the workflow run and a person
-# attaches them to a release by hand.
+# Nothing here publishes. The artifacts sit on the workflow run until a
+# person runs tools/release.sh, which checks them and makes the release.
 
 name: macOS package
 
@@ -27,8 +27,12 @@ env:
 jobs:
   build:
     strategy:
-      # One failing does not cancel the other, so the run still carries the
-      # dmg that did build, to look at or attach by hand.
+      # One failing does not cancel the other. tools/release.sh publishes
+      # only from a run that succeeded with both dmgs, so after a failed leg
+      # the way on is "Re-run failed jobs" on this run, which builds that
+      # leg again and leaves the one that passed alone. If a dmg is still
+      # missing after that, release.sh names it and "Re-run all jobs" is
+      # the fallback.
       fail-fast: false
       matrix:
         include:

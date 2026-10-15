@@ -51,9 +51,11 @@ Nothing that ships is built on a developer's machine.
    with the Developer ID certificate held in the repository's secrets,
    sends the bundle to Apple for notarization, staples the ticket, then does the same
    for the disk image. The certificate lives in a keychain that exists only
-   for that job and is deleted when it ends.
-6. A maintainer attaches the artifacts to the GitHub release by hand. No
-   step in the workflow publishes on its own.
+   for that job and is deleted when it ends. The Python inside the bundle
+   is checked against the SHA-256 its publisher lists before it is used.
+6. A maintainer runs `tools/release.sh`, which checks each artifact against
+   the checksums its run published and makes the GitHub release only when
+   every download is there. No step in the workflow publishes on its own.
 
 Anyone can rebuild the package themselves with
 `python packaging/build_windows.py --installer` and compare checksums.
