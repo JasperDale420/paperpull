@@ -161,6 +161,7 @@ function present(r) {
       if (named) bits.push(many(named, n) + ' saved under a name to review');
       if (aside) bits.push(many(aside, n) + ' set aside for you to check');
       if (res.wrong_document) bits.push(res.wrong_document + ' refused as the wrong document');
+      if (res.alike) bits.push(many(res.alike, n) + ' left unsaved, sharing a type and date');
       if (res.failed) bits.push(res.failed + ' failed');
       if (res.validation_failures) bits.push(many(res.validation_failures, 'PDF') + ' that did not check out');
       return {chip: {cls: 'due', text: 'Needs a look'},
@@ -764,6 +765,7 @@ function runOutcome() {
     if (aside) details.push(`${aside} set aside`);
     if (res.failed) details.push(`${res.failed} failed`);
     if (res.validation_failures) details.push(`${res.validation_failures} PDF validation failures`);
+    if (res.alike) details.push(`${res.alike} left unsaved, sharing a type and date`);
     const says = [];
     if (named) says.push((named === 1 ? 'A receipt was' : named + ' receipts were') + ' saved under a name ' +
       'PaperPull was unsure of. Review names gives each a better one.');
@@ -773,6 +775,10 @@ function runOutcome() {
     const asideToo = aside > 0 || (res.validation_failures || 0) > 0;
     if (asideToo) says.push('A document set aside sits in the Manual Review folder, where PaperPull kept it ' +
       'rather than file it under the wrong name.');
+    // Two documents of one type on one date are listed and never saved,
+    // since a row cannot be bound to either. The rest of the run went on.
+    if (res.alike) says.push('Documents that share a type and a date with another could not be told apart, ' +
+      'so they were left unsaved. Save them from ' + who + "'s own page.");
     if (!says.length) says.push('The technical details below say what happened.');
     return {tone: 'warn', title: saved.length ? many(saved.length, 'new ' + n) + ' saved, some need a look' : 'Finished, needs attention',
       say: 'Finished, needs attention (' + details.join(', ') + '). ' + says.join(' '), clean: true, attention: true,

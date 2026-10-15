@@ -177,6 +177,16 @@ def test_the_panel_names_a_wrong_document():
     assert "refused as the wrong document" in app.HTML
 
 
+def test_documents_left_unsaved_as_alike_need_attention_and_are_named():
+    """Documents of one type on one date are left unsaved while the rest
+    of the run goes on, so the panel names them rather than a clean finish."""
+    assert run_result.parse(line(alike=2))["attention"]
+    assert run_result.parse(line())["alike"] == 0
+    assert run_result.parse(line(alike=-1)) is None
+    assert run_result.parse(line(alike="2")) is None
+    assert "left unsaved, sharing a type and date" in app.HTML
+
+
 def test_a_run_that_stopped_needs_attention_and_is_named():
     """A mid-run sign-out under the panel ends with exit code 0 and all
     zero counts, which used to read as a clean finish."""

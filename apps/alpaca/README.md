@@ -71,11 +71,14 @@ known:
 - Two documents of one kind on one date, two trade confirmations on one
   day, say: a row shows only its date and kind, so those two are counted
   and left unsaved rather than guess which row is which, and the rest are
-  saved.
+  saved. The run summary and the panel say how many were left.
 - An account older than the list's window. The page asks for about three
   years of documents. When the list holds no account application, Discover
   stops unless `--start-date` or `default_start_date` is on or after the
-  day the list starts, so older documents are never missed unnoticed.
+  day the list starts, so older documents are never missed unnoticed. An
+  application only counts when nothing listed is dated before it, and a
+  list whose window starts after it ends, or ended before yesterday, is
+  never called whole.
   Whether the page's Filters reach further back has not been seen.
 - The exact markup of the table beyond what the survey saw.
 

@@ -7,6 +7,18 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Fixed
+- **Alpaca calls its list of documents whole only when it can be.** A list
+  whose window starts after it ends, or ended before yesterday, now stops
+  Discover in words of its own rather than being called whole. An account
+  application in the window no longer lets the list pass when something
+  listed is dated before the earliest application, so a reissued
+  application cannot let older statements go unnoticed. Two documents of
+  one type on one date, which are left unsaved, are now counted in the run
+  summary and named in the panel, not only on the console.
+
 ## [0.52.0] - 2026-10-14
 
 Six providers arrive, First Horizon Bank checking statements, Chase

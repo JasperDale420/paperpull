@@ -305,6 +305,7 @@ class App:
             "other": 0, "skipped_completed": 0, "skipped_out_of_scope": 0,
             "manual_review": 0, "failed": 0, "duplicate_filenames": 0,
             "left_for_next_run": 0, "validation_failures": 0, "dates": [], "new_files": [],
+            "alike": 0,
         }
 
     # -- infrastructure ----------------------------------------------------
@@ -486,7 +487,7 @@ class App:
         else:
             print("Connected, but the Live account's documents page did not open. If the")
             print("account switcher shows a Paper account, choose your Live account there")
-            print("yourself; this app never switches it. Then re-run --login.")
+            print("yourself, since this app never switches it. Then re-run --login.")
         self.close()
 
     def _in_scope(self, doc: Document) -> bool:
@@ -566,6 +567,14 @@ class App:
             self.not_live()
         except site.DeadlineReached:
             self.deadline_reached()
+        except site.WindowNotWhole:
+            # The page asked for a window this cannot call whole, which
+            # needs a page change or a bug, so nothing in it is kept.
+            print("\n!! Alpaca's list of documents was asked for a window that does not run from")
+            print("   its start to yesterday or later, so it may be missing documents, and this")
+            print("   run stops rather than call the list read. Run it again later.")
+            self.write_failure("read the documents list", "the list's window is not whole")
+            raise SystemExit(1)
         except site.ListTooShort as short:
             # Running again would stop the same way: only a start date the
             # list reaches lets it be called whole.
@@ -587,6 +596,9 @@ class App:
             print("   and this run stops rather than call the list read. Run it again.")
             self.write_failure("read the documents list", "the list stopped partway")
             raise SystemExit(1)
+        # Documents of one type on one date, left unsaved, for the run
+        # summary and the panel.
+        self.stats["alike"] = int((getattr(self.run, "counts", {}) or {}).get("alike", 0))
         for r in docs:
             n_new += self._record_rawdoc(r, site.DOCUMENTS_URL)
         self.discovery.save()
@@ -1173,6 +1185,7 @@ class App:
             f"Needs manual review:       {s['manual_review']}",
             f"Failed:                    {s['failed']}",
             f"Left for the next run:     {s.get('left_for_next_run', 0)}",
+            f"Left unsaved, alike:       {s.get('alike', 0)}",
             f"Duplicate filenames (#'d): {s['duplicate_filenames']}",
             f"PDF validation failures:   {s['validation_failures']}",
             f"Earliest date processed:   {dates[0] if dates else '-'}",

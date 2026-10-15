@@ -41,6 +41,10 @@ def report_run_result(stats):
               "asked for. Nothing was saved under their names. That is a "
               "wrong document arriving, not a missing one, so it is worth "
               "reporting." % wrong, flush=True)
+    # Documents the list held that share a type and a date with another,
+    # so a row could not be bound to one of them, and they were left
+    # unsaved. The rest of the run went on, so this is said on its own.
+    result["alike"] = int(stats.get("alike", 0) or 0)
     # A run state the save on the way out could not write holds none of
     # what this run did, so the next run may fetch it all again. Such a run
     # is not one that finished, whatever else it did.

@@ -37,7 +37,8 @@ def test_each_provider_reports_current_run_counts(entry, tmp_path, capsys):
                if line.startswith(PREFIX)]
     assert reports[0]["manual_review"] == 2
     assert reports[1] == {"manual_review": 0, "failed": 0, "validation_failures": 0,
-                          "new_files": 0, "name_review": 0, "wrong_document": 0, "stopped": 0}
+                          "new_files": 0, "name_review": 0, "wrong_document": 0, "alike": 0,
+                          "stopped": 0}
 
 
 @pytest.mark.parametrize("entry", ENTRIES, ids=lambda p: p.parent.name)
@@ -77,6 +78,16 @@ def test_a_wrong_document_is_reported_on_its_own_and_said_in_words(capsys):
     result = json.loads(out.split(PREFIX, 1)[1])
     assert result["wrong_document"] == 1
     assert "refused because they were not the one asked for" in out
+
+
+def test_documents_left_unsaved_as_alike_are_reported_on_their_own(capsys):
+    """Two documents of one type on one date that a row cannot be bound to
+    are left unsaved while the rest of the run goes on, and were only a
+    console line. The panel now has the count, and absent is zero."""
+    report_run_result({"alike": 2, "new_files": []})
+    assert json.loads(capsys.readouterr().out.split(PREFIX, 1)[1])["alike"] == 2
+    report_run_result({"new_files": []})
+    assert json.loads(capsys.readouterr().out.split(PREFIX, 1)[1])["alike"] == 0
 
 
 def test_a_run_with_no_wrong_document_says_nothing_about_it(capsys):
