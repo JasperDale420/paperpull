@@ -49,6 +49,10 @@ All notable changes to PaperPull are recorded here. Versioning follows
   by version rather than `latest`, so a server moves to a new release only
   when you write its version there. A server set up with `latest` keeps
   working as before, since every release still publishes it.
+- **The server image carries a pip with no known advisories.** The base
+  image ships pip 25.0.1, which has six medium or low advisories fixed in
+  later releases. The lock now names pip 26.2.1 with its hash, and building
+  the image replaces the base's pip with it.
 
 ## [0.53.0] - 2026-10-15
 

@@ -14,3 +14,7 @@ playwright==1.63.0
 # What builds paperpull-core inside the image, taken from this lock rather
 # than fetched unchecked at build time (--no-build-isolation in the Dockerfile).
 setuptools==84.0.0
+# The base's own pip (25.0.1 in python:3.12-slim-bookworm) has advisories
+# that a newer one fixes. Installing the lock replaces it with this one, which
+# then builds paperpull-core.
+pip==26.2.1
