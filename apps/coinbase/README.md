@@ -72,10 +72,17 @@ tests cover the guard, the hosts, the statement rows and their months, the
 tax lists, the press of a statement's PDF button and what it brings, and
 filing a statement only under its own month.
 
-Coinbase One Card statements: the Credit Card tab, its list of 13
-statements and the fetch of one statement's PDF were confirmed live on a
-signed-in account by a read-only survey on 2026-10-15. A run of the app
-itself, Discover and a Pilot, is still to come. Automated tests cover the
-card list heard and matched to its rows, the press of a row's PDF button,
-the address and the PDF checked, every stop, and that no id or signed
-address is logged or kept.
+Coinbase One Card statements: run live on the same account on 2026-10-15.
+Discover listed the Credit Card tab's 13 statements, October 2025 to
+October 2026, beside the account statements, Pilot took the first and Run
+All the rest, every one a PDF naming "Coinbase One Card" and its closing
+date, with the account statements and tax documents untouched. The run
+showed two things the survey had not: on a repeat visit the page gets its
+list and a statement's address through its GET persisted query alone, with
+no POST after it, so both are heard, and the tab's move to the statement's
+address evicts that answer's body before it can be read, so the address is
+then read from where the tab landed, held to the row's date and to the
+request that named the row's statement. Automated tests cover the card
+list heard and matched to its rows, the press of a row's PDF button, the
+address and the PDF checked, every stop, and that no id or signed address
+is logged or kept.

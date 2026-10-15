@@ -23,9 +23,8 @@ All notable changes to PaperPull are recorded here. Versioning follows
   anywhere else, or an answer naming another statement or another date
   stops the run. The statement's id, the card account's id, the signed
   address and the amounts are never logged or kept. Your monthly account
-  statements and tax documents are taken exactly as before. The list and
-  one statement were checked live on a signed-in account, and a full run is
-  still to come.
+  statements and tax documents are taken exactly as before. Run live on one account on 2026-10-15, where it saved all
+  13 statements beside the account statements and tax documents.
 
 ## [0.52.0] - 2026-10-14
 

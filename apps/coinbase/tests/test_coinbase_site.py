@@ -1347,11 +1347,14 @@ class CardList(unittest.TestCase):
         with self.assertRaises(site.ListStopped):
             self.collect(page)
 
-    def test_a_get_answer_is_not_heard(self):
+    def test_a_list_the_get_persisted_query_answers_is_heard(self):
+        """Live, a repeat visit's list comes back on the page's GET alone,
+        with no POST after it, so a GET that carries the list is the list."""
         page = CardPage()
-        page.list_answers = [CardResponse(page, statements_answer(page.dates), method="GET")]
-        with self.assertRaises(site.ListStopped):
-            self.collect(page)
+        page.list_answers = [_get_answer(page, statements_answer(page.dates, page.sids),
+                                         "CreditCardStatementsTableQuery", {"accountUuid": CARD_ACCOUNT})]
+        got = self.collect(page)
+        self.assertEqual([d.date_text for d in got], list(page.dates))
 
     def test_an_answer_from_another_address_is_not_heard(self):
         page = CardPage()
@@ -1637,7 +1640,7 @@ class CardDownload(unittest.TestCase):
                                   variables={"statementId": page.sids[1]})
             answer.status = status
             return [answer]
-        for status, body in ((200, RuntimeError("no body")), (500, row_answer(card_url(self.ISO))),
+        for status, body in ((500, RuntimeError("no body")), (500, row_answer(card_url(self.ISO))),
                              (200, dict(row_answer(card_url(self.ISO)), errors=[{"m": 1}])),
                              (200, {"data": {"viewer": {"creditCard": {"id": "x"}}}}),
                              (200, {"data": {"viewer": {"creditCard": {"statementUrl": 7}}}})):
@@ -1647,6 +1650,56 @@ class CardDownload(unittest.TestCase):
         page = CardPage()
         page.press_answers = {self.LABEL: []}
         self.assertIn("did not answer", self.stopped(page).reason)
+
+    def test_an_answer_whose_body_the_tab_took_with_it_is_bound_by_where_the_tab_landed(self):
+        """Live, the tab moves to the statement's address before the
+        answer's body can be read, and Playwright has no body to give. The
+        request still names the row's statement and answered 200, so the
+        address the page was handed is where the tab landed, held to the
+        row's date like a heard one. A tab that landed elsewhere, or on
+        another statement's date, still stops the run."""
+        def evicted(page):
+            answer = CardResponse(page, RuntimeError("no body"), op="CreditCardStatementRowQuery",
+                                  variables={"statementId": page.sids[1]})
+            answer.status = 200
+            return [answer]
+        page = CardPage()
+        page.press_answers = {self.LABEL: evicted(page)}
+        ok, saved, trace = self.take(page)
+        self.assertTrue(ok)
+        self.assertIsNotNone(saved)
+        self.assertIn({"note": "the statement's address was read from the tab"}, trace)
+        # Live the answer is the page's GET persisted query alone, and its
+        # body is gone the same way: the row's id is read from the address.
+        page = CardPage()
+        got = _get_answer(page, RuntimeError("no body"), site.CARD_ROW_QUERY,
+                          {"accountUuid": CARD_ACCOUNT, "statementId": page.sids[1]})
+        page.press_answers = {self.LABEL: [got]}
+        ok, saved, trace = self.take(page)
+        self.assertTrue(ok)
+        self.assertTrue(saved.startswith(b"%PDF-"))
+        # A GET whose address names the statement twice, or another one, or
+        # cannot be read, does not bind the press to its row.
+        for variables, extra in (({"statementId": page.sids[1]}, "&variables=%7B%7D"),
+                                 ({"statementId": page.sids[0]}, ""),
+                                 ({"statementId": page.sids[1]}, "&operationName=Other")):
+            page = CardPage()
+            got = _get_answer(page, RuntimeError("no body"), site.CARD_ROW_QUERY, variables)
+            got.url += extra
+            page.press_answers = {self.LABEL: [got]}
+            self.assertTrue(self.stopped(page).after_a_press, extra)
+        page = CardPage()
+        got = _get_answer(page, RuntimeError("no body"), site.CARD_ROW_QUERY, {"statementId": page.sids[1]})
+        got.url = site.GRAPHQL_URL + '?operationName=%s&variables={"statementId":"x","statementId":"%s"}' % (
+            site.CARD_ROW_QUERY, page.sids[1])
+        page.press_answers = {self.LABEL: [got]}
+        self.assertIn("did not answer", self.stopped(page).reason)
+        for lands in ("", card_url("2026-10-12"), card_url(self.ISO, host="evil.test"),
+                      card_url(self.ISO) + "&x=1"):
+            page = CardPage()
+            page.press_answers = {self.LABEL: evicted(page)}
+            page.press_lands = {self.LABEL: lands}
+            self.assertIn("could not be read", self.stopped(page).reason, lands)
 
     def test_html_where_the_pdf_should_be_is_not_saved(self):
         page = CardPage()
@@ -1863,3 +1916,72 @@ class CardRecords(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_the_card_statement_address_carries_its_signing_keys_and_nothing_else():
+    iso = "2026-09-12"
+    assert site.is_card_statement_url(card_url(iso), iso)
+    assert site.is_card_statement_url(card_url(iso).split("?")[0], iso)
+    signed = card_url(iso)
+    for u in [signed + "&x=1", signed + "&Expires=2", signed.replace("&Key-Pair-Id=" + CARD_KEYPAIR, ""),
+              signed.replace("Signature=" + CARD_SIGNATURE, "Signature="), signed + "#page=2",
+              signed.split("?")[0] + "?", signed.split("?")[0] + "?Expires"]:
+        assert not site.is_card_statement_url(u, iso), u
+
+
+def _get_answer(page, body, op, variables):
+    """A graphql-direct answer to the page's GET persisted query, which
+    names the operation and its variables in the address."""
+    url = site.GRAPHQL_URL + "?operationName=%s&variables=%s&extensions=%%7B%%22persistedQuery%%22%%3A1%%7D" % (
+        op, json.dumps(variables).replace(" ", ""))
+    answer = CardResponse(page, body, method="GET", op="", variables={}, url=url)
+    answer.request.post_data_json = None
+    return answer
+
+
+def test_a_list_answered_by_the_get_persisted_query_alone_is_heard():
+    """On a repeat visit the server knows the hash and the page's GET is
+    the only answer, no POST follows. Its name and variables are read from
+    the address."""
+    page = CardPage()
+    heard, on_response = site._listen(page)
+    on_response(_get_answer(page, statements_answer(page.dates, page.sids), "CreditCardStatementsTableQuery",
+                            {"accountUuid": CARD_ACCOUNT}))
+    on_response(_get_answer(page, row_answer(card_url(page.dates[1])), site.CARD_ROW_QUERY,
+                            {"accountUuid": CARD_ACCOUNT, "statementId": page.sids[1]}))
+    assert [h["op"] for h in heard] == ["CreditCardStatementsTableQuery", site.CARD_ROW_QUERY]
+    assert heard[1]["statement_id"] == page.sids[1]
+    assert all(site._clean(h) for h in heard)
+
+
+def test_the_get_that_only_misses_the_hash_is_not_an_answer():
+    """The page's first GET is answered PERSISTED_QUERY_NOT_FOUND and the
+    POST that follows carries the list. The miss is not heard at all, so it
+    neither stops the list as an error nor counts as a second answer."""
+    page = CardPage()
+    heard, on_response = site._listen(page)
+    miss = {"data": None, "errors": [{"message": "PersistedQueryNotFound",
+                                      "extensions": {"code": "PERSISTED_QUERY_NOT_FOUND"}}]}
+    on_response(_get_answer(page, miss, "CreditCardStatementsTableQuery", {"accountUuid": CARD_ACCOUNT}))
+    on_response(CardResponse(page, statements_answer(page.dates, page.sids), op="CreditCardStatementsTableQuery",
+                             variables={"accountUuid": CARD_ACCOUNT}))
+    assert len(heard) == 1 and site._clean(heard[0])
+    # The same words on a 500 are the error they are, and stop the list.
+    bad = _get_answer(page, miss, "CreditCardStatementsTableQuery", {"accountUuid": CARD_ACCOUNT})
+    bad.status = 500
+    on_response(bad)
+    assert len(heard) == 2 and heard[1]["status"] == 500 and not site._clean(heard[1])
+    heard.pop()
+    # Any other error, or a miss that still carries data, is heard as what it is.
+    other = {"data": None, "errors": [{"message": "x", "extensions": {"code": "UNAUTHENTICATED"}}]}
+    on_response(_get_answer(page, other, "CreditCardStatementsTableQuery", {}))
+    assert len(heard) == 2 and not site._clean(heard[1])
+    assert not site._is_hash_miss({"data": {"viewer": {}}, "errors": miss["errors"]})
+    assert not site._is_hash_miss({"errors": []})
+    assert site._sent_in_address(site.GRAPHQL_URL + "?operationName=Q&variables=%7Bbad") is None
+    assert site._sent_in_address(site.GRAPHQL_URL + "?operationName=Q&operationName=R") is None
+    assert site._sent_in_address(site.GRAPHQL_URL + "?variables=%7B%7D&variables=%7B%7D") is None
+    assert site._sent_in_address(
+        site.GRAPHQL_URL + "?operationName=Q&variables=%7B%22statementId%22%3A%22a%22%2C%22statementId%22%3A%22b%22%7D") is None
+    assert site._sent_in_address(site.GRAPHQL_URL + "?operationName=Q&variables=%5B1%5D") == {
+        "operationName": "Q", "variables": {}}

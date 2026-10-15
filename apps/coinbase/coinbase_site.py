@@ -110,6 +110,7 @@ KNOWN CEILINGS (ponytail: left as they are until a run shows otherwise)
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sys
@@ -117,7 +118,7 @@ from dataclasses import dataclass
 from datetime import date as _date
 from pathlib import Path
 from typing import List, Optional, Tuple
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from paperpull_core import pressing
 from paperpull_core import redirects
@@ -1259,6 +1260,8 @@ def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
 # ---------------------------------------------------------------------------
 
 CARD_STATEMENT_HOST = "statements.cardless.com"
+# The signing keys the statement's address carries, each once (a CloudFront signed URL).
+CARD_SIGNED_KEYS = ("Expires", "Signature", "Key-Pair-Id")
 # The Statements page's two sub-navigation links are "Transactions" and
 # "Credit Card". Only the second is ever pressed (is_card_tab).
 CARD_LINK_CSS = "a[data-testid='subpage-navigation-item']"
@@ -1358,7 +1361,15 @@ def is_card_statement_url(url, iso: str) -> bool:
         return False
     if port is not None or parts.username or parts.password or "@" in parts.netloc:
         return False
-    if parts.netloc.lower() != CARD_STATEMENT_HOST:
+    if parts.netloc.lower() != CARD_STATEMENT_HOST or parts.fragment or ("?" in url and not parts.query):
+        return False
+    # The address is signed: its query is exactly the three signing keys,
+    # each once with a value, or (for a bare address) nothing at all.
+    try:
+        pairs = parse_qsl(parts.query, keep_blank_values=True, strict_parsing=bool(parts.query))
+    except ValueError:
+        return False
+    if pairs and (sorted(k for k, _v in pairs) != sorted(CARD_SIGNED_KEYS) or any(not v for _k, v in pairs)):
         return False
     m = _CARD_PDF_PATH_RE.fullmatch(parts.path or "")
     return bool(m) and m.group(1) == iso
@@ -1389,8 +1400,9 @@ def _is_graphql(url) -> bool:
 
 
 def _listen(page) -> Tuple[list, object]:
-    """A response listener for the page's own graphql-direct POSTs, and
-    what it hears. Each answer is read as it comes, inside the listener,
+    """A response listener for the page's own graphql-direct answers, GET
+    persisted queries and POSTs alike, and what it hears. Each answer is
+    read as it comes, inside the listener,
     because the press of a card PDF button sends the tab on at once and a
     navigation takes the bodies with it. Kept for each: the operation the
     request names, the statementId its variables name, the status and the
@@ -1399,7 +1411,8 @@ def _listen(page) -> Tuple[list, object]:
 
     def on_response(res):
         try:
-            if not _is_graphql(res.url) or res.request.method != "POST":
+            method = res.request.method
+            if not _is_graphql(res.url) or method not in ("POST", "GET"):
                 return
         except Exception:
             return
@@ -1409,7 +1422,11 @@ def _listen(page) -> Tuple[list, object]:
         except Exception:
             pass
         try:
-            sent = res.request.post_data_json
+            # The page sends each query first as a GET persisted query (its
+            # name and variables in the address) and again as a POST with
+            # the full query when the server does not know the hash. Live,
+            # a repeat visit is answered by the GET alone, so both are heard.
+            sent = res.request.post_data_json if method == "POST" else _sent_in_address(res.url)
             if isinstance(sent, dict):
                 entry["op"] = str(sent.get("operationName") or "")
                 variables = sent.get("variables")
@@ -1421,8 +1438,60 @@ def _listen(page) -> Tuple[list, object]:
             entry["body"] = res.json()
         except Exception:
             entry["body"] = None
+        if method == "GET" and entry["status"] == 200 and _is_hash_miss(entry["body"]):
+            # Not an answer: the server did not know the hash (said with a
+            # 200, as live), and the page asks again by POST. Hearing it as
+            # an error would stop a list the POST then answers whole. The
+            # same words on any other status are heard as the error they are.
+            return
         heard.append(entry)
     return heard, on_response
+
+
+def _no_duplicate_keys(pairs):
+    """json.loads hook that refuses an object naming a key twice, so a
+    second statementId cannot hide behind the first."""
+    out: dict = {}
+    for k, v in pairs:
+        if k in out:
+            raise ValueError("duplicate key")
+        out[k] = v
+    return out
+
+
+def _sent_in_address(url) -> Optional[dict]:
+    """What a GET persisted query names in its address: operationName and
+    variables (a JSON object), or None when the address cannot be read, or
+    names operationName or variables more than once, or its JSON names a
+    key twice. An ambiguous address is no answer at all."""
+    try:
+        pairs = parse_qsl(urlsplit(url or "").query, keep_blank_values=True)
+    except ValueError:
+        return None
+    keys = [k for k, _v in pairs]
+    if keys.count("operationName") > 1 or keys.count("variables") > 1:
+        return None
+    query = dict(pairs)
+    sent: dict = {"operationName": query.get("operationName") or ""}
+    if "variables" in query:
+        try:
+            variables = json.loads(query["variables"], object_pairs_hook=_no_duplicate_keys)
+        except ValueError:
+            return None
+        sent["variables"] = variables if isinstance(variables, dict) else {}
+    return sent
+
+
+def _is_hash_miss(body) -> bool:
+    """True for the answer that only says the persisted query's hash is
+    unknown, every error coded PERSISTED_QUERY_NOT_FOUND and no data."""
+    if not isinstance(body, dict) or body.get("data") is not None:
+        return False
+    errors = body.get("errors")
+    if not isinstance(errors, list) or not errors:
+        return False
+    return all(isinstance(e, dict) and isinstance(e.get("extensions"), dict)
+               and e["extensions"].get("code") == "PERSISTED_QUERY_NOT_FOUND" for e in errors)
 
 
 def _clean(entry: dict) -> bool:
@@ -1852,6 +1921,17 @@ def _take_card_statement(page, label: str, iso: str, out_path: Path, trace: Opti
             raise _left_the_list(step, "the press asked for another statement than its row")
         card = _card_of(answer["body"]) if _clean(answer) else None
         url = card.get("statementUrl") if isinstance(card, dict) else None
+        if url is None and answer["body"] is None and answer.get("status") == 200:
+            # On the live page the tab's own move to the statement's address
+            # evicts the answer's body before it can be read. The address the
+            # page was handed is then where the tab landed, bound to the row's
+            # date exactly as a heard one is, and the request that brought it
+            # has already been held to the row's statementId above. An answer
+            # that was read but names no address still stops the run.
+            landed = _no_fragment(page.url)
+            if is_card_statement_url(landed, iso):
+                note("the statement's address was read from the tab")
+                url = landed
         if not isinstance(url, str):
             raise _left_the_list(step, "the page answer naming the statement could not be read")
         if not is_card_statement_url(url, iso):
