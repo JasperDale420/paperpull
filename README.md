@@ -267,16 +267,18 @@ on the desktop.
 | Signing in | a browser window on your desktop | a browser screen the server shows in your browser |
 | New documents | folders on your computer | folders on the server, and copied into Paperless-ngx's consume folder if you mount it |
 | Who can reach it | only your computer | your home network, behind a password you choose |
-| Updates | the next installer, or the Store | `docker compose pull`, then `docker compose up -d` |
+| Updates | the next installer, or the Store | the new version in `compose.yaml`, then `docker compose pull` and `docker compose up -d` |
 | Price | free, or the Store edition | free |
 
 Getting it running takes three steps, and [SERVER.md](SERVER.md) has the
 rest, Paperless, a NAS's own Docker screens, updates and backups.
 
 1. Copy [`server/compose.yaml`](server/compose.yaml) and
-   [`server/seccomp-chrome.json`](server/seccomp-chrome.json) into a folder
-   on the server, and set `PUID`, `PGID`, `TZ` and the data folder in
-   `compose.yaml`.
+   [`server/seccomp-chrome.json`](server/seccomp-chrome.json), or the two
+   in `PaperPull-Server-X.Y.Z.zip` on the
+   [newest release](https://github.com/rheeloaded/paperpull/releases/latest),
+   into a folder on the server, and set `PUID`, `PGID`, `TZ` and the data
+   folder in `compose.yaml`.
 2. Start it. Docker downloads the image every release publishes,
    `ghcr.io/rheeloaded/paperpull-server`.
    ```bash

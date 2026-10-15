@@ -280,6 +280,115 @@ def test_the_lock_was_resolved_in_the_image_s_own_base():
     assert text.startswith(lock.header(image)), "the lock was resolved in another base"
 
 
+def test_the_base_is_named_by_its_digest():
+    """A tag alone moves whenever its publisher rebuilds it, so the same
+    Dockerfile built a different base from one day to the next."""
+    image = lock.base_image()
+    assert re.fullmatch(r"python:3\.\d+-slim-\w+@sha256:[0-9a-f]{64}", image), image
+    assert lock.base_tag(image) == image.split("@")[0]
+    assert "@" not in lock.header(image) and lock.base_tag(image) in lock.header(image)
+    froms = [line for line in (SERVER / "Dockerfile").read_text(encoding="utf-8").splitlines()
+             if line.startswith("FROM")]
+    assert froms == ["FROM " + image]
+
+
+def test_a_new_digest_needs_no_new_lock():
+    """Dependabot's weekly digest leaves requirements.txt alone, so the lock
+    names the tag it was resolved in, and either digest of it matches."""
+    tag = "python:3.12-slim-bookworm"
+    one, two = tag + "@sha256:" + "1" * 64, tag + "@sha256:" + "2" * 64
+    assert lock.header(one) == lock.header(two) == lock.header(tag)
+
+
+def fake_inspect(monkeypatch, answer, code=0):
+    seen = []
+
+    def run(cmd, **kwargs):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, code, answer, "no such image" if code else "")
+
+    monkeypatch.setattr(lock.subprocess, "run", run)
+    return seen
+
+
+DOCKERFILE = ("# the base\n"
+              "FROM python:3.12-slim-bookworm@sha256:%s\n"
+              "RUN echo FROM python:3.12-slim-bookworm@sha256:%s\n" % ("a" * 64, "a" * 64))
+
+
+def test_base_writes_the_tag_s_digest_of_today(monkeypatch, tmp_path):
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(DOCKERFILE, encoding="utf-8", newline="\n")
+    seen = fake_inspect(monkeypatch, "sha256:%s\n" % ("b" * 64))
+
+    assert lock.refresh_base(dockerfile) == 0
+
+    assert seen == [["docker", "buildx", "imagetools", "inspect", "python:3.12-slim-bookworm",
+                     "--format", "{{.Manifest.Digest}}"]]
+    assert dockerfile.read_bytes() == DOCKERFILE.replace("a" * 64, "b" * 64, 1).encode()
+
+
+def test_base_keeps_the_file_s_own_line_endings(monkeypatch, tmp_path):
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_bytes(DOCKERFILE.replace("\n", "\r\n").encode())
+    fake_inspect(monkeypatch, "sha256:%s\n" % ("b" * 64))
+
+    assert lock.refresh_base(dockerfile) == 0
+    assert dockerfile.read_bytes() == DOCKERFILE.replace("a" * 64, "b" * 64, 1).replace("\n", "\r\n").encode()
+
+
+def test_base_check_writes_nothing_and_says_when_the_tag_moved(monkeypatch, tmp_path):
+    """The Server image workflow's weekly run asks, in case Dependabot ever
+    stops proposing a digest of the same tag."""
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(DOCKERFILE, encoding="utf-8", newline="\n")
+    fake_inspect(monkeypatch, "sha256:%s\n" % ("b" * 64))
+    assert lock.refresh_base(dockerfile, check=True) == 1
+    assert dockerfile.read_text(encoding="utf-8") == DOCKERFILE
+
+    fake_inspect(monkeypatch, "sha256:%s\n" % ("a" * 64))
+    assert lock.refresh_base(dockerfile, check=True) == 0
+    assert lock.refresh_base(dockerfile) == 0
+    assert dockerfile.read_text(encoding="utf-8") == DOCKERFILE
+
+
+def test_base_follows_no_tag_when_the_from_line_has_none(monkeypatch, tmp_path):
+    """docker would read python@sha256:... as python:latest."""
+    dockerfile = tmp_path / "Dockerfile"
+    text = "FROM python@sha256:%s\n" % ("a" * 64)
+    dockerfile.write_text(text, encoding="utf-8", newline="\n")
+    seen = fake_inspect(monkeypatch, "sha256:%s\n" % ("b" * 64))
+
+    assert lock.refresh_base(dockerfile) == 1
+    assert seen == [] and dockerfile.read_text(encoding="utf-8") == text
+
+
+def test_base_without_docker_changes_nothing(monkeypatch, tmp_path):
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(DOCKERFILE, encoding="utf-8", newline="\n")
+
+    def run(cmd, **kwargs):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(lock.subprocess, "run", run)
+    assert lock.refresh_base(dockerfile) == 1
+    assert dockerfile.read_text(encoding="utf-8") == DOCKERFILE
+
+
+@pytest.mark.parametrize("answer, code", [
+    ("", 1),                                   # docker could not reach the registry
+    ("sha256:%s\n" % ("b" * 63), 0),           # not a digest
+    ("<no value>\n", 0),
+])
+def test_base_changes_nothing_without_a_digest(monkeypatch, tmp_path, answer, code):
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(DOCKERFILE, encoding="utf-8", newline="\n")
+    fake_inspect(monkeypatch, answer, code)
+
+    assert lock.refresh_base(dockerfile) == 1
+    assert dockerfile.read_text(encoding="utf-8") == DOCKERFILE
+
+
 def test_the_image_installs_only_the_lock_s_files():
     text = (SERVER / "Dockerfile").read_text(encoding="utf-8")
     install = [line for line in text.splitlines() if "-r /tmp/requirements.txt" in line]

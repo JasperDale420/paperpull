@@ -37,15 +37,21 @@ a Raspberry Pi cannot run it.
 
 ## Get the image
 
-`compose.yaml` names the image every PaperPull release publishes,
-`ghcr.io/rheeloaded/paperpull-server:latest`, and Docker downloads it from
-GitHub the first time the project starts. Before a release publishes it,
-the image is built from that release's code, started the way this page
-describes and checked, and only that very image goes out.
+`compose.yaml` names the image a PaperPull release publishes, by that
+release's version, such as `ghcr.io/rheeloaded/paperpull-server:0.53.0`,
+and Docker downloads it from GitHub the first time the project starts.
+Before a release publishes it, the image is built from that release's
+code, started the way this page describes and checked, and only that very
+image goes out. Each image comes with a signed list of everything inside
+it, see "Its parts are listed and checked" in
+[SECURITY-SERVER.md](SECURITY-SERVER.md).
 
-If Docker cannot download it, no release has published it yet. Build it
-yourself then, from a checkout of this repository, on any computer with
-Docker and Python.
+If Docker cannot download it, no release has published that version yet.
+A release's own `PaperPull-Server-X.Y.Z.zip` always names an image that
+exists, while the copy in this repository names the next version for a
+short while before its release goes out. Write the newest version on the
+releases page in the `image:` line then, or build the image yourself, from
+a checkout of this repository, on any computer with Docker and Python.
 
 ```bash
 python server/build.py --save paperpull-server.tar
@@ -59,8 +65,10 @@ Google.
 
 ## Set it up
 
-1. **Make a folder for it** on the server, and copy `server/compose.yaml`
-   and `server/seccomp-chrome.json` from this repository into it. The second
+1. **Make a folder for it** on the server, and put `compose.yaml` and
+   `seccomp-chrome.json` in it, from `PaperPull-Server-X.Y.Z.zip` on the
+   [newest release](https://github.com/rheeloaded/paperpull/releases/latest),
+   or from `server/` in this repository. The second
    file is the container's security profile, see "Chrome's sandbox" in
    [SECURITY-SERVER.md](SECURITY-SERVER.md).
 2. **Fill in `compose.yaml`.** At least these.
@@ -203,10 +211,16 @@ documents to Paperless".
 
 ## Updating, backing up and removing
 
-- **Updating.** Download the newer image and recreate the container, with
-  `docker compose pull` and then `docker compose up -d` in the project's
-  folder, or the same from your NAS's Docker app. Everything you set up is
-  in the volumes and stays. Chrome brings itself up to date at every start.
+- **Updating.** Write the newer version in the `image:` line of
+  `compose.yaml`, the number on the
+  [releases page](https://github.com/rheeloaded/paperpull/releases), then
+  run `docker compose pull` and `docker compose up -d` in the project's
+  folder, or do the same from your NAS's Docker app. Everything you set up
+  is in the volumes and stays. To go back, write the version you had and
+  run the same two commands. Chrome brings itself up to date at every
+  start. If you would rather take every release without editing the file,
+  write `latest` in place of the version, which always names the newest
+  release, and then the two commands alone update it.
 - **Backing up.** Your documents are in the data folder. The `profiles`
   volume holds your live sign-ins, so a backup of it is as sensitive as your
   passwords, and you can always sign in again instead. The `settings` volume

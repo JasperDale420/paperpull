@@ -9,7 +9,14 @@
 # starts and keeps it up to date in its own volume (server/chrome.sh), so
 # Google's browser is never redistributed here and its security fixes arrive
 # without a new image.
-FROM python:3.12-slim-bookworm
+#
+# The base is named by its digest as well as its tag, so every build starts
+# from the very same files, whatever the tag points at that day. A frozen
+# base stops getting Debian's fixes, so Dependabot proposes the tag's new
+# digest each week (.github/dependabot.yml), and the Server image workflow
+# builds, starts and scans the image on that proposal before it can merge.
+# By hand, `python server/lock.py --base` writes the tag's current digest.
+FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC \

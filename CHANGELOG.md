@@ -33,6 +33,22 @@ All notable changes to PaperPull are recorded here. Versioning follows
   raises are in `server/requirements.in`, and a test fails when one is
   raised without the lock written again. PaperPull's own core is built
   with the setuptools from the lock rather than one fetched unchecked.
+- **The server image starts from a pinned base, lists its parts and is
+  checked for known vulnerabilities.** The image was built from whatever
+  `python:3.12-slim-bookworm` pointed at on the day, and nothing listed or
+  checked what ended up inside it. The Dockerfile now names that base by
+  its digest. Dependabot proposes the tag's newer digest each week, and
+  `python server/lock.py --base` writes it by hand. Every build lists
+  every package in the image as an SPDX software bill of materials and
+  checks the list with Grype, and a critical vulnerability that has a fix
+  stops the build before a release can publish it. The check also runs on
+  its own each Monday and says when the base has a newer digest. A
+  released image now
+  carries that list and a record of the run that built it, both signed,
+  and `gh attestation verify` checks them. `compose.yaml` names the image
+  by version rather than `latest`, so a server moves to a new release only
+  when you write its version there. A server set up with `latest` keeps
+  working as before, since every release still publishes it.
 
 ## [0.53.0] - 2026-10-15
 

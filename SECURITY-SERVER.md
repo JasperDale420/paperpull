@@ -91,6 +91,26 @@ password manager.
   version with the hashes of its built files, and the image is built with
   pip refusing any file whose hash differs. PaperPull's own core is built
   from the repository with the setuptools named there.
+- **Its base is pinned, and kept current.** The image starts from
+  `python:3.12-slim-bookworm` named by its digest, so every build of a
+  release starts from the very same files. A pinned base stops getting
+  Debian's fixes, so Dependabot proposes the tag's newer digest each week,
+  and the Server image workflow builds, starts and scans the image before
+  that change can be merged. That workflow also runs each Monday, which
+  scans the image again and says when the tag has a newer digest.
+- **Its parts are listed and checked.** Every build lists every package in
+  the image, Debian's, Python's and PaperPull's own, as an SPDX software
+  bill of materials, and Grype checks that list for known
+  vulnerabilities. A critical one with a fix stops the build, so no
+  release publishes it. From the first release after 0.53.0, each image
+  carries that list and a record of the GitHub Actions run that built it,
+  both signed through Sigstore. The GitHub CLI checks them once you have
+  signed in to it with `gh auth login`, and with `--format json` it shows
+  the list itself.
+  ```bash
+  gh attestation verify oci://ghcr.io/rheeloaded/paperpull-server:<version> --repo rheeloaded/paperpull
+  gh attestation verify oci://ghcr.io/rheeloaded/paperpull-server:<version> --repo rheeloaded/paperpull --predicate-type https://spdx.dev/Document/v2.3
+  ```
 
 ## Where the provider code runs
 
