@@ -82,6 +82,15 @@ PY_VERSION = "3.12.14"
 ARCHES = {"arm64": "aarch64", "x86_64": "x86_64"}
 ARCH = "arm64"
 
+# Each architecture's tarball as python-build-standalone's SHA256SUMS for
+# PBS_TAG lists it, which is also the digest GitHub shows for the asset. The
+# download must match before anything is built from it. A new PBS_TAG or
+# PY_VERSION takes both lines again from that release's SHA256SUMS.
+PBS_SHA256 = {
+    "arm64": "81a359f1cfadd4da11766534c5913791cea55f26e1bb902cacd2a531bb1e4b2b",
+    "x86_64": "65b195c9cedc1fef6767f044f9822069adbd1bd9204d424ece4628776fdc04bb",
+}
+
 
 def pbs_asset() -> str:
     return "cpython-%s+%s-%s-apple-darwin-install_only_stripped.tar.gz" % (
@@ -125,7 +134,7 @@ def host_arch() -> str:
 def stage_python() -> Path:
     say("Python %s, python-build-standalone %s, %s" % (PY_VERSION, PBS_TAG, ARCH))
     cache = DIST / "cache"
-    fetch(pbs_url(), cache / pbs_asset())
+    fetch(pbs_url(), cache / pbs_asset(), sha256=PBS_SHA256[ARCH])
     with tarfile.open(cache / pbs_asset()) as t:
         t.extractall(RES, filter="data")
     py = RES / "python" / "bin" / "python3"

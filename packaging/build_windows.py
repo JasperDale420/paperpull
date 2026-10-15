@@ -41,6 +41,7 @@ end up in the package.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
@@ -119,14 +120,27 @@ def version() -> str:
     return (REPO / "VERSION").read_text(encoding="utf-8").strip()
 
 
-def fetch(url: str, dest: Path) -> None:
+def fetch(url: str, dest: Path, sha256: str = "") -> None:
+    """url saved as dest, unless dest is already there. With sha256, the
+    file, cached or new, must have that digest, and one that does not is
+    deleted and the build stops, so a changed or damaged download never
+    reaches a package."""
     if dest.exists():
         say("  using cached %s" % dest.name)
-        return
-    say("  downloading %s" % url)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(url, timeout=120) as r, open(dest, "wb") as f:
-        shutil.copyfileobj(r, f)
+    else:
+        say("  downloading %s" % url)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen(url, timeout=120) as r, open(dest, "wb") as f:
+            shutil.copyfileobj(r, f)
+    if sha256:
+        h = hashlib.sha256()
+        with open(dest, "rb") as f:
+            for block in iter(lambda: f.read(1 << 20), b""):
+                h.update(block)
+        if h.hexdigest() != sha256.lower():
+            dest.unlink()
+            raise SystemExit("%s has SHA-256 %s, and %s was expected. It was deleted, and"
+                             " nothing was built from it." % (dest.name, h.hexdigest(), sha256))
 
 
 def tracked_files() -> list[str]:
