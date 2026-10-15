@@ -7,6 +7,28 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Fixed
+- **E*TRADE tells your accounts' statements apart (#96).** The documents
+  list shows each document's account in a column of its own, and the app
+  read it and then dropped it, so no file name or index row said which
+  account a statement came from, and two accounts' statements of the same
+  title and day were taken as one document. Of those two, the download
+  refused both, or saved whichever account's statement the page showed and
+  never fetched the other. Each statement now keeps the account the list
+  gives it, which a naming pattern can use as `{account}`, and when your
+  sign-in has more than one account, the file name and the index's Document
+  Summary end with the account, as in "Account Statement - Individual
+  Brokerage -1234". A download takes only the link that names its own
+  account. A statement saved before moves to its account in your history the
+  first time you Discover, so nothing is downloaded again, a sign-in with one
+  account keeps every file name it had, and Rename can add the account to
+  the names of statements saved before. An account is known by its last
+  digits, so changing its nickname on E*TRADE does not make its statements
+  download again. Only a count of accounts is written to the log. Thanks to
+  @appchamp for the report.
+
 ## [0.52.0] - 2026-10-14
 
 Six providers arrive, First Horizon Bank checking statements, Chase

@@ -53,7 +53,7 @@ from paperpull_core import browser as browser_launcher
 import etrade_site as site
 from paperpull_core.models import State
 from paperpull_core.keys import account_component as _account_component
-from paperpull_core.keys import migrate_account_keys as _migrate_account_keys
+from paperpull_core.keys import is_done as _is_done
 from paperpull_core.words import Fixed, shape_tree, words_for, write_shaped
 from storage import (CsvFile, DOCUMENT_INDEX_COLUMNS, JsonStore, Paths,
                      atomic_write_text, build_pdf_filename, load_config,
@@ -79,9 +79,15 @@ class Document:
 
     def __init__(self, title="", category="", summary="", date="", period="",
                  href="", row_index=-1, confidence="", account="",
-                 date_text="", document_id="", **kw):
+                 date_text="", document_id="", guid="", **kw):
         self.title = title
+        # What the list's Account column shows for the document, kept whole
+        # for {account} and, when the sign-in has more than one account, the
+        # summary (#96). Never written to a log.
         self.account = account
+        # The list's own ids, "<documentGuid>|<documentId>". Kept apart from
+        # document_id, which would make the key the id alone.
+        self.guid = guid
         self.category = category
         self.summary = summary
         self.date = date
@@ -106,17 +112,21 @@ class Document:
 
     @property
     def key(self) -> str:
-        """Stable identity. Category, date and title. The list is read from
-        the page, so there is no document id to store, and a document's date
-        and kind are what tell one from the next."""
+        """Stable identity. Category, date, title and account. The list is
+        read from the page, so there is no document id to store, and a
+        document's date and kind tell one from the next, and its account
+        one account's statement of the day from another's (#96).
+
+        The account part is the masked last digits the list's label shows,
+        "1234" for "Individual Brokerage -1234", since the words before them
+        are a nickname a person can change on E*TRADE, and a key that moved
+        with the nickname would download every statement again. A label
+        with no masked digits is kept whole. Until #96 the account never
+        reached the record, so every key ended in "Unnamed", and
+        adopt_account_keys moves those."""
         if self.document_id:
             return f"id:{self.document_id}"
-        # Keep the last four. Cutting to forty characters made two cards
-        # of the same product collide, because the masked digits that say
-        # which one it is sit at the end, and the second card's whole
-        # history was then read as already downloaded and dropped.
-        acct = _account_component(sanitize_component(self.account or ""))
-        return f"{self.category}:{self.date}:{sanitize_component(self.title)[:60]}:{acct}"
+        return f"{self.category}:{self.date}:{sanitize_component(self.title)[:60]}:{account_key(self.account)}"
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
@@ -126,14 +136,81 @@ class Document:
         return cls(**d)
 
 
-def migrate_legacy_keys(records: dict) -> int:
-    """Move records written while the account was cut to forty characters.
+def account_key(label: str) -> str:
+    """The account part of a key, from the label the list's Account column
+    shows. Its masked tails, "1234", or "1234+5678" for a document of two
+    accounts, else the whole label kept short with its last four
+    (paperpull_core.keys.account_component). For no account it is what the
+    key always held, "Unnamed", so a document the list gives no account
+    keeps the key it had."""
+    label = re.sub(r"\s+", " ", label or "").strip()
+    tails = site.account_tails(label)
+    if tails:
+        return "+".join(tails)
+    return _account_component(sanitize_component(label))
 
-    Only a record whose key is exactly the new one with the last four taken
-    off is moved, so nothing is guessed. An archive whose account names were
-    short enough to fit has no such records and nothing happens.
-    """
-    return _migrate_account_keys(records, lambda r: Document.from_dict(r).key)
+
+def legacy_key(doc: "Document") -> str:
+    """The key a document had before its account reached the record (#96),
+    the same category, date and title with no account, which the key
+    writes as "Unnamed"."""
+    return Document(category=doc.category, date=doc.date, title=doc.title).key
+
+
+def adopt_account_keys(records: dict, listed, several: bool, forget_shared: bool = False) -> int:
+    """Move the records kept before the account reached them to the key
+    their account gives them, after discovery has read the lists (#96).
+
+    Until #96 every key ended in "Unnamed", no account, so two accounts'
+    statements of one title and day were one record. Each record still
+    under such a key is moved to the key of the one document the lists now
+    give that category, date and title, and takes its account and guid. Its
+    state, downloaded_ok, pdf_path and everything else go with it, so a
+    statement saved before is never fetched again, and its file keeps its
+    name. Only when the sign-in has more than one account (`several`) does
+    the record take the document's summary too, the one that names the
+    account, so Rename can name the file for its account when the person
+    asks. When a record already sits under the new key, the one that is
+    done stays (keys.is_done), and when both or neither is, the one
+    already there.
+
+    A record whose category, date and title the lists now give more than
+    one account cannot be told to be either account's, so it is left
+    where it is and each account's document is listed under its own key.
+    With `forget_shared`, for discovery's records, such a record that is
+    not done is dropped, since each account's own record lists it now and
+    a download of it would find two rows naming it and refuse every run.
+    Matched by key alone, so a history moved with --minimal, which keeps
+    no title or date in a record, moves the same. Returns how many records
+    moved or were dropped."""
+    by_old: dict = {}
+    for doc in listed:
+        group = by_old.setdefault(legacy_key(doc), [])
+        if doc.key not in {d.key for d in group}:
+            group.append(doc)
+    changed = 0
+    for old_key, docs in by_old.items():
+        rec = records.get(old_key)
+        if not isinstance(rec, dict):
+            continue
+        if len(docs) != 1:
+            if forget_shared and not _is_done(rec):
+                del records[old_key]
+                changed += 1
+            continue
+        doc = docs[0]
+        new_key = doc.key
+        if new_key == old_key:
+            continue
+        rec = dict(rec, account=doc.account, guid=doc.guid)
+        if several:
+            rec["summary"] = doc.summary
+        other = records.get(new_key)
+        if not isinstance(other, dict) or (_is_done(rec) and not _is_done(other)):
+            records[new_key] = rec
+        del records[old_key]
+        changed += 1
+    return changed
 
 
 class App:
@@ -159,9 +236,11 @@ class App:
         self.discovery = JsonStore(self.paths.discovery_json, self.paths.backups)
         self.progress.load()
         self.discovery.load()
-        for store in (self.progress, self.discovery):
-            if migrate_legacy_keys(store.data):
-                store.save(backup=True)
+        # No key is moved as the records load. Until #96 no E*TRADE record
+        # held an account, so the move off a key whose account was cut to
+        # forty characters never had one to move, and the move to the key
+        # an account gives needs the lists, so discovery makes it
+        # (adopt_account_keys).
         self.index_csv = CsvFile(self.paths.document_index_csv,
                                  DOCUMENT_INDEX_COLUMNS, self.paths.backups)
         self.rules = doc_types.load_rules()
@@ -359,54 +438,26 @@ class App:
             return False
         return True
 
-    def _record_raw(self, r, tax_year: str = "") -> int:
-        """Turn one scraped row into a discovery record. Returns 1 if new."""
-        if doc_types.should_skip(r.title, self.rules):
-            self.stats["skipped_out_of_scope"] += 1
-            return 0
-        category, summary, confidence = doc_types.classify_document(
-            r.title, self.rules)
-        if not doc_types.wanted(category, self.config):
-            self.stats["skipped_out_of_scope"] += 1
-            return 0
-        if r.date_text:
-            date, period = site.parse_period_date(r.date_text)
-        elif tax_year:
-            # Tax-table rows carry no date; file them at the tax year end.
-            date, period = f"{tax_year}-12-31", f"Tax Year {tax_year}"
-        else:
-            date, period = site.parse_period_date(r.text or r.title)
-        # Keep the account in the summary so files stay distinguishable
-        # (several accounts produce the same form in the same year).
-        acct = (r.account or "").strip()
-        full_summary = f"{summary} {acct}".strip() if acct else summary
-        doc = Document(title=r.title, category=category, summary=full_summary,
-                       date=date or "", period=period, href=r.href,
-                       row_index=r.row_index, confidence=confidence,
-                       date_text=getattr(r, "date_text", ""))
-        doc.account = acct
-        if self.discovery.get(doc.key) is None:
-            rec = doc.to_dict()
-            rec["state"] = State.DISCOVERED.value
-            self.discovery.update(doc.key, rec, save=False)
-            return 1
-        self.discovery.update(doc.key, {"row_index": r.row_index,
-                                        "href": r.href}, save=False)
-        return 0
-
-    def _record_rawdoc(self, r, source_url: str) -> int:
-        """Record one scraped document (a RawDoc) from a E*TRADE page.
-        Returns 1 if new."""
+    def _document_of(self, r, source_url: str, several: bool = False) -> Optional[Document]:
+        """The Document one scraped document (a RawDoc) from a E*TRADE page
+        is, or None when it is out of scope. It carries the account the
+        list gave it and the list's ids, which discovery used to drop, so
+        two accounts' statements of one day were one document and no file
+        said which account it was (#96). When the sign-in has more than one
+        account (`several`), the summary names the account too, " - <the
+        account's label>", which puts it in the file name and the index's
+        Document Summary. A sign-in of one account keeps the summary, and
+        so the names, it always had."""
         title = re.sub(r"\s+", " ", (r.title or "")).strip()
         if not title:
-            return 0
+            return None
         if doc_types.should_skip(title, self.rules):
             self.stats["skipped_out_of_scope"] += 1
-            return 0
+            return None
         category, summary, confidence = doc_types.classify_document(title, self.rules)
         if not doc_types.wanted(category, self.config):
             self.stats["skipped_out_of_scope"] += 1
-            return 0
+            return None
         date = (r.date_text or "").strip()
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
             date, _ = site.parse_period_date(title)
@@ -414,16 +465,45 @@ class App:
         floor = self.args.start_date or self.config.get("default_start_date")
         if floor and (not date or date < floor):
             self.stats["skipped_out_of_scope"] += 1
-            return 0
-        doc = Document(title=title, category=category, summary=summary,
-                       date=date, confidence=confidence, source_url=source_url)
+            return None
+        account = re.sub(r"\s+", " ", getattr(r, "account", "") or "").strip()
+        if several and account:
+            summary = f"{summary} - {account}"
+        return Document(title=title, category=category, summary=summary,
+                        date=date, confidence=confidence, source_url=source_url,
+                        account=account, guid=getattr(r, "guid", "") or "")
+
+    def _record_rawdoc(self, r, source_url: str, several: bool = False) -> int:
+        """Record one scraped document (a RawDoc) from a E*TRADE page.
+        Returns 1 if new."""
+        doc = self._document_of(r, source_url, several)
+        return self._record_listed(doc) if doc is not None else 0
+
+    def _adopt_account_keys(self, listed: List[Document], several: bool) -> None:
+        """Move the records kept before #96 to the keys their accounts give
+        them (adopt_account_keys), progress and discovery alike, each backed
+        up first when anything in it changes."""
+        moved = adopt_account_keys(self.progress.data, listed, several)
+        if moved:
+            self.progress.save(backup=True)
+        forgotten = adopt_account_keys(self.discovery.data, listed, several, forget_shared=True)
+        if forgotten:
+            self.discovery.save(backup=True)
+        if moved or forgotten:
+            log.info("%d saved and %d listed record(s) moved to the key their account gives them",
+                     moved, forgotten)
+
+    def _record_listed(self, doc: Document) -> int:
+        """Record one listed document. Returns 1 if new."""
         if self.discovery.get(doc.key) is None:
             rec = doc.to_dict()
             rec["state"] = State.DISCOVERED.value
             self.discovery.update(doc.key, rec, save=False)
             return 1
-        # refresh which page the doc's download link lives on
-        self.discovery.update(doc.key, {"source_url": source_url}, save=False)
+        # refresh which page the doc's download link lives on, and the
+        # account and ids the list gives it now
+        self.discovery.update(doc.key, {"source_url": doc.source_url, "account": doc.account,
+                                        "guid": doc.guid}, save=False)
         return 0
 
     def cmd_discover(self, quiet: bool = False) -> int:
@@ -445,10 +525,16 @@ class App:
             write_shaped(self.paths.diagnostics / "discovery-trace.json", {"discovery": site.DISCOVERY_TRACE[:60]}, words_for('ETRADE', site))
         except Exception as e:
             log.info("could not write the discovery trace: %s", e)
-        for r in docs:
-            n_new += self._record_rawdoc(r, site.BILLING_URL)
+        # How many accounts the lists name, which decides whether a file
+        # name says the account. Only the count is ever logged (#96).
+        accounts = len(site.accounts_in(docs))
+        listed = [d for d in (self._document_of(r, site.BILLING_URL, accounts > 1) for r in docs)
+                  if d is not None]
+        self._adopt_account_keys(listed, accounts > 1)
+        for doc in listed:
+            n_new += self._record_listed(doc)
         self.discovery.save()
-        log.info("documents page: %d documents, %d new", len(docs), n_new)
+        log.info("documents page: %d documents, %d new, %d account(s)", len(docs), n_new, accounts)
 
         # The whole list is in, and only now may a Resume that carries on
         # from it call the run finished (paperpull_core.listing).
@@ -552,7 +638,7 @@ class App:
                 print("\nInterrupted. Progress saved; run --resume to continue.")
                 raise
             except Exception as e:
-                log.exception("Failed on %s", doc.key)
+                log.exception("Failed on the document of %s titled %s", doc.date, doc.title)
                 self._record(doc, State.FAILED, notes=str(e))
                 self.stats["failed"] += 1
             self._delay()
@@ -578,7 +664,7 @@ class App:
             site.goto_documents(page)
         trace: list = []
         saved = site.download_bill(page, self._dl_dir, doc.date, out_path,
-                                   title=doc.title, trace=trace)
+                                   title=doc.title, trace=trace, account=doc.account)
         # A capture that failed must not leave a convincing empty file behind.
         # A ZIP the capture took stays, for the branch below that opens it.
         if out_path.exists() and not (saved and receipt_pdf.is_zip(out_path)) and (
