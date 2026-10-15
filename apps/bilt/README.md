@@ -16,8 +16,8 @@ Bilt Blue Card and its eight statements, October 06, 2026 back to March 06,
 that printed its own statement date and the card's last four, and Verify
 found eight index rows with no problem. Three loads of the wallet in that
 session (Discover, Pilot, Run All) listed the same eight ids, so a
-statement's id held from one load to the next. What the run showed, past
-the survey it was built from:
+statement's id held from one load to the next. The run showed three things
+past the survey it was built from.
 
 - The wallet shows the card under a "View balance summary" button. That
   opens a sheet with "View statements", which opens a second sheet with one
@@ -30,13 +30,13 @@ the survey it was built from:
   statements, and the app hears that answer. It never asks the API itself.
 - A statement's button makes the page ask for that statement's details and
   then open a new tab at `statements.cardless.com` holding the PDF, at a
-  signed address: the statement's own date in its path and exactly the
-  query keys Expires, Signature and Key-Pair-Id. No browser download
-  begins. The tab is closed once the PDF is taken.
+  signed address. The address carries the statement's own date in its
+  path and exactly the query keys Expires, Signature and Key-Pair-Id. No
+  browser download begins. The tab is closed once the PDF is taken.
 
-Still unseen: the address of Bilt's sign-in page (the survey and the run
-never met it), how long Bilt keeps an idle session, and whether a
-statement's id holds across a fresh sign-in.
+Three things are still unseen, the address of Bilt's sign-in page (the
+survey and the run never met it), how long Bilt keeps an idle session,
+and whether a statement's id holds across a fresh sign-in.
 
 Statements of the earlier Bilt card issued by Wells Fargo, before February
 2026, are not in the Bilt wallet. They are Wells Fargo's, and the
@@ -90,8 +90,11 @@ The list of statements is the answer the page itself gets from Bilt when
 "View statements" opens, heard as it arrives. That answer has to be one
 answer, for the card the wallet shows, with its count equal to its list and
 no statement or date twice, and the sheet has to show exactly its dates,
-one button each, read twice alike. Anything else stops the list rather
-than being called whole.
+one button each, read twice alike. The answer the run saw held nothing but
+its list and its count, so an answer that holds anything more (a sign of
+more statements, a cursor or a total) stops the list, and so does a sheet
+that shows a control for more or older statements. Anything else stops
+the list rather than being called whole.
 
 Before each statement the wallet is loaded again and the list read again,
 whole, and exactly one statement there must carry the recorded id and date.
@@ -100,7 +103,8 @@ when exactly one tab opened, on `statements.cardless.com` at the PDF
 address of that statement's date, the page's own details answer named that
 statement, no browser download began, and no other tab opened. The tab is
 closed before anything is saved. The PDF has to print the statement's date,
-and every masked card number it prints has to end in the card's last four.
+and when it prints masked card numbers, the card's last four has to be
+among them (a statement may also mask the account a payment came from).
 A statement whose button is turned off on the page is left for the next
 run and the run goes on. Anything else unexpected stops the run.
 
@@ -109,7 +113,10 @@ in again and run Resume.
 
 Files are named `YYYY-MM-DD Bilt Card Statement.pdf`. Only when that name
 is already taken does the file add six letters that tell it apart. No card
-number or statement id is ever in a file name.
+number or statement id is ever in a file name. A Download again of a
+statement whose file is still there saves a second copy beside it, and a
+PDF that is the very file of another statement already saved is never
+kept.
 
 Never touched are Pay card, Pay with points, Make payment, Transfer a
 balance, Lock card, Manage card, Authorized users, Add, Refer a friend,

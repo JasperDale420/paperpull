@@ -56,7 +56,7 @@ signed installer and automatic updates. Or download it free from the
 [Releases page](https://github.com/rheeloaded/paperpull/releases). Nothing
 is held back from the free build. See [Support](#support).
 
-Sixty-seven providers are supported today, all built on the same pattern.
+Sixty-eight providers are supported today, all built on the same pattern.
 Seven more, Wells Fargo, SBA, Verizon Mobile,
 Meijer, American Family, Stripe and FedEx, are built and waiting for someone with an account to
 test them ([#27](https://github.com/rheeloaded/paperpull/issues/27),
@@ -82,7 +82,7 @@ test them ([#27](https://github.com/rheeloaded/paperpull/issues/27),
 | [`apple`](apps/apple) | Apple (App Store and Apple Store) | App Store receipts for subscriptions, in-app purchases and paid apps, and Apple Store order invoices | **Built and run on the maintainer's own account.** Report a Problem's own purchase search from inside the page for the whole family, paid purchases only, each saved from Apple's own receipt, and the Apple Store's order list and invoices, nothing clicked, real Edge/Chrome |
 | [`applecard`](apps/applecard) | Apple Card and Apple Savings | Apple Card statements, Savings statements, tax forms | **Confirmed by [@watling777](https://github.com/watling777)**, whose Pilot and full run saved every statement and the 1099-INT forms. Requested in [#52](https://github.com/rheeloaded/paperpull/issues/52) |
 | [`bestbuy`](apps/bestbuy) | Best Buy | Online, store-order and in-store receipts, and returns | **Built on the maintainer's own account, 35 purchases back to 2015.** The history through the page's own query a year at a time, each details page saved as the receipt, nothing clicked, real Edge/Chrome, paced for Best Buy's bot protection |
-| [`bilt`](apps/bilt) | Bilt Card (serviced by Cardless) | Card statements | Run live on one account on 2026-10-15, eight statements saved. Only the card's balance summary, View statements and a statement's own button are pressed, and the PDF is taken from the tab it opens |
+| [`bilt`](apps/bilt) | Bilt Card (serviced by Cardless) | Card statements | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 8 statements saved on a full run.** Only the card's balance summary, View statements and a statement's own button are pressed, and the PDF is taken from the tab it opens |
 | [`capitalone`](apps/capitalone) | Capital One | Bank and card statements, tax forms, letters | Ported by [@davidrudnick](https://github.com/davidrudnick); fresh live pilot pending |
 | [`chase`](apps/chase) | Chase (credit cards) | Card statements | Real Edge/Chrome; per-card accordions + year picker |
 | [`chasebusiness`](apps/chasebusiness) | Chase Business (business document center) | Business checking statements, up to seven years (business card untested) | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 10 checking statements saved on a full run.** One profile so far, so a business card's or debit account's statements are untested. Six kinds of control pressed through the guard, real Edge/Chrome |
@@ -634,7 +634,7 @@ Every contribution keeps the **read-only, local, no-credentials** design, see
 
 ## Status & roadmap
 
-- ✅ All **seventy-four** apps pass their tests, the sixty-seven that are
+- ✅ All **seventy-five** apps pass their tests, the sixty-eight that are
   supported and the seven still waiting for a tester, 24,174 of them
   across the repo. Most are in regular use by the author. The rest were built or
   confirmed by people who hold those accounts, named in the table above
@@ -721,7 +721,8 @@ found a bug and diagnosed it to the line.
   the SDG&E app, run against a new account's first eight bills, the Alpaca
   app, run whole against a Live brokerage account, the First Horizon,
   Chase Business, TreasuryDirect, Venmo, IRS and Spectrum apps, each
-  run on their own accounts, and NetBenefits for a sign-in with several
+  run on their own accounts, the Bilt Card app, run against a new card's
+  first eight statements, and NetBenefits for a sign-in with several
   plans.
 - [@marecabo](https://github.com/marecabo), Amazon's legal invoice PDFs on
   the German store.

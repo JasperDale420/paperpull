@@ -22,7 +22,7 @@
     "applecard": {"gets": "Apple Card and Savings statements, tax forms", "group": "banks"},
     "att": {"gets": "Monthly bills for wireless, fiber and internet", "group": "bills"},
     "bestbuy": {"gets": "Receipts for online and store purchases and returns, back to 2015", "group": "shopping"},
-    "bilt": {"gets": "Bilt Card statements from the wallet", "group": "banks", "tested": true},
+    "bilt": {"gets": "Bilt Card statements from the wallet", "group": "banks"},
     "capitalone": {"gets": "Bank and card statements, tax forms, letters", "group": "banks"},
     "chase": {"gets": "Credit card statements", "group": "banks"},
     "chasebusiness": {"gets": "Business checking statements, up to seven years (business card untested)", "group": "banks", "note": "Tested on one profile, checking only"},
