@@ -10,7 +10,7 @@ telecoms, payroll systems, and retailers real people actually use.
   [provider request](https://github.com/rheeloaded/paperpull/issues/new/choose)
   so someone with that account can pick it up.
 
-## Supported (60, plus seven built and waiting for a tester)
+## Supported (68, plus six built and waiting for a tester)
 
 | App | Provider | Documents | Category |
 |-----|----------|-----------|----------|
@@ -86,7 +86,7 @@ telecoms, payroll systems, and retailers real people actually use.
 | [`verizon`](apps/verizon) | Verizon (Fios) | Bill statements | Telecom |
 | [`verizonmobile`](apps/verizonmobile) | Verizon Mobile (wireless) | Monthly bills. UNTESTED, built without an account. Have one? Run Diagnose and attach the file to issue #31 | Telecom |
 | [`walmart`](apps/walmart) | Walmart | Receipts | Retail |
-| [`wellsfargo`](apps/wellsfargo) | Wells Fargo | Account statements, tax documents. UNTESTED, built without an account. Have one? Run Diagnose and attach the file to issue #27 | Bank / card / mortgage |
+| [`wellsfargo`](apps/wellsfargo) | Wells Fargo | Account statements, tax documents. Credit card statements confirmed on a real account by @appchamp (#27). Checking, savings, mortgage and tax documents are untested | Bank / card / mortgage |
 | [`wealthfront`](apps/wealthfront) | Wealthfront | Statements, tax docs | Brokerage |
 
 ## Requested / in progress

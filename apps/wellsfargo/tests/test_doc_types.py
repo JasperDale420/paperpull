@@ -94,8 +94,15 @@ def test_only_the_providers_own_hosts():
     assert all(site.is_safe_url(u) for u in site.BILLING_CANDIDATES)
 
 
-def test_the_unverified_status_is_stated_where_a_tester_will_read_it():
-    src = Path(site.__file__).read_text(encoding="utf-8")
-    assert "UNVERIFIED" in src.split('"""')[1]
+def test_the_status_is_stated_where_a_tester_will_read_it():
+    """A tester's run on v0.52.0 saved the credit card statements on a real
+    account (#27). Checking, savings, mortgage and tax documents have not
+    met one, so the status says which part is confirmed and which is not."""
+    doc = " ".join(Path(site.__file__).read_text(encoding="utf-8").split('"""')[1].split())
+    assert "STATUS: CONFIRMED for credit card statements on a tester's account (#27)" in doc
+    assert "STATUS: UNVERIFIED" not in doc
+    assert "Checking, savings, mortgage and loan statements and tax documents are UNVERIFIED" in doc
     readme = (Path(site.__file__).parent / "README.md").read_text(encoding="utf-8")
-    assert "Not yet tested against a real account" in readme
+    assert readme.split("\n\n")[1].startswith("**Working on a tester's credit card account.**")
+    assert "Not yet tested" not in readme
+    assert "Checking, savings, mortgage and loan" in " ".join(readme.split())
