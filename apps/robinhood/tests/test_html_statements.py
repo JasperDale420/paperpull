@@ -546,3 +546,86 @@ def test_a_hostile_page_is_stripped_and_read_in_linear_time():
     site._whole_months(page)
     assert time.perf_counter() - t0 < 5
     assert site._whole_months("Account\n01/01/2026 - 01/31/2026\n") == {(1, "2026")}
+
+
+# A tag is read as a browser reads it. A comment runs to its own "-->" and a
+# quote opens a value only after "=", so a stray quote cannot hide a later
+# tag inside what looks like a value. A URL is read with its character
+# references decoded, as the browser reads it.
+STILL_LIVE = [
+    "<!-- don't --><img src=x onerror=alert(1)><p title='x'>t</p>",
+    "<!-- it's > --><img src=x onerror=alert(1)><p title='x'>t</p>",
+    "<p a'b><img src=x onerror=alert(1)><p c='d'>t</p>",
+    "<p a'b onclick=alert(1) c'd>t</p>",
+    "<p =\" onclick=alert(1)\">t</p>",
+    "<p a= =\"><img src=x onerror=alert(1)>\">t</p>",
+    "<p a= \"><img src=x onerror=alert(1)>\">t</p>",
+    "<a href='&#106;avascript:alert(1)'>a</a>",
+    "<a href='&#x6A;avascript:alert(1)'>a</a>",
+    "<a href='&#0000106avascript:alert(1)'>a</a>",
+    "<a href='java&Tab;script:alert(1)'>a</a>",
+    "<a href='java&NewLine;script:alert(1)'>a</a>",
+    "<a href='javascript&colon;alert(1)'>a</a>",
+    "<a href=\"java\tscript:alert(1)\">a</a>",
+    "<a href='\x01JaVaScRiPt:alert(1)'>a</a>",
+    "<a href=&#106;avascript:alert(1)>a</a>",
+    "<form><button formaction='&#106;avascript:alert(1)'>x</button></form>",
+]
+
+
+@pytest.mark.parametrize("html", STILL_LIVE)
+def test_a_handler_or_script_url_a_misread_tag_hid_is_taken_out(html):
+    import html as _h
+    try:
+        out = receipt_pdf.inert_html("<html><head></head><body>" + html + "</body></html>", "")
+    except receipt_pdf.UnsafeHtml:
+        return
+    low = _h.unescape(out).lower().replace("\t", "").replace("\n", "")
+    for bad in ("onerror", "onclick", "javascript:"):
+        assert bad not in low, (bad, out)
+
+
+def test_a_comment_and_the_values_around_it_are_left_as_they_were():
+    page = "<!-- it's a > note --><p title='x onerror=y' data-a=\"don't\">t</p><a href='https://robinhood.com/'>a</a>"
+    out = receipt_pdf.inert_html(page, "")
+    assert page in out
+
+
+def test_a_hostile_comment_or_attribute_is_read_in_linear_time():
+    """Long runs inside a comment, of unclosed comments, of "=" and of
+    character references each take well under a second."""
+    import time
+    for html in ("<!--" + "-" * 200000,
+                 "<!-- " * 50000,
+                 "<!-- '" * 50000,
+                 "<p " + "=" * 200000,
+                 "<p a" + "= " * 100000,
+                 "<p " + "a'b " * 50000,
+                 "<a href='" + "&#0" * 100000 + "'>",
+                 "<a href=" + "&#106;" * 50000 + ">",
+                 "<a " + "href=x/" * 50000 + ">"):
+        t0 = time.perf_counter()
+        try:
+            receipt_pdf.inert_html(html, "https://robinhood.com/")
+        except receipt_pdf.UnsafeHtml:
+            pass
+        assert time.perf_counter() - t0 < 3, html[:12]
+
+
+@pytest.mark.parametrize("text", [
+    "Statement period 02/01/2026 to 02/28/2026\nPrevious statement period 01/01/2026 to 01/31/2026",
+    "Previous statement period 01/01/2026 to 01/31/2026\nStatement period 02/01/2026 to 02/28/2026",
+    "Period ending February 28, 2026. Last period ended January 31, 2026",
+    "Statement period 01/01/2026 to 01/31/2026\n02/01/2026 to 02/28/2026",
+    LIVE_FEBRUARY + "\nPrevious statement period 01/01/2026 to 01/31/2026",
+])
+def test_a_page_that_prints_another_months_period_names_no_month(text):
+    """A February first page that also prints January's period is not
+    January's, nor February's, since nothing says which is its own."""
+    assert not site.names_month(text, "January", "2026")
+    assert not site.names_month(text, "February", "2026")
+
+
+def test_every_period_of_the_title_month_still_passes():
+    text = "Statement period 01/01/2026 to 01/31/2026\n01/01/2026 to 01/31/2026\nPeriod ending January 31, 2026"
+    assert site.names_month(text, "January", "2026")

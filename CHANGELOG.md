@@ -7,6 +7,28 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Fixed
+- **Robinhood reads a statement's month more strictly.** A first page is
+  taken for a month only when every statement period it prints ends in that
+  month. A February page that also prints "Previous statement period
+  01/01/2026 to 01/31/2026" is no longer taken for January, and goes to
+  Manual Review.
+- **Robinhood checks an HTML month's account more surely.** A month served
+  as HTML with too little text to tell it from another account's statement
+  goes to Manual Review on an account page, rather than being saved as that
+  account's. The text compared between accounts now has every space and
+  line break taken out, so a newer pypdf that spaces words differently
+  still finds the same statement. The note on a statement refused as
+  another account's now reads "The same statement as", since the match can
+  be by text and not by file.
+- **The inert HTML print reads tags as a browser does.** A comment holding
+  an apostrophe, or a stray quote in an attribute name, no longer hides a
+  later event handler from the strip, and a javascript: link written with
+  character references, such as "&#106avascript:", is made inert too.
+  JavaScript was already off when the page is drawn, so neither ran.
+
 ## [0.52.0] - 2026-10-14
 
 Six providers arrive, First Horizon Bank checking statements, Chase

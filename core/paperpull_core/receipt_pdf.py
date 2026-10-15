@@ -12,6 +12,7 @@ Validation uses pypdf locally.
 from __future__ import annotations
 
 import base64
+import html as _html
 import logging
 import re
 from pathlib import Path
@@ -343,14 +344,35 @@ _ACTIVE_ELEMENTS = {"script", "iframe", "frameset", "object", "applet", "form"}
 # Looser than the strip: no closing ">" is needed, so an unclosed "<script"
 # left at the end of the page is still seen.
 _ACTIVE_LEFT_RE = re.compile(r"<\s*+/?\s*+(%s)\b" % _ACTIVE_NAMES, re.I)
-# A whole tag, a quoted value read as one piece, so a ">" inside quotes does
-# not end it. Possessive, and a tag with no ">" runs to the end of the page,
-# so the scan stays linear on a page of broken tags.
-_TAG_RE = re.compile(r"<[a-zA-Z/!](?:\"[^\"]*+\"|'[^']*+'|[^'\">]++)*+>?")
-# Inside one tag, quoted values first, so a handler is found only where it
-# stands as an attribute: after a space, a slash or a closing quote.
-_IN_TAG_RE = re.compile(r"(\"[^\"]*+\"|'[^']*+')|(?<=[\s/\"'])on[a-z]+\s*=\s*(?:\"[^\"]*+\"|'[^']*+'|[^\s>]*+)",
-                        re.I)
+# HTML's own whitespace, narrower than Python's \s. To a browser a no-break
+# space is part of a name or a value, never a gap between them.
+_W = "\t\n\f\r "
+# One attribute as a browser's tokenizer reads it: a name, which may start
+# with "=" and may hold quotes, then an optional "=" and value. A quote opens
+# a value only right after "=", and one with no partner runs to the end of
+# the page. A bare value runs to whitespace or ">".
+_NAME = r"[^%s/>][^%s/>=]*+" % (_W, _W)
+_VALUE = r"(?:\"[^\"]*+\"?|'[^']*+'?|[^%s>]*+)" % _W
+_EQUALS = r"[%s]*+=[%s]*+" % (_W, _W)
+# A whole tag, or a comment. A comment runs to its own "-->" (or "--!>", or
+# ends at once as "<!-->"), and a quote inside it opens nothing, so a later
+# tag is never read as part of it. "<!", "<?" and "</" with no name end at
+# the first ">", as a browser reads them. Possessive, and a tag with no ">"
+# runs to the end of the page, so the scan stays linear on a page of broken
+# tags.
+_TAG_RE = re.compile(
+    r"<!--(?:-?>|(?:[^-]++|-(?!-!?>))*+(?:--!?>)?)"
+    r"|(</?[a-zA-Z][^%s/>]*+)((?:[%s/]++|%s(?:%s%s)?)*+)(>?)"
+    r"|<(?:[!?]|/(?![a-zA-Z]))[^>]*+>?" % (_W, _W, _NAME, _EQUALS, _VALUE))
+# Inside one tag, after its name: each gap, and each attribute's name and
+# value, in the same reading as _TAG_RE.
+_IN_TAG_RE = re.compile(r"([%s/]++)|(%s)(?:(%s)(%s))?" % (_W, _NAME, _EQUALS, _VALUE))
+_HANDLER_RE = re.compile(r"on[a-z]+", re.I)
+# A browser reads "src=x/onerror=y" as one bare value. The part from the
+# handler's name on is taken out of it all the same.
+_IN_VALUE_RE = re.compile(r"(?<=[/\"'])on[a-z]+[%s]*+=.*" % _W, re.I | re.S)
+_URL_ATTRS = {"href", "src", "action", "formaction", "xlink:href"}
+_C0_AND_SPACE = "".join(chr(c) for c in range(33))
 # The whitespace runs here and in the two tag patterns above are possessive
 # (Python 3.11 and later), so a run of spaces with nothing after it is read
 # once, not again for every way of splitting it. "<" and 20,000 spaces took
@@ -388,13 +410,44 @@ class UnsafeHtml(ValueError):
     """The HTML still held an active tag after every strip, and is not drawn."""
 
 
-def _strip_handlers(tag: str) -> str:
-    return _IN_TAG_RE.sub(lambda m: m.group(1) or "", tag)
+def _script_url(value: str) -> bool:
+    """Whether an attribute value is a javascript: URL as a browser reads
+    it: character references decoded, tabs and newlines anywhere dropped,
+    and leading spaces and control characters stripped."""
+    if value[:1] in ("'", '"'):
+        value = value[1:-1] if len(value) > 1 and value[-1] == value[0] else value[1:]
+    for v in (value, _html.unescape(value)):
+        v = re.sub(r"[\t\n\r]", "", v).lstrip(_C0_AND_SPACE)
+        if v[:11].lower() == "javascript:":
+            return True
+    return False
+
+
+def _strip_attribute(m) -> str:
+    if m.group(1):
+        return m.group(1)
+    name, equals, value = m.group(2), m.group(3) or "", m.group(4) or ""
+    if _HANDLER_RE.fullmatch(name):
+        return ""
+    if equals and name.lower() in _URL_ATTRS and _script_url(value):
+        q = value[:1] if value[:1] in ("'", '"') else ""
+        return f"{name}{equals}{q}#{q}"
+    if value[:1] not in ("'", '"'):
+        value = _IN_VALUE_RE.sub("", value)
+    return name + equals + value
+
+
+def _strip_tag(m) -> str:
+    """One token of _TAG_RE with its handlers taken out and its javascript:
+    URLs made "#". A comment, or a "<!" or "<?" token, is left as it is."""
+    if m.group(1) is None:
+        return m.group(0)
+    return m.group(1) + _IN_TAG_RE.sub(_strip_attribute, m.group(2)) + m.group(3)
 
 
 def _strip_once(html: str) -> str:
     out = _drop_active(html)
-    out = _TAG_RE.sub(lambda m: _strip_handlers(m.group(0)), out)
+    out = _TAG_RE.sub(_strip_tag, out)
     return _JS_URL_RE.sub(r"\1=\2#", out)
 
 
@@ -404,6 +457,11 @@ def inert_html(html: str, base: str) -> str:
     and meta tags, the supplied base, inline event handlers and javascript:
     URLs. Styles and images stay, since they are what a printed statement
     needs.
+
+    Each tag is read as a browser's tokenizer reads it. A comment runs to its
+    own "-->", a quote opens a value only right after "=", and a URL is
+    tested with its character references decoded, so "&#106avascript:" is
+    a javascript: URL here as it is in the browser.
 
     Taking a tag out can join the text on either side of it into a new one,
     so "<li<link>nk ...>" becomes a link tag once the inner one is gone. The
