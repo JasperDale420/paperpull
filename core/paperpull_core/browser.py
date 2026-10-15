@@ -573,6 +573,55 @@ def debug_port_holder(port: str, timeout: float = 1.5) -> Optional[str]:
     return str(info.get("Browser") or "a browser")
 
 
+def _port_taken(port: str) -> bool:
+    """Whether something already holds the port on 127.0.0.1, browser or
+    not. A browser that has hung still holds its port and answers nothing,
+    so debug_port_holder hears no one there and calls it free.
+
+    Asked by binding the port, the way a browser started there would, and
+    letting it go at once. Connecting to it was asked first, and a holder
+    that takes no more connections answers no connection at all. Every
+    look leaves one waiting in its queue, and once the queue was full the
+    port looked free on Windows and Linux alike, a few sign-ins in, so
+    browser after browser was launched there again. A connection to a free
+    port is also refused only after two seconds on Windows, which made
+    every sign-in wait a second. A bind answers at once either way.
+
+    Only "address in use" is taken. A bind refused for any other reason,
+    an address this computer does not have or a permission, says nothing
+    about a browser, and the sign-in carries on as it did before."""
+    import errno
+    import socket
+    try:
+        number = int(port)
+    except (TypeError, ValueError):
+        return False
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # Bound as Chromium binds its own debugging port, for itself alone
+        # on Windows and with SO_REUSEADDR elsewhere, so the answer is the
+        # one a browser started there would get. A port that only has
+        # connections closing on it is free to both.
+        if sys.platform == "win32":
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", number))
+    except OverflowError:
+        return False
+    except OSError as e:
+        return e.errno in (errno.EADDRINUSE,
+                           getattr(errno, "WSAEADDRINUSE", errno.EADDRINUSE))
+    finally:
+        s.close()
+    return False
+
+
+# How long a port that is taken but silent is given to answer as a browser,
+# since one still starting opens its listener before it answers.
+_SLOW_START_SECONDS = 5.0
+
+
 def _open_tab_in(port: str, url: str) -> bool:
     """Ask the browser already on the port to open `url` in a new tab,
     through its own debugging endpoint. False when it would not."""
@@ -613,8 +662,19 @@ def open_signin_browser(profile_dir, port: str, url: str,
     the one window the run would not use (#90). The sign-in page is opened
     in the browser that holds the port instead, which is the one a run
     attaches to.
+
+    A port that is taken and answers nothing is said too, and nothing is
+    launched. Every browser tried there failed to take it, so a Brave
+    window and then a Chrome for Testing one opened on profiles of their
+    own and closed again, while a Chrome from an earlier sign-in that had
+    hung went on holding the port (#90).
     """
     held = debug_port_holder(port)
+    if not held and _port_taken(port):
+        held = debug_port_holder(port, timeout=_SLOW_START_SECONDS)
+        if not held:
+            _say_port_silent(port)
+            return None
     if held:
         print("A browser is already listening on port %s (%s)." % (port, held))
         print("Runs attach to that browser, so it is the one to sign in with. It is")
@@ -654,6 +714,37 @@ def open_signin_browser(profile_dir, port: str, url: str,
             if fresh:
                 return _try_each(fresh, profile_dir, port, url, fallback=True, mode=mode)
     return None
+
+
+def _say_port_silent(port: str) -> None:
+    """What to tell somebody whose port is held by something that does not
+    answer, and how to find it."""
+    print("Something holds port %s, and it does not answer as a browser." % port)
+    print("It is usually a browser left from an earlier sign-in that stopped")
+    print("responding, sometimes another program using the same port. No")
+    print("browser can open its debugging port there while it is held, so none")
+    print("was opened.")
+    print()
+    print("This command shows what holds it.")
+    if sys.platform == "win32":
+        print("    netstat -ano | findstr :%s" % port)
+        print("The last number on the LISTENING line is its process ID (PID). If it")
+        print("is a browser, end it in Task Manager. On the Details tab, select the")
+        print("line with that PID and press End task. Or run this command, putting")
+        print("the PID in place of <PID>.")
+        print("    taskkill /PID <PID> /F")
+    else:
+        print("    lsof -nP -iTCP:%s -sTCP:LISTEN" % port)
+        if sys.platform == "darwin":
+            print("Its process ID (PID) is in the PID column.")
+        else:
+            print("Its process ID (PID) is in the PID column. Where lsof is not")
+            print("installed, this one shows it too, after pid=.")
+            print("    ss -ltnp 'sport = :%s'" % port)
+        print("If it is a browser, end it with this command, putting the PID in")
+        print("place of <PID>.")
+        print("    kill -9 <PID>")
+    print("Then sign in again.")
 
 
 def _try_each(candidates, profile_dir, port, url, fallback: bool = False, mode: str = AUTO):
