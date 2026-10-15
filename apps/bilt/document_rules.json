@@ -1,0 +1,12 @@
+{
+  "_comment": "Editable rules mapping Bilt Card document titles to filename summaries. Checked in order: tax (unused: the wallet lists no tax forms), then insurance (unused), then statement. Every statement is titled 'Card Statement' by bilt_site.py, which with the provider name gives files named '<YYYY-MM-DD> Bilt Card Statement.pdf'.",
+  "tax_rules": [],
+  "insurance_rules": [],
+  "statement_rules": [
+    {
+      "pattern": "\\bstatement\\b",
+      "summary": "Card Statement"
+    }
+  ],
+  "skip_patterns": []
+}

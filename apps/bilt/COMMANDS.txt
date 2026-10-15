@@ -1,0 +1,3 @@
+Bilt Card statements from the Bilt wallet (www.bilt.com, serviced by Cardless)
+
+See README.md for setup and supervised pilot instructions.

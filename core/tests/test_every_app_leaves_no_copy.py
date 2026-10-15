@@ -617,6 +617,10 @@ DRIVEN_ELSEWHERE_HERE = {"verizon", "vanguard", "ibkr", "coinbase", "alpaca", "f
 TAKES_NOTHING = {
     "shelbycounty": "every document is a PDF the page builds in the browser and the app keeps as the Blob "
                     "the page made; no download event, response or folder is ever used",
+    "bilt": "every statement is the PDF in the tab its own button opens, read from that tab's own "
+            "answer or its address asked once more; the folder is set only so a download a press "
+            "began by surprise is canceled there, counted and deleted (see observes_only), and "
+            "the run then stops",
     "adp": "every document comes from ADP's statement services, fetched inside the page, "
            "and what the browser saves while a run is attached stays out of the person's "
            "own downloads, where an exact copy of a saved document goes at the next start",

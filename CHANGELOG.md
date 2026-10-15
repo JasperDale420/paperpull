@@ -7,6 +7,27 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Added
+- **Bilt Card statements.** A new app saves the monthly statements of the
+  Bilt Card 2.0, the card Cardless services, from the Bilt wallet. It
+  presses only three things: the card's "View balance summary", "View
+  statements", and one statement's own button, which opens the PDF in a
+  tab. The statement is kept only when exactly one tab opened, on Bilt's
+  statement host at the address of that statement's date, the page's own
+  answer named that statement, and the PDF prints its date. The tab is
+  closed afterwards. A second tab, a browser download or a tab on another
+  host stops the run. The list is read from the page's own answer and has
+  to match the buttons shown, count and dates, or the list stops rather
+  than being called whole. Nothing that pays, transfers a balance, redeems
+  points, locks the card, adds a user or refers anyone is ever pressed,
+  and the card id, statement ids, last four and your name stay out of
+  every log and diagnostic file. Files are named
+  `<date> Bilt Card Statement.pdf`. Built from a live survey of one
+  account; a full run is still to come. Statements of the Wells Fargo
+  issued Bilt card, before February 2026, are not here.
+
 ## [0.52.0] - 2026-10-14
 
 Six providers arrive, First Horizon Bank checking statements, Chase
