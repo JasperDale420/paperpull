@@ -24,6 +24,7 @@ from paperpull_core import browser
 # _no_real_browser_on_a_port stands them in for each test.
 REAL_PORT_HOLDER = browser.debug_port_holder
 REAL_OPEN_TAB_IN = browser._open_tab_in
+REAL_PORT_TAKEN = browser._port_taken
 
 REPO = Path(__file__).resolve().parents[2]
 APPS = sorted(p for p in (REPO / "apps").iterdir()
@@ -150,15 +151,66 @@ def test_a_port_already_held_is_used_and_never_launched_over(held_port, monkeypa
 
 def test_a_free_port_is_launched_on_as_before(monkeypatch, tmp_path):
     monkeypatch.setattr(browser, "debug_port_holder", REAL_PORT_HOLDER)
+    monkeypatch.setattr(browser, "_port_taken", REAL_PORT_TAKEN)
     import socket
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
     port = str(s.getsockname()[1])
     s.close()
     assert browser.debug_port_holder(port) is None
+    assert not browser._port_taken(port)
     monkeypatch.setattr(browser, "browser_candidates", lambda **kw: [("Chromium", "/x/chrome")])
     monkeypatch.setattr(browser, "_try_each", lambda *a, **kw: "Chromium")
     assert browser.open_signin_browser(tmp_path / "p", port, "https://x.example/") == "Chromium"
+
+
+# -- a port held by something that does not answer ------------------------------
+
+@pytest.fixture()
+def silent_port(monkeypatch):
+    """A port that takes a connection and never says anything, the way a
+    Chrome left from an earlier sign-in held Capital One's after it hung."""
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    s.listen(8)
+    monkeypatch.setattr(browser, "debug_port_holder", REAL_PORT_HOLDER)
+    monkeypatch.setattr(browser, "_port_taken", REAL_PORT_TAKEN)
+    monkeypatch.setattr(browser, "_SLOW_START_SECONDS", 0.5)
+    yield str(s.getsockname()[1])
+    s.close()
+
+
+def test_a_port_held_by_something_silent_is_said_and_never_launched_over(
+        silent_port, monkeypatch, tmp_path, capsys):
+    """Each browser tried next could not take the port either, so a Brave
+    window and then a Chrome for Testing one opened, on profiles of their
+    own, and every one of them was closed again with the port still held
+    (#90)."""
+    def no_launch(*a, **kw):
+        raise AssertionError("a browser was launched on a port something else holds")
+    monkeypatch.setattr(browser, "browser_candidates", no_launch)
+    monkeypatch.setattr(browser, "_try_each", no_launch)
+
+    got = browser.open_signin_browser(tmp_path / "p", silent_port, "https://bank.example/")
+    assert got is None
+    said = capsys.readouterr().out
+    assert "port %s" % silent_port in said
+    assert "does not answer" in said
+    assert ":%s" % silent_port in said, "says how to find what holds it"
+
+
+def test_a_browser_still_starting_on_the_port_is_used(monkeypatch, tmp_path, capsys):
+    """A port taken before its browser answers is not given up on at the
+    first look: a sign-in started twice in a row meets its own browser
+    still starting."""
+    answers = iter([None, "Chrome/141.0.0.0"])
+    monkeypatch.setattr(browser, "debug_port_holder", lambda port, timeout=1.5: next(answers))
+    monkeypatch.setattr(browser, "_port_taken", lambda port: True)
+    monkeypatch.setattr(browser, "_open_tab_in", lambda port, url: True)
+    got = browser.open_signin_browser(tmp_path / "p", "9", "https://bank.example/")
+    assert got == browser.ALREADY_ON_PORT
+    assert "Chrome/141" in capsys.readouterr().out
 
 
 # -- a browser given up on is not left open -------------------------------------

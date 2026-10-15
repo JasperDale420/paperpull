@@ -573,6 +573,23 @@ def debug_port_holder(port: str, timeout: float = 1.5) -> Optional[str]:
     return str(info.get("Browser") or "a browser")
 
 
+def _port_taken(port: str) -> bool:
+    """Whether anything at all takes a connection on the port, browser or
+    not. A browser that has hung still holds its port and answers nothing,
+    so debug_port_holder hears no one there and calls it free."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=1.0):
+            return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+# How long a port that is taken but silent is given to answer as a browser,
+# since one still starting opens its listener before it answers.
+_SLOW_START_SECONDS = 5.0
+
+
 def _open_tab_in(port: str, url: str) -> bool:
     """Ask the browser already on the port to open `url` in a new tab,
     through its own debugging endpoint. False when it would not."""
@@ -613,8 +630,19 @@ def open_signin_browser(profile_dir, port: str, url: str,
     the one window the run would not use (#90). The sign-in page is opened
     in the browser that holds the port instead, which is the one a run
     attaches to.
+
+    A port that is taken and answers nothing is said too, and nothing is
+    launched. Every browser tried there failed to take it, so a Brave
+    window and then a Chrome for Testing one opened on profiles of their
+    own and closed again, while a Chrome from an earlier sign-in that had
+    hung went on holding the port (#90).
     """
     held = debug_port_holder(port)
+    if not held and _port_taken(port):
+        held = debug_port_holder(port, timeout=_SLOW_START_SECONDS)
+        if not held:
+            _say_port_silent(port)
+            return None
     if held:
         print("A browser is already listening on port %s (%s)." % (port, held))
         print("Runs attach to that browser, so it is the one to sign in with. It is")
@@ -654,6 +682,27 @@ def open_signin_browser(profile_dir, port: str, url: str,
             if fresh:
                 return _try_each(fresh, profile_dir, port, url, fallback=True, mode=mode)
     return None
+
+
+def _say_port_silent(port: str) -> None:
+    """What to tell somebody whose port is held by something that does not
+    answer, and how to find it."""
+    print("Something is listening on port %s, and it does not answer as a" % port)
+    print("browser. It is usually a browser left from an earlier sign-in that")
+    print("stopped responding, sometimes another program using the same port.")
+    print("No browser can open its debugging port there while it is held, so")
+    print("none was opened.")
+    print()
+    print("To see what holds it:")
+    if sys.platform == "win32":
+        print("    netstat -ano | findstr :%s" % port)
+        print("The last number on the LISTENING line is its process ID, which")
+        print("Task Manager's Details tab lists.")
+    else:
+        print("    lsof -nP -iTCP:%s -sTCP:LISTEN" % port)
+        print("If it is a browser, quit it (kill and the number in the PID column")
+        print("does it when no window shows).")
+    print("Then sign in again.")
 
 
 def _try_each(candidates, profile_dir, port, url, fallback: bool = False, mode: str = AUTO):

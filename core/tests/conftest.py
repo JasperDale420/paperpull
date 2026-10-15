@@ -38,11 +38,13 @@ def _no_real_browser_on_a_port(monkeypatch):
     a browser already holds its port (#90), and these tests pass ports such
     as 9222 and 9231, which a developer's own signed-in browser can be
     holding, so the question would reach that browser and open a tab in it.
-    Every test is told nothing holds the port, and a test of the question
+    Every test is told nothing holds the port, nor takes a connection on
+    it, and a test of the question
     puts the real one back against a server of its own."""
     from paperpull_core import browser
     monkeypatch.setattr(browser, "debug_port_holder", lambda port, timeout=1.5: None)
     monkeypatch.setattr(browser, "_open_tab_in", lambda port, url: False)
+    monkeypatch.setattr(browser, "_port_taken", lambda port: False)
 
 
 @pytest.fixture(scope="session")

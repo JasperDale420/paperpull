@@ -7,6 +7,18 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Fixed
+- **A sign-in no longer opens browser after browser on a port that a hung
+  browser still holds (#90).** A browser left from an earlier sign-in that
+  stopped responding kept its debugging port, so every browser tried next
+  could not take it, and a Brave window and then a Chrome for Testing one
+  opened on profiles of their own and closed again. A sign-in now notices
+  a port that is taken but silent, gives a browser still starting a few
+  seconds to answer, and otherwise opens nothing and says how to find what
+  holds the port.
+
 ## [0.52.0] - 2026-10-14
 
 Six providers arrive, First Horizon Bank checking statements, Chase
