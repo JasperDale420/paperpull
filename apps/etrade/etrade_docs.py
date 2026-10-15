@@ -39,6 +39,7 @@ from paperpull_core.api_census import Requests
 from paperpull_core.run_reporting import report_run_result
 
 import argparse
+import hashlib
 import logging
 import random
 import re
@@ -143,18 +144,42 @@ class Document:
         return cls(**d)
 
 
+# A key that holds an account's whole label holds it up to this long.
+WHOLE_LABEL_LIMIT = 80
+
+
 def account_key(label: str, whole: bool = False) -> str:
     """The account part of a key, from the label the list's Account column
     shows. Its masked tails, "1234", or "1234+5678" for a document of two
-    accounts, else, or when `whole`, the whole label kept short with its
-    last four (paperpull_core.keys.account_component). For no account it is
-    what the key always held, "Unnamed", so a document the list gives no
-    account keeps the key it had."""
+    accounts, else, or when `whole`, the whole label (whole_label_key). For
+    no account it is what the key always held, "Unnamed", so a document the
+    list gives no account keeps the key it had."""
     label = re.sub(r"\s+", " ", label or "").strip()
+    if not label:
+        return _account_component(sanitize_component(label))
     tails = site.account_tails(label)
     if tails and not whole:
         return "+".join(tails)
-    return _account_component(sanitize_component(label))
+    return whole_label_key(label)
+
+
+def whole_label_key(label: str) -> str:
+    """An account's whole label as a key holds it, never cut. Cut to forty
+    characters and its last four, as the core keeps an account short, two
+    accounts sharing their last four and their first forty characters, with
+    statements of one date and title, had one key, and the second one's
+    statement was recorded under the first one's summary and file name
+    (release review of 0.53.0). A label longer than WHOLE_LABEL_LIMIT, or
+    one a file name could not hold as it is, keeps its first forty
+    characters and a digest of the whole label, so the key stays short and
+    the same on every run, and two labels that differ anywhere differ in
+    it."""
+    tidy = re.sub(r"\s+", " ", label or "").strip()
+    whole = sanitize_component(tidy, max_len=len(tidy) + 20)
+    if whole == tidy and len(whole) <= WHOLE_LABEL_LIMIT:
+        return whole
+    digest = hashlib.sha256(tidy.encode("utf-8")).hexdigest()[:12]
+    return "%s#%s" % (whole[:40].rstrip(), digest)
 
 
 def legacy_key(doc: "Document") -> str:
@@ -231,6 +256,19 @@ def forget_superseded(records: dict, listed) -> int:
         del records[old_key]
         changed += 1
     return changed
+
+
+def _one_account(held: str, doc: "Document") -> bool:
+    """Whether a record's account and a listed document's are one account.
+    By their digits when the key holds them, else by the whole label in
+    one form (site.account_form). A record holding no account yet, kept
+    before #96, may take one."""
+    if not held or not doc.account:
+        return True
+    tails = site.account_tails(doc.account)
+    if tails and not doc.whole_label:
+        return site.account_tails(held) == tails
+    return site.account_form(held) == site.account_form(doc.account)
 
 
 class App:
@@ -530,12 +568,30 @@ class App:
                      moved, forgotten)
 
     def _record_listed(self, doc: Document) -> int:
-        """Record one listed document. Returns 1 if new."""
-        if self.discovery.get(doc.key) is None:
+        """Record one listed document. Returns 1 if new.
+
+        A document never gives another account to a record already under
+        its key. The key followed by the record's summary and file name
+        would then hold one account's statement under the other's name
+        (release review of 0.53.0). Two accounts never share a key now, so
+        this would be a key this app got wrong, and the list stops there,
+        before either account's record is changed, rather than give the
+        document a key of its own that no run before knew. The same account
+        worded another way, its digits the same, is the same account, and
+        its record takes the wording the list gives now."""
+        held = self.discovery.get(doc.key)
+        if held is None:
             rec = doc.to_dict()
             rec["state"] = State.DISCOVERED.value
             self.discovery.update(doc.key, rec, save=False)
             return 1
+        if not _one_account(held.get("account") or "", doc):
+            raise pressing.Stop(
+                "record the list", "two accounts came out with one key",
+                ["Two of the accounts on this sign-in came out with one key, so the list was "
+                 "stopped before either one's record was changed.",
+                 "Nothing was downloaded under the wrong account. Please attach the failure "
+                 "file to the E*TRADE issue on GitHub."])
         # refresh which page the doc's download link lives on, and the
         # account and ids the list gives it now
         self.discovery.update(doc.key, {"source_url": doc.source_url, "account": doc.account,

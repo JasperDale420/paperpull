@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import storage  # noqa: F401  binds this provider's AppSpec
 import etrade_docs
 import etrade_site as site
-from paperpull_core import doc_types, naming, renaming
+from paperpull_core import doc_types, naming, pressing, renaming
 from paperpull_core.models import State
 
 DAY = "2025-08-31"
@@ -289,6 +289,48 @@ def test_two_accounts_sharing_digits_on_one_day_keep_two_keys_and_a_label_with_n
     assert {_key(BROKERAGE, FIRST), _key(BROKERAGE, twin)} <= set(app.discovery.data)
     said = " ".join(r.getMessage() for r in caplog.records)
     assert "2 account(s)" in said, said
+
+
+# Forty characters two accounts' labels can share before they differ.
+PREFIX = "Invented Individual Brokerage Account Fo"
+
+
+def test_two_accounts_sharing_last_four_and_first_forty_characters_keep_two_keys(app):
+    """The release review's case. The key kept a twin's label cut to forty
+    characters and its last four, so these two had one key, and the second
+    one's statement was recorded under the first one's summary."""
+    assert len(PREFIX) == 40
+    first, second = PREFIX + "r Trading -1111", PREFIX + "r Savings -1111"
+    app.listing(_raw(BROKERAGE, first, "g1"), _raw(BROKERAGE, second, "g2"))
+    recs = sorted(app.discovery.data.values(), key=lambda r: r["account"])
+    assert [r["account"] for r in recs] == [second, first], app.discovery.data
+    assert [r["summary"] for r in recs] == ["Account Statement - " + r["account"] for r in recs]
+    names = [_name(r) for r in recs]
+    assert "Savings -1111" in names[0] and "Trading -1111" in names[1], names
+    # A label too long to keep whole keeps its start and a digest of all of
+    # it, the same on every run, and different for any other label.
+    long_one = PREFIX * 3 + " -1111"
+    part = etrade_docs.whole_label_key(long_one)
+    assert len(part) <= etrade_docs.WHOLE_LABEL_LIMIT and part == etrade_docs.whole_label_key(long_one)
+    assert part != etrade_docs.whole_label_key(PREFIX * 3 + "x -1111")
+
+
+def test_an_existing_record_is_never_relabeled_to_another_account(app):
+    """A listed document under a record's key that names another account
+    stops the list, and the record keeps its account. The same account
+    worded another way, its digits the same, still takes the new wording."""
+    twin = "Invented Roth IRA -1111"
+    app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(BROKERAGE, twin, "g2"))
+    key = _key(BROKERAGE, FIRST)
+    app.discovery.data[key]["account"] = "Invented Brokerage Other -1111"
+    with pytest.raises(pressing.Stop):
+        app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(BROKERAGE, twin, "g2"))
+    assert app.discovery.data[key]["account"] == "Invented Brokerage Other -1111"
+
+    app.discovery.data.clear()
+    app.listing(_raw(BROKERAGE, "Old Nickname -1111", "g1"))
+    app.listing(_raw(BROKERAGE, FIRST, "g1"))
+    assert [r["account"] for r in app.discovery.data.values()] == [FIRST]
 
 
 def test_one_account_worded_two_ways_moves_its_history_one_to_one(app):
