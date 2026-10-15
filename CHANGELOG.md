@@ -9,6 +9,17 @@ All notable changes to PaperPull are recorded here. Versioning follows
 
 ## [Unreleased]
 
+### Added
+- **A Mac package for Intel (#88).** Next to `PaperPull-<version>-arm64.dmg`
+  for Apple Silicon, a release carries `PaperPull-<version>-x86_64.dmg` for
+  Macs with an Intel processor, signed and notarized the same way, so an
+  Intel Mac no longer has to run PaperPull from a checkout. The macOS
+  workflow builds the two side by side, each on a GitHub runner of its own
+  architecture, and each is smoke-tested on the hardware it is for.
+  `packaging/build_macos.py` takes `--arch arm64` or `--arch x86_64`, the
+  Mac's own when left out, and an Apple Silicon Mac can build the Intel one
+  through Rosetta.
+
 ### Changed
 - **Wells Fargo is confirmed for credit card statements (#27).** A tester
   ran the app from 0.52.0 on a real account and it downloaded the credit
@@ -18,6 +29,12 @@ All notable changes to PaperPull are recorded here. Versioning follows
   sixty-eight providers are supported and six wait for a tester. Checking,
   savings, mortgage and tax documents have not been run on a real account
   yet, and the tables and the panel say so.
+- **A release goes out with every download or not at all.**
+  `tools/release.sh` stops before publishing, naming the file, when any of
+  the five downloads did not come down, and it puts the two Mac disk images
+  next to each other in the Assets list. The Python inside each Mac package
+  is checked against the SHA-256 that python-build-standalone publishes
+  before anything is built from it.
 
 ### Fixed
 - **The transaction export reads the closing date on Navy Federal Visa

@@ -1,12 +1,14 @@
-"""Build a self-contained PaperPull for macOS on Apple Silicon.
+"""Build a self-contained PaperPull for macOS.
 
-    python packaging/build_macos.py            PaperPull.app + a .dmg, unsigned
-    python packaging/build_macos.py --sign     also sign, notarize and staple
+    python packaging/build_macos.py                  PaperPull.app + a .dmg, unsigned
+    python packaging/build_macos.py --sign           also sign, notarize and staple
+    python packaging/build_macos.py --arch x86_64    the Intel build
 
 WHAT IT PRODUCES
 
     dist/PaperPull.app                      the application bundle
-    dist/PaperPull-<ver>-arm64.dmg          the disk image people download
+    dist/PaperPull-<ver>-<arch>.dmg         the disk image people download,
+                                            arm64 or x86_64
 
 HOW IT IS BUILT, AND WHY THIS WAY
 
@@ -16,9 +18,14 @@ the packages every app needs installed into it once, and the repo's own code
 beside it. The panel and every app run under that interpreter exactly as they
 do in a checkout, so nothing has to know it is packaged.
 
-Apple Silicon only. The build is one architecture and one download, which is
-the machine every Mac sold since 2020 is, and an Intel build would double the
-matrix for a shrinking audience.
+One architecture per build, arm64 for Apple Silicon or x86_64 for Intel, and
+one download each (#88). A universal bundle would need a universal Python and
+a universal wheel of every package with compiled code, and pip installs only
+the running interpreter's own, so each build is made by running a Python of
+its architecture. arm64 is built on Apple Silicon. x86_64 is built on an Intel
+Mac, or on Apple Silicon through Rosetta, which runs the staged Intel Python
+and so has pip choose Intel wheels. The release workflow builds each on a
+runner of its own architecture, so each is smoke-tested on its own hardware.
 
 The bundle's main executable opens a Terminal window running the panel and
 then opens the browser to it, the same shape as PaperPull.exe on Windows.
@@ -68,8 +75,31 @@ MACOS = CONTENTS / "MacOS"
 # folder called python/ that is a complete, relocatable CPython with pip.
 PBS_TAG = "20260901"
 PY_VERSION = "3.12.14"
-PBS_ASSET = "cpython-%s+%s-aarch64-apple-darwin-install_only_stripped.tar.gz" % (PY_VERSION, PBS_TAG)
-PBS_URL = "https://github.com/astral-sh/python-build-standalone/releases/download/%s/%s" % (PBS_TAG, PBS_ASSET)
+
+# The architecture being built, set from --arch in main(). Ours is Apple's
+# name, which clang, Info.plist and the dmg's name use, and the other is
+# python-build-standalone's.
+ARCHES = {"arm64": "aarch64", "x86_64": "x86_64"}
+ARCH = "arm64"
+
+# Each architecture's tarball as python-build-standalone's SHA256SUMS for
+# PBS_TAG lists it, which is also the digest GitHub shows for the asset. The
+# download must match before anything is built from it. A new PBS_TAG or
+# PY_VERSION takes both lines again from that release's SHA256SUMS.
+PBS_SHA256 = {
+    "arm64": "81a359f1cfadd4da11766534c5913791cea55f26e1bb902cacd2a531bb1e4b2b",
+    "x86_64": "65b195c9cedc1fef6767f044f9822069adbd1bd9204d424ece4628776fdc04bb",
+}
+
+
+def pbs_asset() -> str:
+    return "cpython-%s+%s-%s-apple-darwin-install_only_stripped.tar.gz" % (
+        PY_VERSION, PBS_TAG, ARCHES[ARCH])
+
+
+def pbs_url() -> str:
+    return "https://github.com/astral-sh/python-build-standalone/releases/download/%s/%s" % (
+        PBS_TAG, pbs_asset())
 
 BUNDLE_ID = "io.github.rheeloaded.paperpull"
 
@@ -94,11 +124,18 @@ def wanted(rel: str) -> bool:
 
 # -- python --------------------------------------------------------------------
 
+def host_arch() -> str:
+    """The Mac's real architecture. A Python running under Rosetta reports
+    x86_64 on Apple Silicon, and hw.optional.arm64 still says the truth."""
+    r = subprocess.run(["sysctl", "-n", "hw.optional.arm64"], capture_output=True, text=True)
+    return "arm64" if r.stdout.strip() == "1" else "x86_64"
+
+
 def stage_python() -> Path:
-    say("Python %s, python-build-standalone %s, arm64" % (PY_VERSION, PBS_TAG))
+    say("Python %s, python-build-standalone %s, %s" % (PY_VERSION, PBS_TAG, ARCH))
     cache = DIST / "cache"
-    fetch(PBS_URL, cache / PBS_ASSET)
-    with tarfile.open(cache / PBS_ASSET) as t:
+    fetch(pbs_url(), cache / pbs_asset(), sha256=PBS_SHA256[ARCH])
+    with tarfile.open(cache / pbs_asset()) as t:
         t.extractall(RES, filter="data")
     py = RES / "python" / "bin" / "python3"
     if not py.exists():
@@ -232,7 +269,7 @@ def write_bundle() -> None:
         '    execl("/usr/bin/open", "open", "-a", "Terminal", script, (char *)0);\n'
         '    perror("open"); return 1;\n'
         '}\n', encoding="utf-8")
-    subprocess.run(["clang", "-arch", "arm64", "-O2", "-mmacosx-version-min=11.0",
+    subprocess.run(["clang", "-arch", ARCH, "-O2", "-mmacosx-version-min=11.0",
                     "-o", str(MACOS / "PaperPull"), str(launcher_c)], check=True)
 
     # The terminal command, preferring the bundled Python.
@@ -281,7 +318,7 @@ def write_bundle() -> None:
         "CFBundleExecutable": "PaperPull",
         "CFBundleInfoDictionaryVersion": "6.0",
         "LSMinimumSystemVersion": "11.0",
-        "LSArchitecturePriority": ["arm64"],
+        "LSArchitecturePriority": [ARCH],
         "NSHighResolutionCapable": True,
         "NSHumanReadableCopyright": "Copyright (c) 2026 PaperPull, a trade name of TNE Enterprises LLC. AGPL-3.0. https://github.com/rheeloaded/paperpull",
     }
@@ -452,7 +489,7 @@ def make_dmg(identity: str = "") -> Path:
     shutil.copytree(APP, root / "PaperPull.app", symlinks=True)
     os.symlink("/Applications", root / "Applications")
     shutil.copy2(RES / "README-FIRST.txt", root / "README-FIRST.txt")
-    out = DIST / ("PaperPull-%s-arm64.dmg" % version())
+    out = DIST / ("PaperPull-%s-%s.dmg" % (version(), ARCH))
     if out.exists():
         out.unlink()
     subprocess.run(["hdiutil", "create", "-volname", "PaperPull", "-srcfolder", str(root),
@@ -472,13 +509,25 @@ def make_dmg(identity: str = "") -> Path:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sign", action="store_true", help="sign, notarize and staple")
+    ap.add_argument("--arch", choices=sorted(ARCHES),
+                    help="arm64 or x86_64, this Mac's own when left out")
     args = ap.parse_args(argv)
 
     if sys.platform != "darwin":
         say("This builds the macOS bundle and runs on macOS.")
         return 1
+    global ARCH
+    host = host_arch()
+    ARCH = args.arch or host
+    # An Intel Mac cannot run an arm64 Python, and the packages are installed
+    # by running the staged one. Apple Silicon runs an Intel one through
+    # Rosetta, so the other way round works.
+    if ARCH == "arm64" and host != "arm64":
+        say("This is an Intel Mac and cannot build the arm64 package, because the"
+            " packages are installed by running the staged Python.")
+        return 1
 
-    say("PaperPull %s" % version())
+    say("PaperPull %s, %s" % (version(), ARCH))
     if APP.exists():
         shutil.rmtree(APP)
     RES.mkdir(parents=True)

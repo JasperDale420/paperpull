@@ -59,8 +59,8 @@ recording and then several rounds of exactly that.
 - **An account** with the provider, with at least one statement, bill or
   receipt in it. An account you opened yesterday has nothing to download and
   nothing to record.
-- **Windows 10 or 11, or a Mac with Apple silicon.** Both installers are on
-  the releases page.
+- **Windows 10 or 11, or a Mac.** The installers are on the releases page,
+  and the Mac has one for Apple silicon and one for Intel.
 - **Edge or Chrome.** Whichever you already have. PaperPull opens it with a
   separate profile so your normal browsing is untouched.
 - **Twenty minutes.** Ten of it is the install.
@@ -81,8 +81,10 @@ Download the installer for your machine from the
 certificate. Click **More info**, then **Run anyway**. If you would rather
 not, that is a reasonable position and you can stop here.
 
-**Mac.** Open the `.dmg` and drag PaperPull to Applications. The Mac build
-**is** signed and notarized by Apple, so it opens without a warning.
+**Mac.** Open the `.dmg` for your Mac and drag PaperPull to Applications.
+That is `-arm64` when About This Mac shows a Chip line (Apple silicon) and
+`-x86_64` when it shows a Processor line (Intel). Both Mac builds
+**are** signed and notarized by Apple, so they open without a warning.
 
 Launch PaperPull. A control panel opens in your browser. Everything from here
 happens in that panel.

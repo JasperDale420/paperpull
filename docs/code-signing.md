@@ -4,7 +4,8 @@
 
 **macOS is signed and notarized.** The `.dmg` and the app inside it are
 signed with the maintainer's Developer ID, notarized by Apple, and stapled,
-so they open on any Mac with no warning. Apple Silicon only.
+so they open on any Mac with no warning. There is one for Apple Silicon
+and one for Intel.
 
 **Windows is signed with Azure Artifact Signing.** From the first release
 built after it was set up, the installer and the `PaperPull.exe` inside the
@@ -44,14 +45,17 @@ Nothing that ships is built on a developer's machine.
 4. The workflow uploads the signed installer, the portable zip, the MSIX and
    a `SHA256SUMS.txt` taken after signing, as run artifacts.
 5. The [macOS package](../.github/workflows/build-macos.yml) workflow runs
-   on a clean GitHub-hosted Apple Silicon runner on the same tag. It builds
-   the bundle from the same commit, signs every binary in it with the
-   Developer ID certificate held in the repository's secrets, sends the
-   bundle to Apple for notarization, staples the ticket, then does the same
+   on the same tag, twice side by side, on a clean GitHub-hosted Apple
+   Silicon runner for the arm64 dmg and an Intel one for the x86_64 dmg.
+   Each builds the bundle from the same commit, signs every binary in it
+   with the Developer ID certificate held in the repository's secrets,
+   sends the bundle to Apple for notarization, staples the ticket, then does the same
    for the disk image. The certificate lives in a keychain that exists only
-   for that job and is deleted when it ends.
-6. A maintainer attaches the artifacts to the GitHub release by hand. No
-   step in the workflow publishes on its own.
+   for that job and is deleted when it ends. The Python inside the bundle
+   is checked against the SHA-256 its publisher lists before it is used.
+6. A maintainer runs `tools/release.sh`, which checks each artifact against
+   the checksums its run published and makes the GitHub release only when
+   every download is there. No step in the workflow publishes on its own.
 
 Anyone can rebuild the package themselves with
 `python packaging/build_windows.py --installer` and compare checksums.
