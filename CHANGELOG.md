@@ -15,9 +15,10 @@ All notable changes to PaperPull are recorded here. Versioning follows
   stopped responding kept its debugging port, so every browser tried next
   could not take it, and a Brave window and then a Chrome for Testing one
   opened on profiles of their own and closed again. A sign-in now notices
-  a port that is taken but silent, gives a browser still starting a few
-  seconds to answer, and otherwise opens nothing and says how to find what
-  holds the port.
+  a port that is taken but silent, even by a browser that takes no more
+  connections, gives a browser still starting a few seconds to answer, and
+  otherwise opens nothing and says how to find what holds the port and how
+  to end it.
 
 ## [0.52.0] - 2026-10-14
 

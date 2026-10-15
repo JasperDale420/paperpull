@@ -166,6 +166,10 @@ def test_a_free_port_is_launched_on_as_before(monkeypatch, tmp_path):
 
 # -- a port held by something that does not answer ------------------------------
 
+def _no_launch(*a, **kw):
+    raise AssertionError("a browser was launched on a port something else holds")
+
+
 @pytest.fixture()
 def silent_port(monkeypatch):
     """A port that takes a connection and never says anything, the way a
@@ -187,10 +191,8 @@ def test_a_port_held_by_something_silent_is_said_and_never_launched_over(
     window and then a Chrome for Testing one opened, on profiles of their
     own, and every one of them was closed again with the port still held
     (#90)."""
-    def no_launch(*a, **kw):
-        raise AssertionError("a browser was launched on a port something else holds")
-    monkeypatch.setattr(browser, "browser_candidates", no_launch)
-    monkeypatch.setattr(browser, "_try_each", no_launch)
+    monkeypatch.setattr(browser, "browser_candidates", _no_launch)
+    monkeypatch.setattr(browser, "_try_each", _no_launch)
 
     got = browser.open_signin_browser(tmp_path / "p", silent_port, "https://bank.example/")
     assert got is None
@@ -200,14 +202,115 @@ def test_a_port_held_by_something_silent_is_said_and_never_launched_over(
     assert ":%s" % silent_port in said, "says how to find what holds it"
 
 
+@pytest.fixture()
+def full_port(monkeypatch):
+    """A port held by something that takes no more connections. Its queue of
+    one is filled before the sign-in looks, as the looks of earlier sign-ins
+    and runs fill a hung browser's queue of ten. Each look is cut short, since
+    a connection that a full queue never takes waits out its whole timeout."""
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    s.listen(1)
+    port = s.getsockname()[1]
+    queued = []
+    for _ in range(64):
+        c = socket.socket()
+        c.settimeout(0.3)
+        try:
+            c.connect(("127.0.0.1", port))
+        except OSError:
+            c.close()
+            break
+        queued.append(c)
+    else:
+        pytest.fail("the queue of the port never filled")
+    monkeypatch.setattr(browser, "debug_port_holder",
+                        lambda p, timeout=1.5: REAL_PORT_HOLDER(p, timeout=min(timeout, 0.3)))
+    monkeypatch.setattr(browser, "_port_taken", REAL_PORT_TAKEN)
+    monkeypatch.setattr(browser, "_SLOW_START_SECONDS", 0.3)
+    yield str(port)
+    for c in queued:
+        c.close()
+    s.close()
+
+
+def test_a_port_whose_holder_takes_no_more_connections_is_never_launched_over(
+        full_port, monkeypatch, tmp_path, capsys):
+    """Whether something held the port was first asked by connecting to it.
+    A holder that takes no connections answers none once its queue is full,
+    and every look left one more in the queue, so from the third sign-in or
+    so the port looked free and browser after browser was launched there
+    again, on Windows and Linux alike."""
+    monkeypatch.setattr(browser, "browser_candidates", _no_launch)
+    monkeypatch.setattr(browser, "_try_each", _no_launch)
+    for attempt in range(1, 5):
+        got = browser.open_signin_browser(tmp_path / "p", full_port, "https://bank.example/")
+        assert got is None, "sign-in %d" % attempt
+        assert "port %s" % full_port in capsys.readouterr().out, "sign-in %d" % attempt
+
+
+@pytest.mark.parametrize("code, taken", [("EADDRINUSE", True),
+                                         ("EADDRNOTAVAIL", False),
+                                         ("EACCES", False)])
+def test_only_an_address_in_use_is_taken(code, taken, monkeypatch):
+    """A bind refused for a reason other than the port being in use says
+    nothing about a browser there, so the sign-in carries on as before."""
+    import errno
+    import os
+    import socket
+    number = getattr(errno, code)
+
+    def refused(self, address):
+        raise OSError(number, os.strerror(number))
+    monkeypatch.setattr(socket.socket, "bind", refused)
+    assert REAL_PORT_TAKEN("9222") is taken
+
+
+def test_a_free_port_is_answered_at_once():
+    """Connecting to a free port is refused only after two seconds on
+    Windows, so asking that way made every sign-in on a free port wait a
+    second for nothing."""
+    import socket
+    import time
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = str(s.getsockname()[1])
+    s.close()
+    started = time.perf_counter()
+    assert not REAL_PORT_TAKEN(port)
+    assert time.perf_counter() - started < 0.5
+
+
+@pytest.mark.parametrize("platform, finds, ends", [
+    ("win32", "netstat -ano | findstr :9276", "taskkill /PID <PID> /F"),
+    ("darwin", "lsof -nP -iTCP:9276 -sTCP:LISTEN", "kill -9 <PID>"),
+    ("linux", "ss -ltnp 'sport = :9276'", "kill -9 <PID>"),
+])
+def test_what_holds_the_port_is_said_how_to_find_and_end(
+        platform, finds, ends, monkeypatch, capsys):
+    """Each system's own command finds the holder and ends it, and the words
+    around them keep the house style, with no colon or semicolon."""
+    monkeypatch.setattr(browser.sys, "platform", platform)
+    browser._say_port_silent("9276")
+    said = capsys.readouterr().out
+    assert "    " + finds in said
+    assert "    " + ends in said
+    assert ("ss -ltnp" in said) is (platform == "linux")
+    prose = [line for line in said.splitlines() if not line.startswith("    ")]
+    assert not [line for line in prose if ":" in line or ";" in line or "—" in line], said
+
+
 def test_a_browser_still_starting_on_the_port_is_used(monkeypatch, tmp_path, capsys):
     """A port taken before its browser answers is not given up on at the
-    first look: a sign-in started twice in a row meets its own browser
+    first look. A sign-in started twice in a row meets its own browser
     still starting."""
     answers = iter([None, "Chrome/141.0.0.0"])
     monkeypatch.setattr(browser, "debug_port_holder", lambda port, timeout=1.5: next(answers))
     monkeypatch.setattr(browser, "_port_taken", lambda port: True)
     monkeypatch.setattr(browser, "_open_tab_in", lambda port, url: True)
+    monkeypatch.setattr(browser, "browser_candidates", _no_launch)
+    monkeypatch.setattr(browser, "_try_each", _no_launch)
     got = browser.open_signin_browser(tmp_path / "p", "9", "https://bank.example/")
     assert got == browser.ALREADY_ON_PORT
     assert "Chrome/141" in capsys.readouterr().out
