@@ -80,6 +80,10 @@ KNOWN CEILINGS (ponytail: left until a live run shows otherwise)
   * An account older than the page's window, with no start date of the
     run's own inside it, stops the list (reaches_back). Whether the page's
     Filters reach further back has not been seen.
+  * An application reissued inside the window, on an account with nothing
+    listed before the reissue, passes for the account's first application,
+    so documents older than the window would go unnoticed. No list can tell
+    the two apart, and a reissue has not been seen.
   * The table's markup beyond what the survey saw (one table, rows in one
     tbody, three cells) is assumed, and anything else stops the list.
 """
@@ -92,7 +96,7 @@ import sys
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date as _date
+from datetime import date as _date, timedelta
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit
@@ -333,6 +337,14 @@ class ListStopped(Exception):
     def __init__(self, why: str, docs=None):
         super().__init__(why)
         self.docs = list(docs or [])
+
+
+class WindowNotWhole(ListStopped):
+    """The window the page asked the list for starts after it ends, ended
+    before yesterday, or is not two calendar dates (window_whole)."""
+
+    def __init__(self):
+        super().__init__("the window the list was asked for does not run from its start to yesterday or later")
 
 
 class ListTooShort(ListStopped):
@@ -756,19 +768,41 @@ class Listed:
 APPLICATION_TYPE = "account_application"
 
 
-def reaches_back(listed: Listed, floor: Optional[str]) -> bool:
-    """Whether the list reaches back far enough to be called whole. The
-    page asks for documents from a start date of its own, so an account
-    older than that has documents the list never holds. It is whole when it
-    holds the account's application inside its window, since nothing comes
-    before the account was opened, or when its window starts on or before
-    the run's own start date, since nothing earlier is wanted. A floor that
-    is not a calendar date counts as no floor."""
+def _today() -> _date:
+    """The day the run reads the list on."""
+    return _date.today()
+
+
+def window_whole(listed: Listed, today: _date) -> bool:
+    """Whether the window the page asked the list for can hold every
+    document up to now. Both ends are calendar dates, the start on or
+    before the end, and the end no earlier than yesterday, since a list
+    that ended before then may be missing what came since."""
     start, end = listed.start, listed.end
     if calendar_date(start) != start or calendar_date(end) != end:
         return False
-    if any(i.doc_type == APPLICATION_TYPE and start <= i.date <= end for i in listed.items):
-        return True
+    return start <= end and end >= (today - timedelta(days=1)).isoformat()
+
+
+def reaches_back(listed: Listed, floor: Optional[str], today: _date) -> bool:
+    """Whether the list reaches back far enough to be called whole. The
+    page asks for documents from a start date of its own, so an account
+    older than that has documents the list never holds. Its window must be
+    whole first (window_whole). It is whole when the earliest application
+    it holds is inside its window and nothing listed is dated before it,
+    since nothing comes before the account was opened and a reissued
+    application must not let older documents pass. It is whole as well
+    when its window starts on or before the run's own start date, since
+    nothing earlier is wanted. A floor that is not a calendar date counts
+    as no floor."""
+    if not window_whole(listed, today):
+        return False
+    start, end = listed.start, listed.end
+    applied = [i.date for i in listed.items if i.doc_type == APPLICATION_TYPE]
+    if applied:
+        first = min(applied)
+        if start <= first <= end and all(i.date >= first for i in listed.items):
+            return True
     return bool(floor) and calendar_date(floor) == floor and start <= floor
 
 
@@ -1270,14 +1304,17 @@ def _rawdocs(items: List[Item]) -> List[RawDoc]:
 
 def collect_download_docs(page, run: Optional[Run] = None) -> List[RawDoc]:
     """Every statement and trade confirmation the Live account's list holds,
-    once the list reaches back far enough (reaches_back) and every row the
-    page draws has been checked against it. Raises
-    ListStopped, SessionExpired, NotLive or DeadlineReached."""
+    once its window is whole (window_whole), it reaches back far enough
+    (reaches_back) and every row the page draws has been checked against
+    it. Raises ListStopped, SessionExpired, NotLive or DeadlineReached."""
     run = run or Run()
     opened = _open(page, run)
     try:
         run.counts = dict(opened.listed.counts)
-        if not reaches_back(opened.listed, run.floor):
+        today = _today()
+        if not window_whole(opened.listed, today):
+            raise WindowNotWhole()
+        if not reaches_back(opened.listed, run.floor, today):
             raise ListTooShort(opened.listed.start)
         pages = cross_check(page, run, opened.listed.items, opened.state)
         # A second list answer that came while the rows were read means the

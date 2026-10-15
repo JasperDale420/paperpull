@@ -9,6 +9,7 @@ import logging
 import re
 import sys
 from contextlib import contextmanager, redirect_stdout
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ BASE = "https://app.alpaca.markets"
 ACCT = "acc0ffee-1234-4abc-8def-0123456789ab"
 LIST_URL = BASE + "/api/v1/accounts/%s/documents?start=2023-10-12&end=2026-10-12" % ACCT
 NUMBER = "7QX40031"
+TODAY = date(2026, 10, 13)
 LIVE = "QUILLFEATHER VENTURES LLC - %s" % NUMBER
 PAPER = "QUILLFEATHER VENTURES LLC Paper - PA3QX40031"
 SIGNATURE = "SIGQXQX0042"
@@ -156,6 +158,7 @@ class Center:
     def __init__(self, items=None, rows=None):
         self.items = survey_items() if items is None else items
         self.rows = rows
+        self.list_url = LIST_URL
         self.url = BASE + "/dashboard/overview"
         self.switcher = [{"text": LIVE, "shown": True}]
         self.banner = self.password = False
@@ -212,7 +215,7 @@ class Center:
         self.page = 0
         data = self.items if self.list_data is None else self.list_data
         for _ in range(self.list_answers):
-            self._emit(Response(LIST_URL, data, status=self.list_status, raw=self.list_raw))
+            self._emit(Response(self.list_url, data, status=self.list_status, raw=self.list_raw))
 
     def click(self, loc):
         self.presses.append((loc.css, loc.index))
@@ -309,11 +312,14 @@ class Center:
 @pytest.fixture(autouse=True)
 def fake_press(monkeypatch):
     """The core's press, replaced by the made-up page's. The press is the
-    core's own to test; this only says which control was pressed."""
+    core's own to test, and this only says which control was pressed."""
     def click(page, locator, *, css, what, words, step="press a control", **kw):
         assert locator.css == css
         page.click(locator)
     monkeypatch.setattr(site.pressing, "click", click)
+    # The day after the made-up list's window ends, so its window reaches
+    # yesterday whatever day the tests run on.
+    monkeypatch.setattr(site, "_today", lambda: TODAY)
     site.set_private_words([])
     yield
 
@@ -572,6 +578,25 @@ def test_two_kept_documents_alike_are_counted_and_the_rest_kept(extra, gone):
     assert extra["id"] in {i.document_id for i in listed.items}
 
 
+def test_a_pair_alike_is_counted_in_the_run_summary_and_the_panels_result(tmp_path, capsys):
+    """The pair left unsaved is said in the run summary and in the result
+    the panel reads, not only on the console."""
+    app = make_app(tmp_path, "--all")
+    page = Center()
+    page.items.append(item(998, "2026-09-06", "trade_confirmation"))
+    attach(app, page)
+    with redirect_stdout(io.StringIO()):
+        app.cmd_discover(quiet=True)
+    assert app.stats["alike"] == 2
+    app.stats["mode"] = "all"
+    app.write_run_summary()
+    summary = app.paths.run_summary.read_text(encoding="utf-8")
+    assert re.search(r"Left unsaved, alike: +2$", summary, re.M)
+    (result,) = [json.loads(x.split(" ", 1)[1]) for x in capsys.readouterr().out.splitlines()
+                 if x.startswith("PAPERPULL_RUN_RESULT ")]
+    assert result["alike"] == 2
+
+
 def test_a_pair_alike_leaves_the_rest_of_discovery_flowing():
     page = Center()
     page.items.append(item(998, "2026-09-06", "trade_confirmation"))
@@ -590,7 +615,7 @@ def listed_with(items, url=LIST_URL):
 
 
 def test_a_list_holding_the_application_in_its_window_is_whole():
-    assert site.reaches_back(listed_with(survey_items()), None)
+    assert site.reaches_back(listed_with(survey_items()), None, TODAY)
 
 
 @pytest.mark.parametrize("floor, whole", [
@@ -599,13 +624,64 @@ def test_a_list_holding_the_application_in_its_window_is_whole():
 ])
 def test_a_list_without_the_application_is_whole_only_back_to_the_runs_start(floor, whole):
     items = [i for i in survey_items() if i["type"] != "account_application"]
-    assert site.reaches_back(listed_with(items), floor) is whole
+    assert site.reaches_back(listed_with(items), floor, TODAY) is whole
 
 
 def test_an_application_outside_the_window_does_not_count():
     items = [i for i in survey_items() if i["type"] != "account_application"]
     items.append(item(4, "2023-10-11", "account_application"))
-    assert not site.reaches_back(listed_with(items), None)
+    assert not site.reaches_back(listed_with(items), None, TODAY)
+
+
+WINDOW = "start=2023-10-12&end=2026-10-12"
+
+
+@pytest.mark.parametrize("window, whole", [
+    ("start=2023-10-12&end=2026-10-12", True),    # ends yesterday
+    ("start=2023-10-12&end=2026-10-13", True),    # ends today
+    ("start=2023-10-12&end=2026-10-11", False),   # ended the day before yesterday
+    ("start=2023-10-12&end=2025-01-01", False),   # ended well before today
+    ("start=2026-10-13&end=2026-10-12", False),   # starts after it ends
+    ("start=2026-10-12&end=2026-10-12", True),    # one day, yesterday
+])
+def test_a_window_is_whole_only_from_its_start_to_yesterday_or_later(window, whole):
+    """With the application in it, and again with only a start date of the
+    run's own, a window that starts after it ends or ended before
+    yesterday is never called whole."""
+    url = LIST_URL.replace(WINDOW, window)
+    holds = [i for i in survey_items() if i["date"] >= window[6:16] and i["type"] != "account_application"]
+    holds.append(item(4, window[6:16], "account_application"))
+    assert site.reaches_back(listed_with(holds, url), None, TODAY) is whole
+    items = [i for i in holds if i["type"] != "account_application"]
+    assert site.reaches_back(listed_with(items, url), window[6:16], TODAY) is whole
+
+
+def test_a_window_that_is_not_whole_stops_discovery_in_its_own_words(tmp_path):
+    """The list holds the application, so the stop says the window is wrong,
+    never that the application is missing or that a start date would help."""
+    app = make_app(tmp_path, "--discover")
+    page = Center()
+    page.list_url = LIST_URL.replace("end=2026-10-12", "end=2026-10-01")
+    attach(app, page)
+    with redirect_stdout(io.StringIO()) as said, pytest.raises(SystemExit):
+        app.cmd_discover()
+    out = said.getvalue()
+    assert "window" in out and "application" not in out and "start-date" not in out
+    assert app.discovery.data == {} and page.presses == []
+
+
+def test_a_document_older_than_the_earliest_application_is_not_whole():
+    """An application reissued inside the window would let older
+    statements pass, so nothing listed may be dated before the earliest
+    application. A start date of the run's own still reaches back."""
+    items = survey_items() + [item(5, "2026-08-01", "account_statement")]
+    assert not site.reaches_back(listed_with(items), None, TODAY)
+    assert site.reaches_back(listed_with(items), "2023-10-12", TODAY)
+    items.append(item(6, "2026-07-01", "account_application"))
+    assert site.reaches_back(listed_with(items), None, TODAY)
+    items.append(item(7, "2026-08-01", "account_statement"))   # a second, same day as the first
+    items.append(item(8, "2026-06-30", "trade_confirmation"))
+    assert not site.reaches_back(listed_with(items), None, TODAY)
 
 
 def test_a_list_too_short_stops_discovery_before_any_press():
@@ -1117,7 +1193,7 @@ def test_the_only_download_from_another_address_is_left_and_the_run_stops(tmp_pa
 
 def test_a_download_from_the_handed_over_link_that_is_refused_is_discarded(tmp_path):
     """From exactly the link Alpaca handed the press, so it is the press's
-    own; it is not a PDF, so it is refused, canceled and its copy deleted."""
+    own. It is not a PDF, so it is refused, canceled and its copy deleted."""
     page = Center()
     page.download_body = b"<html>not a pdf</html>"
     r = run()
@@ -1189,7 +1265,7 @@ def test_two_downloads_in_one_press_window_stop_the_run_and_touch_neither(tmp_pa
 def test_a_late_download_from_the_owed_link_is_discarded_at_the_run_end(tmp_path):
     """The press got no download in its window, and Alpaca had handed it
     its link. A download from exactly that link by the run's end is that
-    press's, and is discarded; one from anywhere else is left as it is."""
+    press's, and is discarded. One from anywhere else is left as it is."""
     page = Center()
     page.downloads_per_press = 0
     r = run()
@@ -1715,7 +1791,7 @@ def test_the_site_layer_presses_nothing_itself():
     attrs = {n.attr for n in ast.walk(SITE) if isinstance(n, ast.Attribute)}
     assert not attrs & {"mouse", "keyboard", "touchscreen"}
     # Nothing is asked of Alpaca or the bucket by this app itself: no
-    # request client, no fetch. The page asks; this listens.
+    # request client, no fetch. The page asks and this listens.
     asks = [ast.unparse(n) for n in ast.walk(SITE) if isinstance(n, ast.Call)
             and isinstance(n.func, ast.Attribute) and n.func.attr in ("get", "post", "fetch")
             and ast.unparse(n.func.value).endswith(("request", "page", "context"))]

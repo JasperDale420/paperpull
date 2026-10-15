@@ -38,8 +38,8 @@ VERBS = ("", "View ", "Download ")
 # gates a click on this answer: myPay reads its documents from a JSON API
 # and AAFMAA's guard only annotates the diagnose dump. Alpaca's guard takes
 # only the whole labels Download, Next, Previous or a page number, since the
-# account can trade, transfer and deposit, and "trade" is on its blocklist;
-# its documents come from the list the page asks for and are pressed by the
+# account can trade, transfer and deposit, and "trade" is on its blocklist.
+# Its documents come from the list the page asks for and are pressed by the
 # row's own Download, never by their names. Spectrum's guard takes only
 # "View Printable Statement", the one button of an Internet statement it
 # presses, and its Mobile statements are chosen by their own rows under a
