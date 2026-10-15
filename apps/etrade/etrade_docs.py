@@ -79,7 +79,7 @@ class Document:
 
     def __init__(self, title="", category="", summary="", date="", period="",
                  href="", row_index=-1, confidence="", account="",
-                 date_text="", document_id="", guid="", **kw):
+                 date_text="", document_id="", guid="", whole_label=False, **kw):
         self.title = title
         # What the list's Account column shows for the document, kept whole
         # for {account} and, when the sign-in has more than one account, the
@@ -88,6 +88,9 @@ class Document:
         # The list's own ids, "<documentGuid>|<documentId>". Kept apart from
         # document_id, which would make the key the id alone.
         self.guid = guid
+        # Whether the key holds the whole label rather than its masked tail,
+        # set when another account the lists named shows the same tail.
+        self.whole_label = bool(whole_label)
         self.category = category
         self.summary = summary
         self.date = date
@@ -121,12 +124,15 @@ class Document:
         "1234" for "Individual Brokerage -1234", since the words before them
         are a nickname a person can change on E*TRADE, and a key that moved
         with the nickname would download every statement again. A label
-        with no masked digits is kept whole. Until #96 the account never
-        reached the record, so every key ended in "Unnamed", and
-        adopt_account_keys moves those."""
+        with no masked digits is kept whole, and so is one whose tail
+        another account the lists named shows too (whole_label), so the two
+        never share a key. Until #96 the account never reached the record,
+        so every key ended in "Unnamed", and adopt_account_keys moves those
+        for a sign-in of one account."""
         if self.document_id:
             return f"id:{self.document_id}"
-        return f"{self.category}:{self.date}:{sanitize_component(self.title)[:60]}:{account_key(self.account)}"
+        acct = account_key(self.account, whole=self.whole_label)
+        return f"{self.category}:{self.date}:{sanitize_component(self.title)[:60]}:{acct}"
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
@@ -136,16 +142,16 @@ class Document:
         return cls(**d)
 
 
-def account_key(label: str) -> str:
+def account_key(label: str, whole: bool = False) -> str:
     """The account part of a key, from the label the list's Account column
     shows. Its masked tails, "1234", or "1234+5678" for a document of two
-    accounts, else the whole label kept short with its last four
-    (paperpull_core.keys.account_component). For no account it is what the
-    key always held, "Unnamed", so a document the list gives no account
-    keeps the key it had."""
+    accounts, else, or when `whole`, the whole label kept short with its
+    last four (paperpull_core.keys.account_component). For no account it is
+    what the key always held, "Unnamed", so a document the list gives no
+    account keeps the key it had."""
     label = re.sub(r"\s+", " ", label or "").strip()
     tails = site.account_tails(label)
-    if tails:
+    if tails and not whole:
         return "+".join(tails)
     return _account_component(sanitize_component(label))
 
@@ -157,57 +163,70 @@ def legacy_key(doc: "Document") -> str:
     return Document(category=doc.category, date=doc.date, title=doc.title).key
 
 
-def adopt_account_keys(records: dict, listed, several: bool, forget_shared: bool = False) -> int:
-    """Move the records kept before the account reached them to the key
-    their account gives them, after discovery has read the lists (#96).
-
-    Until #96 every key ended in "Unnamed", no account, so two accounts'
-    statements of one title and day were one record. Each record still
-    under such a key is moved to the key of the one document the lists now
-    give that category, date and title, and takes its account and guid. Its
-    state, downloaded_ok, pdf_path and everything else go with it, so a
-    statement saved before is never fetched again, and its file keeps its
-    name. Only when the sign-in has more than one account (`several`) does
-    the record take the document's summary too, the one that names the
-    account, so Rename can name the file for its account when the person
-    asks. When a record already sits under the new key, the one that is
-    done stays (keys.is_done), and when both or neither is, the one
-    already there.
-
-    A record whose category, date and title the lists now give more than
-    one account cannot be told to be either account's, so it is left
-    where it is and each account's document is listed under its own key.
-    With `forget_shared`, for discovery's records, such a record that is
-    not done is dropped, since each account's own record lists it now and
-    a download of it would find two rows naming it and refuse every run.
-    Matched by key alone, so a history moved with --minimal, which keeps
-    no title or date in a record, moves the same. Returns how many records
-    moved or were dropped."""
+def _by_old_key(listed) -> dict:
+    """The listed documents by the key each had before #96 (legacy_key)."""
     by_old: dict = {}
     for doc in listed:
         group = by_old.setdefault(legacy_key(doc), [])
         if doc.key not in {d.key for d in group}:
             group.append(doc)
+    return by_old
+
+
+def adopt_account_keys(records: dict, listed) -> int:
+    """Move the records kept before the account reached them to the key
+    their account gives them, for a sign-in of one account, after
+    discovery has read the lists (#96).
+
+    Until #96 every key ended in "Unnamed", no account. Each record still
+    under such a key is moved to the key of the one document the lists now
+    give that category, date and title, and takes its account and guid. Its
+    state, downloaded_ok, pdf_path, summary and everything else go with
+    it, so a statement saved before is never fetched again and its file
+    keeps its name. When a record already sits under the new key, the one
+    that is done stays (keys.is_done), and when both or neither is, the
+    one already there. Matched by key alone, so a history moved with
+    --minimal, which keeps no title or date in a record, moves the same.
+
+    Only ever run for a sign-in whose lists name one account. With more
+    than one, a record kept before may hold either account's statement,
+    since two accounts' statements of one title and day were one record,
+    and lists that left one account's statement out would credit it to
+    the other (review of #96). Returns how many records moved."""
     changed = 0
-    for old_key, docs in by_old.items():
+    for old_key, docs in _by_old_key(listed).items():
         rec = records.get(old_key)
-        if not isinstance(rec, dict):
-            continue
-        if len(docs) != 1:
-            if forget_shared and not _is_done(rec):
-                del records[old_key]
-                changed += 1
+        if not isinstance(rec, dict) or len(docs) != 1:
             continue
         doc = docs[0]
         new_key = doc.key
         if new_key == old_key:
             continue
         rec = dict(rec, account=doc.account, guid=doc.guid)
-        if several:
-            rec["summary"] = doc.summary
         other = records.get(new_key)
         if not isinstance(other, dict) or (_is_done(rec) and not _is_done(other)):
             records[new_key] = rec
+        del records[old_key]
+        changed += 1
+    return changed
+
+
+def forget_superseded(records: dict, listed) -> int:
+    """For a sign-in of several accounts, drop discovery's records kept
+    before #96 that are not done, when the lists now give their category,
+    date and title an account (#96). Each account's own record lists that
+    statement now, and the old one, downloaded with no account, would find
+    two rows naming it and be refused on every run, or take whichever one
+    the page showed. A record that is done stays, and the run's progress is
+    never touched, so nothing saved before is credited to an account.
+    Returns how many records were dropped."""
+    changed = 0
+    for old_key, docs in _by_old_key(listed).items():
+        rec = records.get(old_key)
+        if not isinstance(rec, dict) or _is_done(rec):
+            continue
+        if all(d.key == old_key for d in docs):
+            continue
         del records[old_key]
         changed += 1
     return changed
@@ -438,7 +457,8 @@ class App:
             return False
         return True
 
-    def _document_of(self, r, source_url: str, several: bool = False) -> Optional[Document]:
+    def _document_of(self, r, source_url: str, several: bool = False,
+                     twins=frozenset()) -> Optional[Document]:
         """The Document one scraped document (a RawDoc) from a E*TRADE page
         is, or None when it is out of scope. It carries the account the
         list gave it and the list's ids, which discovery used to drop, so
@@ -447,7 +467,9 @@ class App:
         account (`several`), the summary names the account too, " - <the
         account's label>", which puts it in the file name and the index's
         Document Summary. A sign-in of one account keeps the summary, and
-        so the names, it always had."""
+        so the names, it always had. `twins` are the labels, in
+        site.account_form, whose masked tail another account shows too, and
+        such a document is keyed by its whole label (Document.whole_label)."""
         title = re.sub(r"\s+", " ", (r.title or "")).strip()
         if not title:
             return None
@@ -471,26 +493,38 @@ class App:
             summary = f"{summary} - {account}"
         return Document(title=title, category=category, summary=summary,
                         date=date, confidence=confidence, source_url=source_url,
-                        account=account, guid=getattr(r, "guid", "") or "")
+                        account=account, guid=getattr(r, "guid", "") or "",
+                        whole_label=bool(account) and site.account_form(account) in twins)
 
-    def _record_rawdoc(self, r, source_url: str, several: bool = False) -> int:
+    def _record_rawdoc(self, r, source_url: str, several: bool = False, twins=frozenset()) -> int:
         """Record one scraped document (a RawDoc) from a E*TRADE page.
         Returns 1 if new."""
-        doc = self._document_of(r, source_url, several)
+        doc = self._document_of(r, source_url, several, twins)
         return self._record_listed(doc) if doc is not None else 0
 
-    def _adopt_account_keys(self, listed: List[Document], several: bool) -> None:
-        """Move the records kept before #96 to the keys their accounts give
-        them (adopt_account_keys), progress and discovery alike, each backed
-        up first when anything in it changes."""
-        moved = adopt_account_keys(self.progress.data, listed, several)
-        if moved:
-            self.progress.save(backup=True)
-        forgotten = adopt_account_keys(self.discovery.data, listed, several, forget_shared=True)
+    def _adopt_account_keys(self, listed: List[Document], accounts: int) -> None:
+        """The records kept before #96, under keys with no account. For a
+        sign-in whose lists name one account, each moves to the key that
+        account gives it (adopt_account_keys), progress and discovery alike,
+        so nothing saved is fetched again. For several, the run's progress
+        is left as it is, every record still done under its old key, and
+        each account's statements are taken again under names that say the
+        account, since an old record may hold either account's statement
+        (review of #96). Only discovery's unfinished old records go
+        (forget_superseded). Each store is backed up first when anything in
+        it changes."""
+        moved = forgotten = 0
+        if accounts == 1:
+            moved = adopt_account_keys(self.progress.data, listed)
+            if moved:
+                self.progress.save(backup=True)
+            forgotten = adopt_account_keys(self.discovery.data, listed)
+        elif accounts > 1:
+            forgotten = forget_superseded(self.discovery.data, listed)
         if forgotten:
             self.discovery.save(backup=True)
         if moved or forgotten:
-            log.info("%d saved and %d listed record(s) moved to the key their account gives them",
+            log.info("%d saved and %d listed record(s) moved or dropped for the accounts' keys",
                      moved, forgotten)
 
     def _record_listed(self, doc: Document) -> int:
@@ -528,9 +562,10 @@ class App:
         # How many accounts the lists name, which decides whether a file
         # name says the account. Only the count is ever logged (#96).
         accounts = len(site.accounts_in(docs))
-        listed = [d for d in (self._document_of(r, site.BILLING_URL, accounts > 1) for r in docs)
+        twins = site.twin_labels([r.account for r in docs])
+        listed = [d for d in (self._document_of(r, site.BILLING_URL, accounts > 1, twins) for r in docs)
                   if d is not None]
-        self._adopt_account_keys(listed, accounts > 1)
+        self._adopt_account_keys(listed, accounts)
         for doc in listed:
             n_new += self._record_listed(doc)
         self.discovery.save()
@@ -638,7 +673,11 @@ class App:
                 print("\nInterrupted. Progress saved; run --resume to continue.")
                 raise
             except Exception as e:
-                log.exception("Failed on the document of %s titled %s", doc.date, doc.title)
+                # By its date and title and the kind of failure only. The
+                # exception's own words can hold the file's path, whose name
+                # says the account (#96).
+                log.error("Failed on the document of %s titled %s, %s", doc.date, doc.title,
+                          type(e).__name__)
                 self._record(doc, State.FAILED, notes=str(e))
                 self.stats["failed"] += 1
             self._delay()
@@ -809,9 +848,9 @@ class App:
             # A Download again that saved nothing kept the saved copy's
             # record as it was, so it is said here (paperpull_core.saved_copy).
             if saved_copy.tried(self, d.key):
-                problems.append(f"{d.key}: {saved_copy.tried(self, d.key)}")
+                problems.append(f"{d.date} {d.category} {d.title}: {saved_copy.tried(self, d.key)}")
             if state != State.COMPLETED.value:
-                problems.append(f"{d.key}: {state} - {rec.get('notes', '')}")
+                problems.append(f"{d.date} {d.category} {d.title}: {state} - {rec.get('notes', '')}")
         print("\n" + "-" * 70)
         if problems:
             print("Needs attention:")

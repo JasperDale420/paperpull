@@ -12,9 +12,11 @@ it the download refused both, or took whichever one the page showed.
 Now the label is kept whole in the record, the key holds the masked digits
 it ends with, a sign-in of several accounts puts the label in the file name
 and the index's Document Summary, and the download takes only the link
-naming its own account. Records kept before move to the key their account
-gives them, so nothing saved is fetched again and a sign-in of one account
-keeps every name it had.
+naming its own account, by its masked tail. For a sign-in of one account,
+records kept before move to the key the account gives them, so nothing
+saved is fetched again and every name stays. With several, which account
+a record kept before holds cannot be told, so it stays as it is and each
+account's statement is taken again under a name that says the account.
 
 Everything here is invented.
 """
@@ -228,24 +230,52 @@ def test_a_history_moved_with_minimal_moves_the_same(app):
     assert app._already_done(etrade_docs.Document.from_dict(app.discovery.data[_key(BROKERAGE, "1111")]))
 
 
-def test_several_accounts_saved_before_move_and_rename_names_each_for_its_account(app):
+def test_several_accounts_records_kept_before_stay_and_each_statement_is_taken_again(app):
     """The reporter's case. Two accounts' statements of one day with titles
-    of their own were both saved, named alike, " (2)" telling them apart."""
+    of their own were both saved, named alike, " (2)" telling them apart.
+    With more than one account, nothing proves which account a record kept
+    before holds, so each stays done under its old key and its file keeps
+    its name, and each account's statement is taken again under a name
+    that says the account (review of #96)."""
     brokerage = _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY)
     retirement = _saved_before(app, RETIREMENT, "%s ETRADE Account Statement (2).pdf" % DAY)
+    before = json.loads(json.dumps(app.progress.data))
     app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(RETIREMENT, SECOND, "g2"))
-    assert not [d for d in app._select() if not app._already_done(d)]
-    first = app.progress.data[_key(BROKERAGE, "1111")]
-    second = app.progress.data[_key(RETIREMENT, "2222")]
-    assert (first["pdf_path"], second["pdf_path"]) == (str(brokerage), str(retirement))
-    assert (first["summary"], second["summary"]) == ("Account Statement - " + FIRST,
-                                                     "Account Statement - " + SECOND)
+    assert app.progress.data == before
+    taken = sorted((d.account, _name(d.to_dict())) for d in app._select() if not app._already_done(d))
+    assert taken == [(FIRST, "%s ETRADE Account Statement - %s.pdf" % (DAY, FIRST)),
+                     (SECOND, "%s ETRADE Account Statement - %s.pdf" % (DAY, SECOND))]
     result = renaming.run_for(app, apply_changes=True, say=lambda *_a: None)
-    assert result.renamed == 2
-    folder = app.paths.folder_for("Statement")
-    assert sorted(p.name for p in folder.iterdir()) == [
-        "%s ETRADE Account Statement - %s.pdf" % (DAY, FIRST),
-        "%s ETRADE Account Statement - %s.pdf" % (DAY, SECOND)]
+    assert result.renamed == 0 and brokerage.exists() and retirement.exists()
+
+
+def test_lists_that_leave_one_accounts_statement_out_credit_nothing_to_another(app):
+    """The review's case. Before #96 two accounts' Brokerage Statements of a
+    day were one record, saved once with either account's PDF. These lists
+    leave the second account's August and July statements out and show its
+    June Retirement Statement. Moved to the first account's key, the record
+    kept before would mark the first account's statement saved when it may
+    hold the second's."""
+    days = ("2025-08-31", "2025-07-31", "2025-06-30")
+    for day in days:
+        _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % day, day=day)
+    _saved_before(app, RETIREMENT, "2025-06-30 ETRADE Account Statement (2).pdf", day="2025-06-30")
+    before = json.loads(json.dumps(app.progress.data))
+    app.listing(_raw(BROKERAGE, FIRST, "a1", day="2025-08-31"), _raw(BROKERAGE, FIRST, "a2", day="2025-07-31"),
+                _raw(RETIREMENT, SECOND, "b3", day="2025-06-30"), _raw(BROKERAGE, FIRST, "a3", day="2025-06-30"))
+    assert app.progress.data == before
+    taken = sorted((d.date, d.title, d.account) for d in app._select() if not app._already_done(d))
+    assert taken == sorted([(day, BROKERAGE, FIRST) for day in days] + [("2025-06-30", RETIREMENT, SECOND)])
+
+
+def test_two_accounts_with_one_masked_tail_never_share_a_key(app):
+    """Their tails cannot tell them apart, so each is keyed by its whole
+    label, and each is counted as an account of its own."""
+    twin = "Invented Roth IRA -1111"
+    app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(BROKERAGE, twin, "g2"))
+    assert sorted(app.discovery.data) == sorted([_key(BROKERAGE, FIRST), _key(BROKERAGE, twin)])
+    assert sorted(r["summary"] for r in app.discovery.data.values()) == [
+        "Account Statement - " + FIRST, "Account Statement - " + twin]
 
 
 @pytest.mark.parametrize("done", [False, True])
@@ -288,19 +318,33 @@ def test_only_a_count_of_accounts_is_logged(app, caplog):
 
 
 def test_a_failed_download_is_logged_by_its_date_and_title(app, caplog):
-    app.listing(_raw(BROKERAGE, FIRST, "g1"))
-    doc = app._select()[0]
+    """An error writing the file names its path, and a file's name says
+    the account, so neither the key nor the error's words are logged."""
+    app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(BROKERAGE, SECOND, "g2"))
+    doc = next(d for d in app._select() if d.account == FIRST)
 
     def fails(page, d, filename):
-        raise RuntimeError("invented failure")
+        raise OSError(13, "invented failure", str(app.paths.folder_for("Statement") / filename))
     app._on_its_site = lambda: None
     app.download_one = fails
     app._delay = lambda *a, **k: None
     caplog.set_level(logging.INFO)
     app.process([doc])
-    said = [r.getMessage() for r in caplog.records if r.exc_info]
+    said = [r.getMessage() for r in caplog.records if "Failed on" in r.getMessage()]
     assert said and DAY in said[0] and BROKERAGE in said[0], said
-    assert doc.key not in said[0] and "1111" not in said[0], said
+    for leaked in (doc.key, "Invented", "1111"):
+        assert leaked not in caplog.text, (leaked, caplog.text)
+
+
+def test_the_pilot_report_names_a_document_by_its_date_kind_and_title(app, capsys):
+    app.listing(_raw(BROKERAGE, FIRST, "g1"))
+    doc = app._select()[0]
+    app._record(doc, State.FAILED, notes="invented")
+    capsys.readouterr()
+    app._pilot_report([doc])
+    out = capsys.readouterr().out
+    assert "%s Statement %s: Failed" % (DAY, BROKERAGE) in out, out
+    assert doc.key not in out and "1111" not in out, out
 
 
 def test_the_download_is_handed_the_documents_account(app, monkeypatch, tmp_path):
@@ -531,3 +575,80 @@ def test_each_step_chooses_by_the_account_on_its_own(page, monkeypatch, tmp_path
     page.set_content(_divs(BOTH, "li"))
     assert site._try_every_way(page, tmp_path, DAY, tmp_path / "out.pdf", BROKERAGE, [])
     assert pressed == ["g-second"]
+
+
+# --- the account as a link writes it ----------------------------------------------
+
+SHAPES = ["table", "div", "li"]
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+@pytest.mark.parametrize("day", ["alone", "shared"])
+@pytest.mark.parametrize("named", ["Invented Brokerage - 1111", "INDIVIDUAL BROKERAGE -1111",
+                                   "Invented Brokerage ...1111"])
+def test_a_link_writing_the_account_another_way_is_still_its_own(page, run, monkeypatch, shape, day, named):
+    """Nothing says a link writes the account exactly as the list does. It
+    was compared whole, so a link spacing, capitalizing or masking it
+    another way was refused, and every statement would have gone to
+    review (review of #96). The masked tails decide."""
+    if day == "alone":
+        _lists(monkeypatch, FIRST)
+        rows = [(BROKERAGE, FIRST, named, "g-first")]
+    else:
+        _lists(monkeypatch, FIRST, SECOND)
+        rows = [(BROKERAGE, SECOND, SECOND, "g-second"), (BROKERAGE, FIRST, named, "g-first")]
+    page.set_content(_table(rows) if shape == "table" else _divs(rows, shape))
+    hits, brings, download = run
+    brings.update({"g-first", "g-second"})
+    got, out, trace = download(page, FIRST)
+    assert got and hits == ["g-first"], (hits, trace)
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_two_accounts_with_one_tail_are_told_apart_by_their_whole_labels(page, run, monkeypatch, shape):
+    twin = "Invented Roth IRA -1111"
+    _lists(monkeypatch, FIRST, twin)
+    rows = [(BROKERAGE, FIRST, "Invented Brokerage - 1111", "g-first"),
+            (BROKERAGE, twin, "INVENTED ROTH IRA - 1111", "g-twin")]
+    page.set_content(_table(rows) if shape == "table" else _divs(rows, shape))
+    hits, brings, download = run
+    brings.update({"g-first", "g-twin"})
+    got, out, trace = download(page, twin)
+    assert got and hits == ["g-twin"], (hits, trace)
+
+
+# --- a row of another account the lists left out ------------------------------------
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_a_row_showing_another_accounts_tail_is_never_taken_when_its_link_names_none(
+        page, run, monkeypatch, shape):
+    """The review's case. The lists gave the day to the first account
+    alone, leaving the second's statement out, and the page shows only the
+    second's row, its link naming no account. It was saved as the first's."""
+    _lists(monkeypatch, FIRST)
+    rows = [(BROKERAGE, SECOND, "", "g-second")]
+    page.set_content(_table(rows) if shape == "table" else _divs(rows, shape))
+    hits, brings, download = run
+    brings.update({"g-first", "g-second"})
+    got, out, trace = download(page, FIRST)
+    assert not got and not out.exists() and hits == [], (hits, trace)
+    _says_no_account(trace)
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_a_row_showing_another_accounts_label_is_never_taken_when_neither_shows_digits(
+        page, run, monkeypatch, shape):
+    """Labels with no masked digits, the other account named by the lists
+    on another day."""
+    joint, family = "Joint Account", "Family Joint"
+    monkeypatch.setattr(site, "_LISTED", {DAY: 1, "2025-07-31": 1})
+    monkeypatch.setattr(site, "_LISTED_TITLES", {DAY: {BROKERAGE}, "2025-07-31": {BROKERAGE}})
+    monkeypatch.setattr(site, "_LISTED_ACCOUNTS", {(DAY, BROKERAGE.lower()): {joint.lower()},
+                                                   ("2025-07-31", BROKERAGE.lower()): {family.lower()}},
+                        raising=False)
+    rows = [(BROKERAGE, family, "", "g-family")]
+    page.set_content(_table(rows) if shape == "table" else _divs(rows, shape))
+    hits, brings, download = run
+    brings.add("g-family")
+    got, out, trace = download(page, joint)
+    assert not got and hits == [], (hits, trace)

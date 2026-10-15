@@ -21,12 +21,16 @@ All notable changes to PaperPull are recorded here. Versioning follows
   sign-in has more than one account, the file name and the index's Document
   Summary end with the account, as in "Account Statement - Individual
   Brokerage -1234". A download takes only the link that names its own
-  account. A statement saved before moves to its account in your history the
-  first time you Discover, so nothing is downloaded again, a sign-in with one
-  account keeps every file name it had, and Rename can add the account to
-  the names of statements saved before. An account is known by its last
-  digits, so changing its nickname on E*TRADE does not make its statements
-  download again. Only a count of accounts is written to the log. Thanks to
+  account, matched by the account's last digits, or by its whole name when
+  it shows none. On a sign-in with one account, the statements saved before
+  keep their records and file names the first time you Discover, so nothing
+  is downloaded again. On a sign-in with more than one account, which
+  account a statement saved before belongs to cannot be told, so those
+  files stay as they are and each account's statements are downloaded once
+  more, named with the account. When an account's name ends with its last
+  digits, changing its nickname on E*TRADE does not make its statements
+  download again. Discovery logs how many accounts it found and never their
+  names, and a failed download is logged by its date and title. Thanks to
   @appchamp for the report.
 
 ## [0.52.0] - 2026-10-14

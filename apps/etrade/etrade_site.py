@@ -678,7 +678,7 @@ def _docs_from_api(body: dict) -> List[dict]:
 # semicolon. Digits printed any other way, a year in a nickname, are not
 # one.
 _ACCOUNT_TAIL_RE = re.compile(
-    r"(?:-|\.{2,}|\*{2,}|[xX•]{2,}|#)\s*(\d{3,6})\)?\s*(?=[,;]|$)")
+    r"(?:-|\.{2,}|\*{2,}|[xX•]{2,})\s*(\d{3,6})\)?\s*(?=[,;]|$)")
 
 
 def account_tails(label: str) -> List[str]:
@@ -689,16 +689,40 @@ def account_tails(label: str) -> List[str]:
     return [m.group(1) for m in _ACCOUNT_TAIL_RE.finditer(re.sub(r"\s+", " ", label or "").strip())]
 
 
+def account_form(label: str) -> str:
+    """An account's label in one form whatever its spacing, capitals or way
+    of masking, "invented brokerage -1111" for "Invented Brokerage - 1111"
+    or "INVENTED BROKERAGE ...1111", to compare two labels whole."""
+    text = re.sub(r"\s+", " ", label or "").strip().lower()
+    return _ACCOUNT_TAIL_RE.sub(lambda m: "-" + m.group(1), text)
+
+
+def twin_labels(labels) -> set:
+    """The labels, each in account_form, that show the same masked tails as
+    another label naming a different account, "Invented Brokerage -1111"
+    beside "Invented Roth IRA -1111". Their tails cannot tell them apart, so
+    each is known by its whole label."""
+    by_tails: dict = {}
+    for label in labels or []:
+        tails = tuple(account_tails(label))
+        if tails:
+            by_tails.setdefault(tails, set()).add(account_form(label))
+    return {form for forms in by_tails.values() if len(forms) > 1 for form in forms}
+
+
 def accounts_in(docs) -> set:
     """The accounts a list's documents belong to, each by its masked tail,
-    or by its whole label when it shows none. A label naming several
-    accounts counts each of them."""
+    or by its whole label when it shows none or another label shows the same
+    tail. A label naming several accounts counts each of them."""
+    labels = [re.sub(r"\s+", " ", (d.get("account") if isinstance(d, dict) else getattr(d, "account", "")) or "").strip()
+              for d in docs or []]
+    twins = twin_labels(labels)
     found = set()
-    for d in docs or []:
-        label = re.sub(r"\s+", " ", (d.get("account") if isinstance(d, dict) else getattr(d, "account", "")) or "").strip()
+    for label in labels:
         if not label:
             continue
-        found.update(account_tails(label) or [label.lower()])
+        tails = account_tails(label)
+        found.update(tails if tails and account_form(label) not in twins else [account_form(label)])
     return found
 
 
@@ -1318,6 +1342,7 @@ _REFUSALS = (
     "the control sits outside any one row",
     "a control on the page could not be read",
     "a row of this date could not be read",
+    "the row may be another account's",
 )
 
 # Why a row may hold more than this document, in the only words that may
@@ -1414,14 +1439,66 @@ _FOR: dict = {}
 
 
 def _for_this(title: str) -> Optional[dict]:
-    """{account, shared} when `title` is the title of the document of one
-    account being taken, else None. shared says the lists did not give its
-    date and title to this account alone, so another account may have a
-    document of the same title that day, or the lists were not read."""
+    """{account, shared, by_label, others} when `title` is the title of the
+    document of one account being taken, else None. shared says the lists
+    did not give its date and title to this account alone, so another
+    account may have a document of the same title that day, or the lists
+    were not read. by_label says another account the lists named shows the
+    same masked tail, so only the whole label tells them apart. others are
+    the other accounts the lists named, each in account_form."""
     if not _FOR.get("account") or _norm(title) != _FOR.get("title"):
         return None
+    mine = _FOR["account"]
     listed = _LISTED_ACCOUNTS.get((_FOR.get("date"), _FOR.get("title")), set())
-    return {"account": _FOR["account"], "shared": listed != {_FOR["account"]}}
+    shared = {account_form(a) for a in listed} != {account_form(mine)}
+    everyone = {a for accounts in _LISTED_ACCOUNTS.values() for a in accounts if a} | {mine}
+    return {"account": mine, "shared": shared,
+            "by_label": account_form(mine) in twin_labels(everyone),
+            "others": {account_form(a) for a in everyone} - {account_form(mine)}}
+
+
+def _same_account(named: str, held: dict) -> bool:
+    """Whether the account a name gives after "PDF for" is the account of
+    the document being taken. By the masked tails the two show, since a
+    link can write the account another way than the list does, "Invented
+    Brokerage - 1111" or in capitals beside the list's "Invented Brokerage
+    -1111", and by the whole label, in account_form, when neither shows a
+    tail or another account the lists named shows the same tail. One
+    showing a tail and the other none is not the same (review of #96)."""
+    if held["by_label"]:
+        return account_form(named) == account_form(held["account"])
+    mine, theirs = account_tails(held["account"]), account_tails(named)
+    if mine or theirs:
+        return mine == theirs
+    return account_form(named) == account_form(held["account"])
+
+
+def _row_is_this_accounts(words, row_texts, title: str) -> bool:
+    """Whether a control whose words are `words`, in a row that says
+    `row_texts`, may be this account's document. A control naming the
+    document for this account may. Any other, one naming the document with
+    no account, a View or a box, may only when nothing the row says shows
+    another account, neither a masked tail other than this account's nor
+    the label of another account the lists named. The lists can leave out
+    another account's statement of the day, and its row, its link naming
+    no account, was taken for this one's (review of #96). A row whose words
+    could not be read may be anyone's, and so may one when another account
+    shows this account's tail. Outside a download of one account, every
+    control may."""
+    held = _for_this(title)
+    if held is None:
+        return True
+    for word in words or ():
+        found = _for_part(word, title)
+        if found and _same_account(found, held):
+            return True
+    if row_texts is None or held["by_label"]:
+        return False
+    pieces = [p for t in row_texts if isinstance(t, str) for p in re.split(r"[\n\t|]+", t) if p.strip()]
+    if any(account_form(p) in held["others"] for p in pieces):
+        return False
+    shown = {tail for p in pieces for tail in account_tails(p)}
+    return shown <= set(account_tails(held["account"]))
 
 
 def names_title(name: str, title: str) -> bool:
@@ -1441,7 +1518,7 @@ def names_title(name: str, title: str) -> bool:
         return True
     if not found:
         return not held["shared"]
-    return _norm(found) == held["account"]
+    return _same_account(found, held)
 
 
 def _account_ok(words, title: str) -> bool:
@@ -1461,18 +1538,20 @@ def _account_ok(words, title: str) -> bool:
         found = _for_part(word, title)
         if not found:
             continue
-        if _norm(found) != held["account"]:
+        if not _same_account(found, held):
             return False
         exact = True
     return exact or not held["shared"]
 
 
 def _js_title(title: str) -> list:
-    """The title as the page scripts take it, with the account and whether
-    it is shared while download_bill takes a document of one account, so a
-    script reads a name the way names_title does."""
+    """The title as the page scripts take it, with the account, whether it
+    is shared and whether only its whole label tells it apart, while
+    download_bill takes a document of one account, so a script reads a
+    name the way names_title does."""
     held = _for_this(title)
-    return [title or "", held["account"] if held else "", bool(held and held["shared"])]
+    return [title or "", held["account"] if held else "", bool(held and held["shared"]),
+            bool(held and held["by_label"])]
 
 
 def _title_name_re(title: str):
@@ -1660,6 +1739,9 @@ def _control_for(page, iso: str, title: str = "", trace: Optional[list] = None):
             if not _in_one_row(around):
                 _refuse(trace, "control", "the control sits outside any one row", iso, len(matches), 1)
                 return None, ""
+            if not _row_is_this_accounts(named[0][2], around.get("texts"), title):
+                _refuse(trace, "control", "the row may be another account's", iso, len(matches), 1)
+                return None, ""
             return named[0][0], _guard_word(named[0][1], title)
         if len(named) > 1:
             _refuse(trace, "control", "more than one control of this date names this document",
@@ -1678,6 +1760,9 @@ def _control_for(page, iso: str, title: str = "", trace: Optional[list] = None):
             return None, ""
         if not _in_one_row(around):
             _refuse(trace, "control", "the control sits outside any one row", iso, 1, 0)
+            return None, ""
+        if not _row_is_this_accounts(matches[0][2], around.get("texts"), title):
+            _refuse(trace, "control", "the row may be another account's", iso, 1, 0)
             return None, ""
         if _says_only_an_action(mine) or _lone_control_may_be_pressed(around, iso, title, mine):
             return el, name
@@ -2408,6 +2493,14 @@ def _named_link(row, title: str, trace: Optional[list] = None):
                     trace.append({"note": "a link naming this document holds something else that "
                                           "could be pressed, so it was passed over"})
                 continue
+            # A link naming no account, in a row showing another account,
+            # is that account's (review of #96).
+            if not _row_is_this_accounts((shows,) + labels, around.get("texts") if around.get("row") else None,
+                                         title):
+                if trace is not None:
+                    trace.append({"note": "a link naming this document sits in a row that may be "
+                                          "another account's, so it was passed over"})
+                continue
             return el, False
     return None, unread or unmade == len(looks)
 
@@ -2528,6 +2621,7 @@ def _row_link_for(page, iso_date: str, title: str, trace: Optional[list] = None)
                 if not (text or aria) or _is_insert_text((text,), title, (aria,)) \
                         or _names_another((text, aria), title, iso_date) \
                         or not _account_ok((text, aria), title) \
+                        or not _row_is_this_accounts((text, aria), words, title) \
                         or not _guard_allows((text, aria), title):
                     continue
                 usable.append((el, {"text": text, "aria": aria}))
@@ -2567,8 +2661,9 @@ def _row_link_for(page, iso_date: str, title: str, trace: Optional[list] = None)
 # being taken and whether another account may have a document of the same
 # title and day (#96).
 _PRESS_JS = r"""
-  const [title, account, shared] = Array.isArray(docName)
-    ? [String(docName[0] || ''), String(docName[1] || ''), !!docName[2]] : [String(docName || ''), '', false];
+  const [title, account, shared, byLabel] = Array.isArray(docName)
+    ? [String(docName[0] || ''), String(docName[1] || ''), !!docName[2], !!docName[3]]
+    : [String(docName || ''), '', false, false];
   const own = (el) => Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent.trim()).filter(Boolean).join(' ');
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const titleRe = title ? new RegExp('^\\s*' + esc(title.trim()) + '(\\s+pdf(\\s+for\\s+(\\S.*?))?)?\\s*$', 'i') : null;
@@ -2580,17 +2675,30 @@ _PRESS_JS = r"""
     const m = titleRe.exec((s || '').replace(/\s+/g, ' ').trim());
     return m ? (m[3] || '').trim() : null;
   };
+  // An account's masked tails and its label in one form (account_tails,
+  // account_form), and whether the account a name gives is this one, by
+  // its tails, or by its whole label when neither shows a tail or another
+  // account shows the same tail (_same_account).
+  const TAIL = /(?:-|\.{2,}|\*{2,}|[xX•]{2,})\s*(\d{3,6})\)?\s*(?=[,;]|$)/g;
+  const tailsOf = (s) => Array.from(norm(s).matchAll(TAIL)).map(m => m[1]);
+  const form = (s) => norm(s).replace(TAIL, (m, d) => '-' + d);
+  const sameAccount = (f) => {
+    if (byLabel) return form(f) === form(account);
+    const mine = tailsOf(account), theirs = tailsOf(f);
+    if (mine.length || theirs.length) return mine.join('+') === theirs.join('+');
+    return form(f) === form(account);
+  };
   // The words of one element may be this account's document. None of them
   // names the title for another account, and when another account may have
   // a document of the same title and day, one names it for this account
-  // exactly (_account_ok).
+  // (_account_ok).
   const accountOk = (words) => {
     if (!account) return true;
     let exact = false;
     for (const w of words) {
       const f = forOf(w);
       if (!f) continue;
-      if (norm(f) !== norm(account)) return false;
+      if (!sameAccount(f)) return false;
       exact = true;
     }
     return exact || !shared;
@@ -3304,6 +3412,10 @@ def _try_every_way(page, dl_dir, iso_date: str, out_path: Path, title: str, trac
         # name that does not give this account when another account may
         # have a document of the same title and day (#96).
         if not _account_ok(words, title):
+            return True
+        # Nor, in a row showing another account, anything that does not
+        # name this one (review of #96).
+        if not _row_is_this_accounts(words, found.get("texts"), title):
             return True
         # What is pressed has to look like a document action, the rule
         # is_safe_control holds every other step to. The row walk asked only

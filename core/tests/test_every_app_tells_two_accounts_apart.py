@@ -22,6 +22,9 @@ built by hand, while its discovery dropped the account the list gave it, so
 two accounts' statements of one day were one document (#96). So an app's
 own discovery is driven too, from the list its site hands it, and has to
 keep both accounts' statements, each with its account.
+
+E*TRADE's checks of the move off a cut key skip, since no E*TRADE key ever
+held an account before #96, so none was ever cut.
 """
 import importlib
 import sys
