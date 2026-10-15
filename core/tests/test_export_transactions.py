@@ -749,5 +749,60 @@ def test_a_closing_date_label_with_a_stray_space_is_still_read():
         None, "2026-08-13")
 
 
+def _cut_row(pieces, top, x0=300.0, gaps=()):
+    """One row as pdfplumber cut it on dertbv's September and October Visa
+    (#32), every piece a line of its own at one height. Characters are 5
+    points apart, and a wider gap opens before each character index in
+    `gaps`, where a space falls."""
+    out, x, i = [], x0, 0
+    for piece in pieces:
+        chars = []
+        for ch in piece:
+            if ch == " ":
+                continue
+            if i in gaps:
+                x += 5.0
+            chars.append({"text": ch, "x0": x, "x1": x + 4.5, "top": top, "size": 8.0})
+            x += 5.0
+            i += 1
+        out.append({"text": piece, "top": top, "chars": chars})
+    return out
+
+
+# The 21 pieces of the label row as pdfplumber 0.11.10 gave them, the date's
+# digits written in. All sit at top 457.2, and only "i ng Date" is longer
+# than two characters.
+SEPTEMBER_ROW = ["St", "a", "t", "e", "m", "e", "n", "t", "C", "l", "o", "s", "i ng Date",
+                 "0", "9", "/1", "3", "/2", "0", "2", "6"]
+
+
+def test_a_long_piece_cut_from_a_scattered_row_is_rebuilt_with_it():
+    """dertbv's September and October Visa on 0.52.0 (#32). The label row
+    reached page_lines as 21 pieces at one height. "i ng Date" was long
+    enough to be kept as a line of its own, sorted ahead of the rebuilt
+    "Statement Clos 09/13/2026", and the label never stood before its date.
+    A longer piece at the height of the scattered ones is now rebuilt with
+    them, as @dertbv proposed."""
+    tls = ([_line("Credit Limit $9,000.00", 400.0)]
+           + _cut_row(SEPTEMBER_ROW, 457.2, gaps=(9, 13, 16))
+           + [_line("Days in Billing Cycle 31", 480.0)])
+    lines = xt.page_lines(tls)
+    assert lines[0] == "Credit Limit $9,000.00" and lines[-1] == "Days in Billing Cycle 31"
+    assert len(lines) == 3
+    assert xt.find_period(lines) == (None, "2026-09-13")
+
+
+def test_a_whole_line_away_from_the_scattered_rows_is_kept_as_it_was():
+    """Only a longer piece within a point of two scattered ones is taken into
+    the rebuild. A whole line on its own height elsewhere on the page stays
+    exactly as pdfplumber read it."""
+    tls = ([_line("Previous Balance $2,500.00", 300.0)]
+           + _cut_row(SEPTEMBER_ROW, 457.2, gaps=(9, 13, 16))
+           + [_line("Payment Due Date 10/07/2026", 470.0)])
+    lines = xt.page_lines(tls)
+    assert lines[0] == "Previous Balance $2,500.00"
+    assert lines[-1] == "Payment Due Date 10/07/2026"
+
+
 def test_the_cache_is_read_again_for_the_rebuilt_lines():
-    assert xt.CACHE_VERSION >= 8
+    assert xt.CACHE_VERSION >= 9
