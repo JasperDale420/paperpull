@@ -32,7 +32,7 @@ SPEC = AppSpec(
     kind=DOCUMENT,
     folders=[
         Folder("statements", "Statements"),
-        # Bilt lists no tax forms; made only if
+        # Bilt lists no tax forms, so this is made only if
         # something routes here.
         Folder("tax_documents", "Tax Documents", precreate=False),
         Folder("insurance_documents", "Insurance Documents", precreate=False),

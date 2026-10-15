@@ -506,8 +506,8 @@ class App:
         # The wallet is opened and its list read in one go by the site
         # layer, so a sign-out anywhere on the way reaches the boundary below
         # and stops the run, rather than a prompt to sign in again. A tab of
-        # the person's off Bilt's host is never loaded or read; a blank tab
-        # of this run's own is opened there. Only "View balance summary" and
+        # the person's off Bilt's host is never loaded or read, and a blank
+        # tab of this run's own is opened there. Only "View balance summary" and
         # "View statements" are pressed.
         self.check_session(page)
         stopped = None
@@ -675,16 +675,20 @@ class App:
             self.stats["duplicate_filenames"] += 1
 
         trace: list = []
+        # A Download again may get the very bytes this statement's own copy
+        # holds, which is no copy of another statement, so the file its
+        # record names is left out of the same-bytes check (site.bind).
+        before = (self.progress.get(doc.key) or {}).get("pdf_path") or ""
         saved = site.download_statement(page, self.run, out_path, card_id=doc.card_id,
                                         statement_id=doc.document_id, iso_date=doc.date,
-                                        trace=trace)
+                                        trace=trace, own_files=[before] if before else [])
         if saved is None:
             # The page has turned this statement's button off. Nothing
             # was pressed and no new record is written, so the next run asks
             # for it again, and the run goes on to the next statement. A
             # statement saved before only has a note added, below.
-            log.info("the statement dated %s is turned off on the page; left for the next run",
-                     doc.date)
+            log.info("the statement dated %s is turned off on the page, so it is left for the "
+                     "next run", doc.date)
             print("  Its button is turned off on the page - left for the next run.")
             if saved_copy.holding(self, doc.key):
                 # A Download again of a statement saved before. Its record

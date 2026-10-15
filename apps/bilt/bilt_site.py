@@ -59,7 +59,7 @@ WHAT THE RUN SETTLED (2026-10-15, eight statements saved)
     Pilot, Run All), and the list was heard anew on each load.
   Still open: the sign-in page's address (LOGIN_PATHS, never seen), how
   long an idle session lasts, whether ids hold across a fresh sign-in, and
-  a wallet with more than one Bilt Card (only one was seen; two stop).
+  a wallet with more than one Bilt Card (only one was seen, and two stop).
 
 THE THREE PRESSES. Nothing else is ever pressed, and each goes through one
 place, _press, which reads every label the control carries, asks this
@@ -77,10 +77,14 @@ pressed. A turned-off opener stops the list, and a turned-off statement
 button leaves that one statement for the next run while the run goes on.
 
 THE LIST IS KEPT WHOLE. The statements answer the page got must be one
-answer, for the card the wallet shows, its count equal to its list, with
-no statement id or date twice, and the sheet's buttons must show exactly
-the answer's dates, one button each, read twice alike. Anything else stops
-the list, which is then never called whole.
+answer, for the card the wallet shows, holding nothing but its list and
+its count (the live answer held only those, so a pager's key, a cursor or
+a total stops it), its count equal to its list, with no statement id or
+date twice, and the sheet's buttons must show exactly the answer's dates,
+one button each, read twice alike. A sheet that shows a control for more,
+older or earlier statements, or a next page, stops the list too, since the
+answer and the sheet would then agree on a part (PAGER_RE). Anything else
+stops the list, which is then never called whole.
 
 ONE STATEMENT. The wallet is loaded again and the list read again, whole,
 and exactly one entry must carry the record's statementId and date. Then
@@ -115,7 +119,7 @@ KNOWN CEILINGS
     list. The carousel is never moved, so the wallet has to be left showing
     the Bilt Card.
   * Statements of the Wells Fargo issued Bilt card (before February 2026)
-    are not here; they are Wells Fargo's (apps/wellsfargo).
+    are not here. They are Wells Fargo's (apps/wellsfargo).
 """
 from __future__ import annotations
 
@@ -209,7 +213,7 @@ _DAY_RE = _MONTH_RE + r" (\d{1,2}), (\d{4})"
 STATEMENT_ARIA_RE = re.compile(r"Download statement for " + _DAY_RE)
 STATEMENT_TEXT_RE = re.compile(_DAY_RE)
 
-# is_safe_control is what the core's own tests and the survey ask about; the
+# is_safe_control is what the core's own tests and the survey ask about. The
 # presses themselves use the three predicates below.
 SAFE_DOC_CONTROL_RES = (
     re.compile(r"(view|download)\s+(card\s+)?statements?", re.I),
@@ -692,7 +696,7 @@ class _Watch:
     """The page's own statements answers, heard on the browser context from
     the moment it is attached, each kept with the page that asked for it.
     Only answers from the run's own page are ever read. Nothing is read from
-    an answer here but its address, method, status and page; its body is
+    an answer here but its address, method, status and page. Its body is
     read after the wait, by read_list or read_details."""
 
     def __init__(self):
@@ -765,7 +769,7 @@ class Statement:
 
 def _json_of(response, what: str):
     """A statements answer's JSON. A redirect, 401, 403 or HTML is Bilt
-    saying the session has ended; anything else not a 200 JSON answer stops
+    saying the session has ended. Anything else not a 200 JSON answer stops
     the list."""
     if _signed_out_status(response):
         raise SessionExpired("the %s answer was signed out" % what)
@@ -783,14 +787,25 @@ def _json_of(response, what: str):
         raise ListStopped("the %s answer was not JSON" % what)
 
 
+# What a statements answer holds, all of it. The live answer held these two
+# keys and nothing else. Its count is the length of its own list, so it
+# cannot show a cut list by itself, and a key beyond these two (hasMore, a
+# cursor, a page, a total) may be how Bilt says there is more.
+LIST_KEYS = frozenset({"statements", "count"})
+
+
 def statements_of(got) -> List[Statement]:
-    """The statements of one list answer. Its count must be its list, every
-    entry an object with a statementId of the expected shape and a calendar
-    date, and no id or date twice, or the list stops."""
+    """The statements of one list answer. It holds nothing but its list and
+    its count (LIST_KEYS), its count must be its list, every entry an object
+    with a statementId of the expected shape and a calendar date, and no id
+    or date twice, or the list stops."""
     if not isinstance(got, dict) or not isinstance(got.get("statements"), list):
         raise ListStopped("the statements answer is not the expected shape")
     entries = got["statements"]
     _guard_words([e.get("statementId") for e in entries if isinstance(e, dict)])
+    if set(got) - LIST_KEYS:
+        raise ListStopped("the statements answer holds more than its list and its count, which "
+                          "may say there are more statements, so it is not read as the whole list")
     count = got.get("count")
     if isinstance(count, bool) or not isinstance(count, int) or count != len(entries):
         raise ListStopped("the statements answer's count is not its list")
@@ -841,7 +856,7 @@ def read_details(response, card_id: str, statement: Statement) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Reading the wallet. Read only; nothing on the page is changed.
+# Reading the wallet. Read only, and nothing on the page is changed.
 # ---------------------------------------------------------------------------
 # The one card's label on the wallet, "Bilt Blue Card •••• 1234", read from
 # the smallest element holding it. Live that element also holds the card's
@@ -849,8 +864,22 @@ def read_details(response, card_id: str, statement: Statement) -> str:
 # else may. The same pattern serves the page script and the tests.
 CARD_LABEL_RE = re.compile(r"^Bilt [A-Za-z ]*Card\s*[•*]+\s*(\d{4})(?: View)?$")
 
+# A control on the statements sheet that would bring more of the list than
+# it shows: "Load more", "Show older statements", "More", "Older", "View all
+# statements", "Next page". Read whole, from a control's text, aria-label
+# or title. The live sheet showed none. One shown on the sheet stops the
+# list (_no_pager), and none is ever pressed (FORBIDDEN_CONTROL_RE). "View
+# all" alone is the wallet's own Recent activity link, so "all" counts only
+# with "statements".
+PAGER_RE = re.compile(
+    r"^(?:(?:load|show|see|view)\s+(?:more|older|earlier|previous)(?:\s+statements?)?"
+    r"|(?:load|show|see|view)\s+all\s+statements?"
+    r"|(?:more|older|earlier|previous)(?:\s+statements?)?"
+    r"|next\s+page)$", re.I)
+
 _STATE_JS = r"""() => {
   const CARD_LABEL_PATTERN = %s;
+  const PAGER_PATTERN = %s;
   const tidy = s => (s || '').replace(/\s+/g, ' ').trim();
   const shown = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
                       && getComputedStyle(el).visibility !== 'hidden';
@@ -904,12 +933,33 @@ _STATE_JS = r"""() => {
       el = el.parentElement;
     }
   }
+  // The statements sheet: from the smallest element holding every statement
+  // button, up to the last element that holds none of the wallet's own
+  // controls (the balance summary button, the transactions link). A shown
+  // control in it that would bring more statements is counted, never named.
+  out.pagers = [];
+  const rows = Array.from(document.querySelectorAll('[aria-label^="Download statement for "]'));
+  if (rows.length) {
+    const pager = new RegExp(PAGER_PATTERN, 'i');
+    const walletOwn = el => !!el.querySelector(
+      '[aria-label="View balance summary"], a[href^="/wallet/transactions?cardId="]');
+    let sheet = rows[0].parentElement;
+    while (sheet && !rows.every(b => sheet.contains(b))) sheet = sheet.parentElement;
+    while (sheet && sheet.parentElement && sheet.parentElement !== document.body
+           && sheet.parentElement !== document.documentElement && !walletOwn(sheet.parentElement))
+      sheet = sheet.parentElement;
+    for (const el of (sheet ? sheet.querySelectorAll('button, [role="button"], a, [role="link"]') : [])) {
+      if (!shown(el)) continue;
+      const said = [el.innerText, el.getAttribute('aria-label'), el.getAttribute('title')].map(tidy);
+      if (said.some(s => s && pager.test(s))) out.pagers.push(1);
+    }
+  }
   for (const el of document.querySelectorAll('[aria-label^="User profile"]'))
     out.profile.push(tidy(el.getAttribute('aria-label')));
   const body = (document.body && document.body.innerText) || '';
   for (const m of body.matchAll(/Welcome, ([^\n]{1,80})/g)) out.welcome.push(tidy(m[1]));
   return out;
-}""" % json.dumps(CARD_LABEL_RE.pattern)
+}""" % (json.dumps(CARD_LABEL_RE.pattern), json.dumps(PAGER_RE.pattern))
 
 _LABELS_JS = r"""el => [el.innerText, el.getAttribute('aria-label'), el.getAttribute('title')]
   .map(s => (s || '').replace(/\s+/g, ' ').trim()).filter(Boolean)"""
@@ -983,6 +1033,15 @@ def _wallet_ready(state: dict) -> bool:
         and bool(card_of(state)[0])
 
 
+def _no_pager(state: dict) -> None:
+    """Stop the list when the statements sheet shows a control that would
+    bring more of it (PAGER_RE). The answer and the sheet would then agree
+    on a part of the list, and nothing would say so."""
+    if state.get("pagers"):
+        raise ListStopped("the statements sheet shows a control for more or older statements, "
+                          "so what it shows may be only a part of the list")
+
+
 def sheet_dates(state: dict) -> Optional[List[str]]:
     """The dates of the statement buttons the sheet shows, sorted, or None
     when a button is hidden, is not a button, or does not read exactly one
@@ -1046,7 +1105,7 @@ def _press(page, locator, *, what: str, guard, step: str, run: Run,
     except pressing.TurnedOff:
         if not leave_if_off:
             raise ListStopped("%s is turned off on the page" % what)
-        log.info("%s is turned off on the page; nothing was pressed", what)
+        log.info("%s is turned off on the page, and nothing was pressed", what)
         return False
     check_signed_in(page)
     return True
@@ -1109,9 +1168,10 @@ def read_listing(page, run: Optional[Run] = None) -> Listing:
     """Open the wallet, press "View balance summary" and then "View
     statements", and read the list whole: exactly one statements answer
     heard from this page since the load, for the card the wallet shows,
-    and the sheet showing exactly its dates, one button each, read again
-    alike after the page settles. Raises ListStopped for anything else,
-    SessionExpired for a signed-out session."""
+    holding only its list and count, and the sheet showing exactly its
+    dates, one button each, and no control for more, read again alike after
+    the page settles. Raises ListStopped for anything else, SessionExpired
+    for a signed-out session."""
     run = run or Run()
     card_id, last4, mark = _open(page, run)
     _press(page, _button(page, SUMMARY_LABEL), what="the balance summary button",
@@ -1123,6 +1183,7 @@ def read_listing(page, run: Optional[Run] = None) -> Listing:
     got: dict = {}
 
     def ready(state: dict) -> bool:
+        _no_pager(state)
         answers = run.watch.lists_since(mark, page)
         if len(answers) > 1:
             raise ListStopped("the page asked for the statements more than once")
@@ -1237,7 +1298,7 @@ def _still_on_bilt(page) -> None:
 def _navigation(response) -> bool:
     """A document answer a page went to, not one of its inner frames'. A
     popup's first answer can come before Playwright knows its page, and its
-    frame cannot be read then; that still counts as a navigation."""
+    frame cannot be read then, and that still counts as a navigation."""
     try:
         if not response.request.is_navigation_request():
             return False
@@ -1321,7 +1382,7 @@ def _note(trace, **what) -> None:
 
 
 def _catch_statement(page, run: Run, target: Target, out_path: Path,
-                     trace: Optional[list] = None) -> Optional[bool]:
+                     trace: Optional[list] = None, own_files=()) -> Optional[bool]:
     """Press the bound statement's own button once and take the PDF the tab
     it opens holds.
 
@@ -1338,7 +1399,8 @@ def _catch_statement(page, run: Run, target: Target, out_path: Path,
     the run: nothing more is pressed for this or any later statement.
 
     None when the page has turned the button off: nothing was pressed,
-    nothing is waited for, and the statement is left for the next run."""
+    nothing is waited for, and the statement is left for the next run.
+    `own_files` are this statement's own copies saved before (bind)."""
     out_path = Path(out_path)
     run.attach(page.context)
     button = _button(page, statement_label(target.date))
@@ -1430,7 +1492,7 @@ def _catch_statement(page, run: Run, target: Target, out_path: Path,
         # Whatever ended the capture, no page the press opened is left open.
         _close_all(popups)
     _still_on_bilt(page)
-    why = bind(data, target, out_path, trace)
+    why = bind(data, target, out_path, trace, own_files)
     if why:
         log.info("the PDF of the statement dated %s was not kept: %s", target.date, why)
         raise _stop("The statement's PDF was not kept, since %s." % why, "the pdf is not this statement")
@@ -1555,16 +1617,20 @@ def _same_file_in(folder: Path, data: bytes, skip) -> Optional[bool]:
     return False
 
 
-def bind(data: bytes, target: Target, out_path: Path, trace: Optional[list] = None) -> str:
+def bind(data: bytes, target: Target, out_path: Path, trace: Optional[list] = None,
+         own_files=()) -> str:
     """An empty string when the bytes are this statement's PDF, beyond the
     tab's address having named its date. The bytes are a PDF, its text
     prints the statement's date, it does not print a neighboring
     statement's date in place of this one's, when it prints masked card or
     account numbers the card's last four is among them (a statement may
-    also name the account a payment came from), and it is not the same file as a
-    statement kept earlier in this process or a PDF already in the folder.
-    Otherwise our own words for what was wrong. Only names and yes or no
-    go into the trace."""
+    also name the account a payment came from), and it is not the same file
+    as a statement kept earlier in this process or a PDF already in the
+    folder. This statement's own copies from before (`own_files`, the file
+    its record names) are left out of that last comparison, so a Download
+    again that gets the very bytes of the copy still on disk is no copy of
+    another statement. Otherwise our own words for what was wrong. Only
+    names and yes or no go into the trace."""
     if not data or data[:5] != b"%PDF-":
         return "it is not a PDF"
     text = pdf_text(data)
@@ -1586,7 +1652,7 @@ def bind(data: bytes, target: Target, out_path: Path, trace: Optional[list] = No
     other = _KEPT.get(digest)
     if other is not None and other != target.statement_id:
         return "the PDF is the same file as another statement kept in this run"
-    same = _same_file_in(Path(out_path).parent, data, [out_path])
+    same = _same_file_in(Path(out_path).parent, data, [out_path, *own_files])
     if same is None:
         return "the folder could not be read to compare the PDF with those saved"
     if same:
@@ -1603,7 +1669,8 @@ def _neighbors(statements: List[Statement], iso: str) -> tuple:
 
 
 def download_statement(page, run: Run, out_path, *, card_id: str, statement_id: str,
-                       iso_date: str, trace: Optional[list] = None) -> Optional[bool]:
+                       iso_date: str, trace: Optional[list] = None,
+                       own_files=()) -> Optional[bool]:
     """Save the statement discovery recorded. The wallet is loaded afresh
     and the list read whole again, and exactly one entry must carry the
     record's statementId and date, for the record's card, before that one
@@ -1612,7 +1679,9 @@ def download_statement(page, run: Run, out_path, *, card_id: str, statement_id: 
     the page: nothing was pressed on it, and the statement is left for the
     next run. A list that stops on the way stops the run with pressing.Stop,
     since the next statement would meet the same page. SessionExpired and
-    every other stop of the run propagate."""
+    every other stop of the run propagate. `own_files` are the statement's
+    own copies saved before, the file its record names, which a Download
+    again may get the very bytes of (bind)."""
     out_path = Path(out_path)
     if not (card_id and CARD_ID_RE.fullmatch(card_id) and isinstance(statement_id, str)
             and STATEMENT_ID_RE.fullmatch(statement_id) and statement_date(iso_date) == iso_date):
@@ -1634,7 +1703,7 @@ def download_statement(page, run: Run, out_path, *, card_id: str, statement_id: 
     target = Target(iso_date, statement_id, card_id, listing.last4,
                     _neighbors(listing.statements, iso_date))
     try:
-        return _catch_statement(page, run, target, out_path, trace)
+        return _catch_statement(page, run, target, out_path, trace, own_files=own_files)
     except ListStopped as stop:
         log.info("the statement dated %s was not saved: %s", iso_date, stop)
         _note(trace, note="the statement's button was not pressed")
@@ -1663,7 +1732,7 @@ def record_hash(statement_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 def collect_documents(page) -> List[RawDoc]:
-    """The statement buttons drawn now, by date only; nothing that names
+    """The statement buttons drawn now, by date only, and nothing that names
     the card."""
     try:
         state = _read(page)
@@ -1694,4 +1763,5 @@ def survey(page, dwell_ms: int = 4000, max_follow: int = 0) -> dict:
         "one_card_read": bool(card_of(state)[0]),
         "statement_buttons": len(state.get("statements") or []),
         "statement_buttons_readable": sheet_dates(state) is not None,
+        "pager_controls": len(state.get("pagers") or []),
     }]}

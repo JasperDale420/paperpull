@@ -109,6 +109,14 @@ def list_resp(statements, card=CARD, count=None, page=None, **kw):
     return Resp(list_url(card), body=json.dumps(body).encode(), page=page, **kw)
 
 
+def paged_resp(**more):
+    """The good answer for STATEMENTS, its count its own list, with keys
+    that may say there is more of it."""
+    body = {"statements": [{"statementId": sid, "date": d, "downloadUrl": None}
+                           for d, sid in STATEMENTS], "count": len(STATEMENTS), **more}
+    return Resp(list_url(), body=json.dumps(body).encode())
+
+
 def details_resp(sid, iso, url, card=CARD, page=None, **kw):
     body = {"statementId": sid, "date": iso, "downloadUrl": url}
     return Resp(details_url(sid, card), body=json.dumps(body).encode(), page=page, **kw)
@@ -253,6 +261,7 @@ class Wallet:
         self.asked_body = None
         self.list_delay = 0
         self.on_goto = None
+        self.pager = False               # the sheet shows a control for more statements
 
     # -- the page's own behavior -------------------------------------------
     def schedule(self, ms, fn):
@@ -365,6 +374,7 @@ class Wallet:
             "summary_link": [link["href"]],
             "profile": ["User profile. " + NAME],
             "welcome": [NAME],
+            "pagers": [1] if self.pager and self.list_open else [],
         }
         out.update(self.state_override)
         return out
@@ -587,6 +597,13 @@ def test_an_answer_that_comes_late_is_waited_for():
     ("hidden button", lambda w: w.state_override.update(statements=[{
         "aria": "Download statement for October 06, 2026", "text": "October 06, 2026", "title": "",
         "shown": False, "tag": "BUTTON"}])),
+    ("more to come", lambda w: setattr(w, "list_answers", lambda: [paged_resp(hasMore=True)])),
+    ("a cursor", lambda w: setattr(w, "list_answers", lambda: [paged_resp(nextCursor="c2")])),
+    ("both", lambda w: setattr(w, "list_answers", lambda: [paged_resp(hasMore=True,
+                                                                      nextCursor="c2")])),
+    ("a total", lambda w: setattr(w, "list_answers", lambda: [paged_resp(total=12)])),
+    ("a page", lambda w: setattr(w, "list_answers", lambda: [paged_resp(page=1, pageSize=3)])),
+    ("a pager on the sheet", lambda w: setattr(w, "pager", True)),
 ])
 def test_a_list_that_is_not_whole_stops(why, setup):
     w = Wallet()
@@ -597,6 +614,48 @@ def test_a_list_that_is_not_whole_stops(why, setup):
     for word in PRIVATE:
         assert word not in str(stop.value), (why, word)
     assert [p for p in w.presses if p.startswith("Download statement")] == []
+
+
+def test_an_answer_that_may_say_there_is_more_stops_with_its_reason():
+    """The live answer held its list and its count and nothing else. Its
+    count is its own list's length, so a cut answer would pass that check,
+    and a key beyond the two may be how Bilt says there is more."""
+    w = Wallet()
+    w.list_answers = lambda: [paged_resp(hasMore=True, nextCursor="c2")]
+    with pytest.raises(site.ListStopped) as stop:
+        site.collect_download_docs(w, run_on(w))
+    said = str(stop.value)
+    assert "more than its list and its count" in said
+    assert "hasMore" not in said and "nextCursor" not in said, "the page's own words"
+    assert [p for p in w.presses if p.startswith("Download statement")] == []
+
+
+def test_a_sheet_that_offers_more_statements_stops_with_its_reason():
+    w = Wallet()
+    w.pager = True
+    with pytest.raises(site.ListStopped) as stop:
+        site.collect_download_docs(w, run_on(w))
+    assert "a control for more or older statements" in str(stop.value)
+
+
+def test_a_statement_sought_on_a_sheet_that_offers_more_stops_the_run(tmp_path):
+    w = Wallet()
+    w.pager = True
+    with pytest.raises(pressing.Stop):
+        take(w, tmp_path)
+    assert [p for p in w.presses if p.startswith("Download statement")] == []
+
+
+def test_the_controls_that_bring_more_of_the_list_are_read_whole():
+    for label in ["Load more", "Show more", "See more statements", "View older statements",
+                  "Load older", "Show earlier statements", "More", "Older", "Older statements",
+                  "Previous statements", "View all statements", "Next page", "load  MORE"]:
+        assert site.PAGER_RE.match(label), label
+    for label in ["View all", "View all (4)", "Learn more", "Learn more about rewards",
+                  "More ways to earn", "Previous card", "Next card", "View statements",
+                  "Download statement for October 06, 2026", "October 06, 2026", "Show balance",
+                  "Load more rewards", ""]:
+        assert not site.PAGER_RE.match(label), label
 
 
 @pytest.mark.parametrize("answer", [
@@ -859,6 +918,41 @@ def test_the_same_bytes_are_never_kept_for_two_statements(tmp_path):
     assert "same file" in " ".join(stop.value.lines)
 
 
+def test_a_download_again_still_refuses_another_statement_s_file(tmp_path):
+    """The record's own copy is left out of the same-bytes check, and only
+    that. A PDF that is the very file of another statement saved in an
+    earlier run is still never kept."""
+    same = statement_pdf("2026-10-06", extra=["Previous closing 09/06/2026"])
+    w = Wallet()
+    w.pdf_for = lambda iso: same
+    assert take(w, tmp_path)[0] is True          # October's, saved in an earlier run
+    site._KEPT.clear()                          # the next run is a new process
+    folder = tmp_path / "statements"
+    own = folder / "2026-09-06 Bilt Card Statement.pdf"
+    own.write_bytes(statement_pdf("2026-09-06"))  # September's own copy, other bytes
+    w2 = Wallet()
+    w2.pdf_for = lambda iso: same
+    out = folder / "2026-09-06 Bilt Card Statement 0a1b2c.pdf"
+    with pytest.raises(pressing.NoAnswer) as stop:
+        site.download_statement(w2, run_on(w2), out, card_id=CARD, statement_id=SID2,
+                                iso_date="2026-09-06", trace=[], own_files=[own])
+    assert "the same file as one already saved" in " ".join(stop.value.lines)
+    assert not out.exists()
+
+
+def test_a_download_again_may_get_the_bytes_of_its_own_copy(tmp_path):
+    w = Wallet()
+    assert take(w, tmp_path)[0] is True
+    site._KEPT.clear()
+    folder = tmp_path / "statements"
+    own = folder / "2026-10-06 Bilt Card Statement.pdf"
+    w2 = Wallet()
+    out = folder / "2026-10-06 Bilt Card Statement 0a1b2c.pdf"
+    assert site.download_statement(w2, run_on(w2), out, card_id=CARD, statement_id=SID1,
+                                   iso_date="2026-10-06", trace=[], own_files=[own]) is True
+    assert out.read_bytes() == own.read_bytes()
+
+
 def test_a_turned_off_statement_is_left_and_nothing_taken(tmp_path):
     w = Wallet()
     w.turned_off = {"Download statement for October 06, 2026"}
@@ -911,7 +1005,8 @@ class FakeSite:
                             kind="statement", document_id=s, card_id=CARD)
                 for d, s in self.statements]
 
-    def download_statement(self, page, run, out_path, *, card_id, statement_id, iso_date, trace=None):
+    def download_statement(self, page, run, out_path, *, card_id, statement_id, iso_date, trace=None,
+                           own_files=()):
         self.asked.append((card_id, statement_id, iso_date))
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         Path(out_path).write_bytes(statement_pdf(iso_date))
@@ -959,6 +1054,46 @@ def test_a_run_saves_every_statement_under_its_own_name(tmp_path, monkeypatch, c
     with redirect_stdout(io.StringIO()):
         app.cmd_run("all")
     assert fake.asked == []
+
+
+def wallet_app(tmp_path, monkeypatch, wallet, *more):
+    """The app on the made-up wallet, the site layer its own."""
+    cfg = json.loads((HERE / "config.example.json").read_text(encoding="utf-8"))
+    cfg.update(output_dir=str(tmp_path / "out"), owner="Example Owner", delay_min_seconds=0,
+               delay_max_seconds=0)
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    args = docs.build_parser().parse_args(["--config", str(path), "--all", "--yes", *more])
+    app = docs.App(args)
+    app.run = run_on(wallet)
+    monkeypatch.setattr(app, "page", lambda: wallet)
+    monkeypatch.setattr(app, "_on_its_site", lambda: wallet)
+    monkeypatch.setattr(app, "check_session", lambda page: None)
+    return app
+
+
+def test_a_download_again_saves_a_second_copy_beside_the_one_still_there(tmp_path, monkeypatch):
+    """The panel's Download again runs Run All with --redownload. Bilt gives
+    a statement's PDF again byte for byte, and the copy saved before is
+    still in the folder, so the new copy takes the told-apart name and has
+    the very bytes of the old one. That is no copy of another statement,
+    and the run saves every statement again rather than stop at the first."""
+    with redirect_stdout(io.StringIO()):
+        wallet_app(tmp_path, monkeypatch, Wallet()).cmd_run("all")
+    first = sorted(p.name for p in (tmp_path / "out").rglob("*.pdf"))
+    assert len(first) == 3
+    site._KEPT.clear()                          # the next run is a new process
+    w = Wallet()
+    app = wallet_app(tmp_path, monkeypatch, w, "--redownload")
+    try:
+        with redirect_stdout(io.StringIO()):
+            app.cmd_run("all")
+    except pressing.Stop as stop:
+        pytest.fail("Download again stopped the run: %s" % " ".join(stop.lines))
+    names = sorted(p.name for p in (tmp_path / "out").rglob("*.pdf"))
+    assert len(names) == 6 and set(first) < set(names)
+    assert len([p for p in w.presses if p.startswith("Download statement")]) == 3
+    assert {r.get("state") for r in app.progress.data.values()} == {docs.State.COMPLETED.value}
 
 
 def test_one_id_under_two_dates_stops_the_list_and_keeps_the_record(tmp_path, monkeypatch):
