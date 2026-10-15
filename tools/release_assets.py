@@ -3,6 +3,7 @@
     python tools/release_assets.py kit 0.44.0 <folder>           PaperPull-Server-0.44.0.zip there
     python tools/release_assets.py label <file name> 0.44.0      the label the Assets list shows
     python tools/release_assets.py notes 0.44.0 <notes> <out>    the notes, ending with Downloads
+    python tools/release_assets.py assets 0.44.0 <folder>        every file, in order, or what is missing
 
 PaperPull Server has no package of its own. The Server image workflow
 publishes its image to GitHub's container registry when the release is
@@ -14,6 +15,10 @@ Every file in the Assets list carries a label that says what it is for, and
 the notes end with a Downloads section that says the same at more length,
 unless they already have one. 0.43.0 got all three by hand after it was
 published, and these keep every later release the same.
+
+A release carries every one of its files or is not made. The Downloads
+section names each of them whether or not it came down, so a release that
+went out without one would point people at a file it does not have.
 """
 from __future__ import annotations
 
@@ -63,6 +68,22 @@ def server_kit(version: str, out_dir, repo=REPO) -> Path:
     return out
 
 
+def release_files(version: str) -> list:
+    """Every file a release carries, in the order the Assets list shows
+    them, which is the Downloads section's order, so the two Mac disk images
+    sit together."""
+    return ["PaperPull-%s-setup.exe" % version,
+            "PaperPull-%s.zip" % version,
+            "PaperPull-%s-arm64.dmg" % version,
+            "PaperPull-%s-x86_64.dmg" % version,
+            server_kit_name(version)]
+
+
+def missing_files(version: str, folder) -> list:
+    """The release's files that are not in folder."""
+    return [n for n in release_files(version) if not (Path(folder) / n).is_file()]
+
+
 def label(name: str, version: str) -> str:
     """What the Assets list shows for a file, what it is for and then its
     name, since the name is still what downloads. A file not known here
@@ -110,8 +131,15 @@ def main(argv=None) -> int:
     elif len(args) == 4 and args[0] == "notes":
         notes = Path(args[2]).read_text(encoding="utf-8")
         Path(args[3]).write_text(with_downloads(notes, args[1]), encoding="utf-8", newline="\n")
+    elif len(args) == 3 and args[0] == "assets":
+        gone = missing_files(args[1], args[2])
+        if gone:
+            print("the release would go out without %s, so it is not made. Nothing was"
+                  " published." % ", ".join(gone), file=sys.stderr)
+            return 1
+        print("\n".join(release_files(args[1])))
     else:
-        print("\n".join(__doc__.splitlines()[2:5]), file=sys.stderr)
+        print("\n".join(__doc__.splitlines()[2:6]), file=sys.stderr)
         return 2
     return 0
 

@@ -88,6 +88,61 @@ def test_what_it_writes_keeps_the_house_punctuation():
     assert "—" not in text and ";" not in text
 
 
+def test_the_release_files_come_in_the_downloads_order_with_the_dmgs_together():
+    files = release_assets.release_files("1.2.3")
+    assert files == ["PaperPull-1.2.3-setup.exe", "PaperPull-1.2.3.zip",
+                     "PaperPull-1.2.3-arm64.dmg", "PaperPull-1.2.3-x86_64.dmg",
+                     "PaperPull-Server-1.2.3.zip"]
+    section = release_assets.downloads_section("1.2.3")
+    assert [section.index("`%s`" % n) for n in files] == \
+        sorted(section.index("`%s`" % n) for n in files), "the Assets list and the notes agree"
+    for name in files:
+        assert release_assets.label(name, "1.2.3") != name, "%s has no label" % name
+
+
+def _folder_with(tmp_path, names):
+    folder = tmp_path / "flat"
+    folder.mkdir(parents=True)
+    for name in names:
+        (folder / name).write_bytes(b"x")
+    return folder
+
+
+def test_a_release_missing_any_file_is_refused_by_name(tmp_path, capsys):
+    """Before this check, a run whose Intel dmg artifact never came down
+    made a release without it, its Downloads line pointing at nothing. Now
+    each missing file is named in the refusal, and nothing is listed."""
+    every = release_assets.release_files("1.2.3")
+    for gone in every:
+        folder = _folder_with(tmp_path / gone, [n for n in every if n != gone])
+        assert release_assets.missing_files("1.2.3", folder) == [gone]
+        assert release_assets.main(["assets", "1.2.3", str(folder)]) == 1
+        out, err = capsys.readouterr()
+        assert out == "" and gone in err and "Nothing was published" in err
+
+
+def test_a_whole_release_lists_its_files_in_order(tmp_path, capsys):
+    every = release_assets.release_files("1.2.3")
+    folder = _folder_with(tmp_path, list(reversed(every)) + ["PaperPull-1.2.2.zip"])
+    assert release_assets.missing_files("1.2.3", folder) == []
+    assert release_assets.main(["assets", "1.2.3", str(folder)]) == 0
+    assert capsys.readouterr().out.split() == every, "only this version's files, in order"
+
+
+def test_release_sh_uploads_the_named_files_only_after_the_check():
+    """release.sh takes the list of files from the check, after the server
+    kit is made and before anything is published, rather than whatever is
+    in the folder. And a checksum list whose last file is missing no longer
+    ends the script without a word, since the check says what is missing."""
+    script = (REPO / "tools" / "release.sh").read_text(encoding="utf-8")
+    kit = script.index('"$ASSETS_PY" kit')
+    check = script.index('"$ASSETS_PY" assets')
+    publish = script.index('"$GH" release create')
+    assert kit < check < publish
+    assert 'for f in "$WORK/flat"/*' not in script
+    assert '[ -f "$n" ] && echo' not in script
+
+
 def test_release_sh_labels_every_asset_and_adds_the_server_kit_and_downloads():
     script = (REPO / "tools" / "release.sh").read_text(encoding="utf-8")
     assert 'ASSETS_PY="$(pypath "$HERE/tools/release_assets.py")"' in script

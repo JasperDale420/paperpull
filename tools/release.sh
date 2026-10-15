@@ -7,7 +7,9 @@
 # It finds the two package runs for the tag, waits for them if they are
 # still going, downloads their artifacts, checks every file against the
 # checksums the runs published, and then creates the release with the
-# notes at .release/notes-<version>.md.
+# notes at .release/notes-<version>.md. If any file the release carries did
+# not come down, both Mac disk images included, it stops and names it, and
+# nothing is published.
 #
 # Beside the packages it puts PaperPull Server's setup files, compose.yaml
 # and the security profile from the tag itself, as one zip, gives every file
@@ -143,8 +145,12 @@ CHECKED=0
 while IFS= read -r sums; do
   [ -n "$sums" ] || continue
   tr -d '\r' < "$sums" > "$WORK/flat/.sums"
+  # An if rather than [ -f ] && echo. Under pipefail, a list whose last
+  # name did not come down failed the loop's last test, and that ended the
+  # whole script here with no word of why. The check by name further down
+  # says what is missing instead.
   wanted=$(cd "$WORK/flat" && awk '{print $NF}' .sums | while read -r n; do
-             [ -f "$n" ] && echo "$n"; done | wc -l)
+             if [ -f "$n" ]; then echo "$n"; fi; done | wc -l)
   if [ "$wanted" -gt 0 ]; then
     (cd "$WORK/flat" && sha256sum -c --ignore-missing .sums)
     CHECKED=$((CHECKED + wanted))
@@ -160,14 +166,23 @@ SUMSLIST
 # security profile beside it, taken here from the tag itself.
 "$PY" "$ASSETS_PY" kit "$VERSION" "$(pypath "$WORK/flat")" >/dev/null
 
+# Every file the release carries, named one by one, in the order the Assets
+# list shows them. A run can succeed and still leave one out, and the notes
+# name every file, so one that did not come down stops the release here,
+# by name, rather than letting it go out without it.
+NAMES="$("$PY" "$ASSETS_PY" assets "$VERSION" "$(pypath "$WORK/flat")" | tr -d '\r')" \
+  || { echo "stopped before publishing $TAG" >&2; exit 1; }
+
 # Each file goes up as path#label, and the label is what the Assets list
 # shows, what the file is for and then its name.
 ASSETS=()
-for f in "$WORK/flat"/*; do
-  [ -f "$f" ] || continue
-  label="$("$PY" "$ASSETS_PY" label "$(basename "$f")" "$VERSION" | tr -d '\r')"
-  ASSETS+=("$(winpath "$f")#$label")
-done
+while IFS= read -r name; do
+  [ -n "$name" ] || continue
+  label="$("$PY" "$ASSETS_PY" label "$name" "$VERSION" | tr -d '\r')"
+  ASSETS+=("$(winpath "$WORK/flat/$name")#$label")
+done <<NAMESLIST
+$NAMES
+NAMESLIST
 [ "${#ASSETS[@]}" -gt 0 ] || { echo "nothing to upload from $WORK/flat" >&2; exit 1; }
 ls -1 "$WORK/flat"
 
