@@ -44,6 +44,8 @@ def report_run_result(stats):
     # Documents the list held that share a type and a date with another,
     # so a row could not be bound to one of them, and they were left
     # unsaved. The rest of the run went on, so this is said on its own.
+    # They are listed again on every run, so the panel names them but
+    # never takes them as a reason to look (gui/run_result.py).
     result["alike"] = int(stats.get("alike", 0) or 0)
     # A run state the save on the way out could not write holds none of
     # what this run did, so the next run may fetch it all again. Such a run

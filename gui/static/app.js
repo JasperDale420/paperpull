@@ -732,6 +732,11 @@ function finishRun(code, refused) {
 function runOutcome() {
   const res = RUN.result, code = RUN.code, n = noun(RUN), saved = RUN.saved || [];
   const who = RUN.provider;
+  // Documents of one type on one date are listed on every run and never
+  // saved, since a row cannot be bound to either. They are said here, but
+  // never make a run one that needs a look, which it would then be for good.
+  const alike = res && res.alike ? ' ' + many(res.alike, n) + ' that share a type and a date with another ' +
+    'could not be told apart and were left unsaved. Take any you need from ' + who + "'s own page." : '';
   // Continue picks up a run that downloads. A Discover that stopped is
   // pressed again, since it was asked only to see what is there, and a
   // restore that stopped is chosen again for the dates it did not reach.
@@ -765,7 +770,6 @@ function runOutcome() {
     if (aside) details.push(`${aside} set aside`);
     if (res.failed) details.push(`${res.failed} failed`);
     if (res.validation_failures) details.push(`${res.validation_failures} PDF validation failures`);
-    if (res.alike) details.push(`${res.alike} left unsaved, sharing a type and date`);
     const says = [];
     if (named) says.push((named === 1 ? 'A receipt was' : named + ' receipts were') + ' saved under a name ' +
       'PaperPull was unsure of. Review names gives each a better one.');
@@ -775,18 +779,16 @@ function runOutcome() {
     const asideToo = aside > 0 || (res.validation_failures || 0) > 0;
     if (asideToo) says.push('A document set aside sits in the Manual Review folder, where PaperPull kept it ' +
       'rather than file it under the wrong name.');
-    // Two documents of one type on one date are listed and never saved,
-    // since a row cannot be bound to either. The rest of the run went on.
-    if (res.alike) says.push('Documents that share a type and a date with another could not be told apart, ' +
-      'so they were left unsaved. Save them from ' + who + "'s own page.");
     if (!says.length) says.push('The technical details below say what happened.');
     return {tone: 'warn', title: saved.length ? many(saved.length, 'new ' + n) + ' saved, some need a look' : 'Finished, needs attention',
-      say: 'Finished, needs attention (' + details.join(', ') + '). ' + says.join(' '), clean: true, attention: true,
+      say: 'Finished, needs attention (' + details.join(', ') + '). ' + says.join(' ') + alike, clean: true, attention: true,
       names: named > 0, aside: asideToo};
   }
   if (res && ['pilot', 'all', 'resume'].includes(RUN.action)) {
-    return saved.length ? {tone: 'ok', title: many(saved.length, 'new ' + n) + ' saved', say: 'Finished, no issues reported.', clean: true}
-      : {tone: 'ok', title: 'Nothing new', say: 'Everything ' + who + ' lists in these dates is already saved.', clean: true};
+    return saved.length ? {tone: 'ok', title: many(saved.length, 'new ' + n) + ' saved',
+      say: alike ? 'Finished.' + alike : 'Finished, no issues reported.', clean: true}
+      : {tone: 'ok', title: 'Nothing new', say: 'Everything ' + (alike ? 'else ' : '') + who +
+        ' lists in these dates is already saved.' + alike, clean: true};
   }
   if (inSample()) return {tone: 'ok', title: 'Nothing to run in the sample', say: RUN.lines.filter(Boolean).join(' '), clean: true};
   const plain = {
@@ -801,7 +803,7 @@ function runOutcome() {
     review_names: rvRenamed(RUN.lines) ? ['Receipts renamed', 'The technical details list each file.']
       : ['Nothing was renamed', 'The technical details say why.'],
   }[RUN.action];
-  if (plain) return {tone: 'ok', title: plain[0], say: plain[1], clean: true};
+  if (plain) return {tone: 'ok', title: plain[0], say: plain[1] + (RUN.action === 'discover' ? alike : ''), clean: true};
   if (res) return {tone: 'ok', title: 'Finished, no issues reported', say: '', clean: true};
   return {tone: 'warn', title: 'Finished, check the details', say: 'No run summary came back, so read the technical details.', clean: true};
 }

@@ -17,7 +17,9 @@ All notable changes to PaperPull are recorded here. Versioning follows
   listed is dated before the earliest application, so a reissued
   application cannot let older statements go unnoticed. Two documents of
   one type on one date, which are left unsaved, are now counted in the run
-  summary and named in the panel, not only on the console.
+  summary and named in the panel, not only on the console. Since they are
+  listed again on every run, the panel never takes them as a reason to
+  look, so the account still says when it is due or overdue.
 
 ## [0.52.0] - 2026-10-14
 

@@ -28,6 +28,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 app_module = pytest.importorskip("app")
 uvicorn = pytest.importorskip("uvicorn")
+import run_result  # noqa: E402
 import server_mode  # noqa: E402
 
 # A stand-in app. It notes its arguments, then does what plan.json beside it
@@ -185,6 +186,78 @@ def test_what_a_run_left_to_look_at_comes_before_how_current(root):
          {"action": "all", "exit_code": 0, "result": {"stopped": 0, "attention": True,
                                                       "manual_review": 1}})
     assert _rows()[("Bank Statements", "second")]["state"] == "attention"
+
+
+@pytest.fixture()
+def panel():
+    """The panel's own page in Playwright's own Chromium, served from an
+    invented address with nothing else answered, so only its functions are
+    asked here. One per test, since Playwright's loop left running would
+    stop the later tests here that run one of their own. A test asks for it
+    before `root`, which moves LOCALAPPDATA, where Windows keeps Chromium."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    html = (app_module.HTML.replace("__FOOTER__", "").replace("__VERSION__", "0.0.0")
+            .replace("__SERVER_BAR__", "").replace("__SERVER__", "false"))
+    with sync_api.sync_playwright() as pw:
+        try:
+            chromium = pw.chromium.launch(args=[
+                "--disable-extensions", "--disable-sync", "--disable-background-networking",
+                "--disable-component-update", "--no-first-run"])
+        except sync_api.Error as e:
+            pytest.skip("Playwright's own Chromium is not installed here, %s"
+                        % str(e).strip().splitlines()[0])
+        tab = chromium.new_page()
+
+        def answer(route):
+            if route.request.url == "http://panel.test/":
+                route.fulfill(status=200, content_type="text/html", body=html)
+            else:
+                route.abort()
+        tab.route("**/*", answer)
+        tab.goto("http://panel.test/")
+        yield tab
+        chromium.close()
+
+
+def _alike_run():
+    """A run as the panel logs it, from a result line that counted two
+    documents of one type on one date and nothing else."""
+    said = run_result.PREFIX + json.dumps({"manual_review": 0, "failed": 0, "validation_failures": 0,
+                                           "new_files": 1, "alike": 2})
+    return {"action": "all", "exit_code": 0, "result": run_result.parse(said)}
+
+
+@pytest.mark.parametrize("newest_days_ago, state, chip", [
+    (5, "current", "Up to date"), (45, "due", "New one likely"), (100, "overdue", "Overdue")])
+def test_documents_left_alike_leave_the_row_as_it_would_be_without_them(panel, root, newest_days_ago,
+                                                                        state, chip):
+    """Alpaca lists two documents of one type on one date on every run and
+    never saves them, so every run counts them again. A run that counted
+    them leaves the row up to date, due or overdue, with Get new offered,
+    rather than needing a look for good."""
+    bank = root / "Bank Statements - second"
+    (bank / "progress.json").write_text(json.dumps(_records(newest_days_ago)), encoding="utf-8")
+    assert _rows()[("Bank Statements", "second")]["state"] == state
+    _log(bank, _alike_run())
+    row = _rows()[("Bank Statements", "second")]
+    assert (row["state"], row["last_outcome"]) == (state, "")
+    shown = panel.evaluate("(row) => present(row)", json.loads(json.dumps(row, default=str)))
+    assert shown["chip"]["text"] == chip and shown["act"]["label"] == "Get new"
+
+
+@pytest.mark.parametrize("saved, title, said", [
+    (["2026-09-30 Bank Statement.pdf"], "1 new document saved", "Finished. 2 documents"),
+    ([], "Nothing new", "Everything else Bank lists in these dates is already saved. 2 documents")])
+def test_a_run_that_counted_documents_alike_names_them_and_finishes_clean(panel, saved, title, said):
+    o = panel.evaluate("""([result, saved]) => {
+        Object.assign(RUN, {result, code: '0', action: 'all', again: false, refused: '', saved,
+                            provider: 'Bank', kind: 'DOCUMENT', lines: []});
+        return runOutcome();
+    }""", [_alike_run()["result"], saved])
+    assert (o["tone"], o["title"]) == ("ok", title) and not o.get("attention")
+    assert said in o["say"]
+    assert ("that share a type and a date with another could not be told apart and were left "
+            "unsaved. Take any you need from Bank's own page.") in o["say"]
 
 
 def test_a_broken_log_is_no_log(root):

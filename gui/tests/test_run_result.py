@@ -177,10 +177,14 @@ def test_the_panel_names_a_wrong_document():
     assert "refused as the wrong document" in app.HTML
 
 
-def test_documents_left_unsaved_as_alike_need_attention_and_are_named():
+def test_documents_left_unsaved_as_alike_are_counted_but_need_no_attention():
     """Documents of one type on one date are left unsaved while the rest
-    of the run goes on, so the panel names them rather than a clean finish."""
-    assert run_result.parse(line(alike=2))["attention"]
+    of the run goes on. They are listed again on every run and never
+    saved, so a run that counted them would need a look for good. The
+    count is carried, and only another count makes the run one to look at."""
+    alike = run_result.parse(line(alike=2))
+    assert alike["alike"] == 2 and alike["attention"] is False
+    assert run_result.parse(line(alike=2, failed=1))["attention"]
     assert run_result.parse(line())["alike"] == 0
     assert run_result.parse(line(alike=-1)) is None
     assert run_result.parse(line(alike="2")) is None
