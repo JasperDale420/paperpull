@@ -82,21 +82,21 @@ def card_statements(*rows: str) -> str:
 
 
 def test_each_card_row_reads_its_own_month(page):
-    page.set_content(card_statements("October 2026", "September 2026", "August 2026"))
+    page.set_content(card_statements("October 2031", "September 2031", "August 2031"))
     rows = site._card_rows(page)
-    assert [r["label"] for r in rows] == ["October 2026", "September 2026", "August 2026"]
+    assert [r["label"] for r in rows] == ["October 2031", "September 2031", "August 2031"]
     assert all(site.is_card_pdf_label(r["button"]) for r in rows)
     pressed = page.locator("button").nth(rows[1]["i"]).element_handle()
-    assert pressed.evaluate(site._CARD_LABEL_OF_JS) == "September 2026"
+    assert pressed.evaluate(site._CARD_LABEL_OF_JS) == "September 2031"
 
 
 def test_a_card_row_that_does_not_start_with_its_month_reads_nothing(page):
     """It climbs to the list, which holds a second card PDF button, and
     stops there, rather than read as the first row's month."""
-    page.set_content(card_statements("October 2026", "<span>New</span> September 2026"))
-    assert [r["label"] for r in site._card_rows(page)] == ["October 2026", ""]
+    page.set_content(card_statements("October 2031", "<span>New</span> September 2031"))
+    assert [r["label"] for r in site._card_rows(page)] == ["October 2031", ""]
 
 
 def test_the_transactions_pdf_buttons_are_not_card_rows(page):
-    page.set_content(statements("<span>September 2026</span>"))
+    page.set_content(statements("<span>September 2031</span>"))
     assert site._card_rows(page) == []

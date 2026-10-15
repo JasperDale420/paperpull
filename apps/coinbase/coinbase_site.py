@@ -1405,7 +1405,7 @@ def is_card_statement_url(url, iso: str) -> bool:
 
 
 def closing_date_re(iso: str):
-    """How a card statement prints its closing day `iso`, "Sep 12, 2026",
+    """How a card statement prints its closing day `iso`, "Sep 4, 2031",
     and the same with the month written out or as "Sept"."""
     year, month, day = int(iso[:4]), int(iso[5:7]), int(iso[8:10])
     full = _MONTH_NAMES[month - 1]
@@ -1415,7 +1415,7 @@ def closing_date_re(iso: str):
 
 
 def _card_label(iso: str) -> str:
-    """"2026-09-12" -> "September 2026", the month its row reads."""
+    """"2031-09-04" -> "September 2031", the month its row reads."""
     return "%s %s" % (_MONTH_NAMES[int(iso[5:7]) - 1], iso[:4])
 
 

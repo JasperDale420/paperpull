@@ -1021,10 +1021,10 @@ def card_url(iso, token=CARD_TOKEN, host="statements.cardless.com"):
             % (host, token, iso, CARD_SIGNATURE, CARD_KEYPAIR))
 
 
-def card_pdf(closing="Sep 12, 2026", words="Coinbase One Card"):
+def card_pdf(closing="Sep 4, 2031", words="Coinbase One Card"):
     """A card statement's text as the live one reads, its period and its
     new balance, with no amount."""
-    return pdf_saying("New balance as of %s Payment due by Oct 7, 2026 %s Aug 13 - %s"
+    return pdf_saying("New balance as of %s Payment due by Sep 29, 2031 %s Aug 5 - %s"
                       % (closing, words, closing))
 
 
@@ -1077,7 +1077,7 @@ class CardPage:
     the signed PDF address a row's PDF button sends the tab to. Spies on
     every press, every fetch and every go back."""
 
-    def __init__(self, dates=("2026-10-12", "2026-09-12", "2026-08-12"), sids=None,
+    def __init__(self, dates=("2031-10-04", "2031-09-04", "2031-08-04"), sids=None,
                  rows=None, links=("Transactions", "Credit Card"), lands_on="list"):
         self.url = site.STATEMENTS_URL
         self.main_frame = object()
@@ -1205,7 +1205,7 @@ class CardPage:
         """What pressing a row's PDF button does on the live page. The page
         asks for the statement's address and the tab goes there."""
         iso = self.dates[[label_of(d) for d in self.dates].index(label)] \
-            if label in [label_of(d) for d in self.dates] else "2026-01-12"
+            if label in [label_of(d) for d in self.dates] else "2031-01-04"
         sid = self.sids[self.dates.index(iso)] if iso in self.dates else "none"
         url = card_url(iso)
         answers = (self.press_answers or {}).get(label)
@@ -1258,22 +1258,22 @@ class CardHosts(unittest.TestCase):
     handed, and is on none of the app's own host lists."""
 
     def test_the_card_statement_address(self):
-        self.assertTrue(site.is_card_statement_url(card_url("2026-09-12"), "2026-09-12"))
-        for url, iso in [(card_url("2026-09-12"), "2026-08-12"),
-                         (card_url("2026-09-12", host="evil.example"), "2026-09-12"),
-                         (card_url("2026-09-12", host="statements.cardless.com.evil.test"), "2026-09-12"),
-                         (card_url("2026-09-12", host="x.statements.cardless.com"), "2026-09-12"),
-                         (card_url("2026-09-12").replace("https:", "http:"), "2026-09-12"),
-                         (card_url("2026-09-12").replace(".com/", ".com:8443/"), "2026-09-12"),
-                         (card_url("2026-09-12").replace("https://", "https://u@"), "2026-09-12"),
-                         (card_url("2026-09-12").replace("_Coinbase.pdf", "_Other.pdf"), "2026-09-12"),
-                         (card_url("2026-09-12").replace(CARD_TOKEN, "a/b"), "2026-09-12"),
-                         ("https://statements.cardless.com/2026-09-12_Coinbase.pdf", "2026-09-12"),
-                         ("", "2026-09-12"), (None, "2026-09-12"), (card_url("2026-09-12"), "")]:
+        self.assertTrue(site.is_card_statement_url(card_url("2031-09-04"), "2031-09-04"))
+        for url, iso in [(card_url("2031-09-04"), "2031-08-04"),
+                         (card_url("2031-09-04", host="evil.example"), "2031-09-04"),
+                         (card_url("2031-09-04", host="statements.cardless.com.evil.test"), "2031-09-04"),
+                         (card_url("2031-09-04", host="x.statements.cardless.com"), "2031-09-04"),
+                         (card_url("2031-09-04").replace("https:", "http:"), "2031-09-04"),
+                         (card_url("2031-09-04").replace(".com/", ".com:8443/"), "2031-09-04"),
+                         (card_url("2031-09-04").replace("https://", "https://u@"), "2031-09-04"),
+                         (card_url("2031-09-04").replace("_Coinbase.pdf", "_Other.pdf"), "2031-09-04"),
+                         (card_url("2031-09-04").replace(CARD_TOKEN, "a/b"), "2031-09-04"),
+                         ("https://statements.cardless.com/2031-09-04_Coinbase.pdf", "2031-09-04"),
+                         ("", "2031-09-04"), (None, "2031-09-04"), (card_url("2031-09-04"), "")]:
             self.assertFalse(site.is_card_statement_url(url, iso), (url, iso))
 
     def test_the_card_host_is_on_no_host_list_of_the_app(self):
-        url = card_url("2026-09-12")
+        url = card_url("2031-09-04")
         self.assertFalse(site.is_safe_url(url))
         self.assertFalse(site.is_list_url(url))
         self.assertFalse(site.is_download_url(url))
@@ -1293,10 +1293,10 @@ class CardHosts(unittest.TestCase):
             self.assertFalse(site.is_card_pdf_label(label), repr(label))
 
     def test_the_closing_date_is_read_the_way_the_statement_prints_it(self):
-        rx = site.closing_date_re("2026-09-12")
-        for text in ["as of Sep 12, 2026", "Aug 13 - Sept 12, 2026", "September 12, 2026"]:
+        rx = site.closing_date_re("2031-09-04")
+        for text in ["as of Sep 4, 2031", "Aug 5 - Sept 4, 2031", "September 4, 2031"]:
             self.assertTrue(rx.search(text), text)
-        for text in ["Sep 13, 2026", "Sep 12, 2025", "Oct 12, 2026", "Sep 1, 2026", "Sep 122, 2026"]:
+        for text in ["Sep 5, 2031", "Sep 4, 2030", "Oct 4, 2031", "Sep 14, 2031", "Sep 44, 2031"]:
             self.assertFalse(rx.search(text), text)
 
 
@@ -1311,9 +1311,9 @@ class CardList(unittest.TestCase):
         page = CardPage()
         got = self.collect(page)
         self.assertEqual([(d.title, d.date_text) for d in got], [
-            ("Coinbase One Card Statement October 2026", "2026-10-12"),
-            ("Coinbase One Card Statement September 2026", "2026-09-12"),
-            ("Coinbase One Card Statement August 2026", "2026-08-12")])
+            ("Coinbase One Card Statement October 2031", "2031-10-04"),
+            ("Coinbase One Card Statement September 2031", "2031-09-04"),
+            ("Coinbase One Card Statement August 2031", "2031-08-04")])
         self.assertEqual(page.clicked, [("link", "Credit Card", site.CARD_LINK_CSS + ":not([href])",
                                          "open the credit card statements")])
         self.assertEqual(page.handlers, [], "the listener was removed")
@@ -1323,20 +1323,20 @@ class CardList(unittest.TestCase):
             self.assertNotIn("sid-", repr(d))
 
     def test_a_count_that_disagrees_stops_the_list(self):
-        page = CardPage(rows=[label_of("2026-10-12"), label_of("2026-09-12")])
+        page = CardPage(rows=[label_of("2031-10-04"), label_of("2031-09-04")])
         with self.assertRaises(site.CardListUnread) as stop:
             self.collect(page)
         self.assertIn("2", str(stop.exception))
         self.assertEqual(stop.exception.docs, [])
 
     def test_months_that_disagree_stop_the_list(self):
-        page = CardPage(rows=[label_of("2026-10-12"), label_of("2026-09-12"), "July 2026"])
+        page = CardPage(rows=[label_of("2031-10-04"), label_of("2031-09-04"), "July 2031"])
         with self.assertRaises(site.CardListUnread):
             self.collect(page)
 
     def test_a_row_without_a_month_or_a_month_twice_stops_the_list(self):
-        for rows in ([label_of("2026-10-12"), label_of("2026-09-12"), ""],
-                     [label_of("2026-10-12"), label_of("2026-10-12"), label_of("2026-08-12")]):
+        for rows in ([label_of("2031-10-04"), label_of("2031-09-04"), ""],
+                     [label_of("2031-10-04"), label_of("2031-10-04"), label_of("2031-08-04")]):
             with self.assertRaises(site.CardListUnread):
                 self.collect(CardPage(rows=rows))
 
@@ -1372,11 +1372,11 @@ class CardList(unittest.TestCase):
 
     def test_a_statement_the_list_cannot_read_stops_the_list(self):
         page = CardPage()
-        for bad in ({"statementId": "", "statementDate": "2026-09-12T00:00:00Z"},
-                    {"statementId": "s1", "statementDate": "2026-13-12T00:00:00Z"},
-                    {"statementId": "s1"}, {"statementId": 7, "statementDate": "2026-09-12T00:00:00Z"}):
+        for bad in ({"statementId": "", "statementDate": "2031-09-04T00:00:00Z"},
+                    {"statementId": "s1", "statementDate": "2031-13-04T00:00:00Z"},
+                    {"statementId": "s1"}, {"statementId": 7, "statementDate": "2031-09-04T00:00:00Z"}):
             answer = {"data": {"viewer": {"creditCard": {"statements": {"edges": [{"node": bad}]}}}}}
-            page = CardPage(dates=["2026-09-12"])
+            page = CardPage(dates=["2031-09-04"])
             page.list_answers = [CardResponse(page, answer)]
             with self.assertRaises(site.CardListUnread):
                 self.collect(page)
@@ -1478,9 +1478,9 @@ class CardList(unittest.TestCase):
             self.collect(page)
 
     def test_a_list_answer_that_is_not_ok_stops_the_list(self):
-        for status, body in ((500, statements_answer(["2026-09-12"])),
-                             (200, dict(statements_answer(["2026-09-12"]), errors=[{"message": "x"}]))):
-            page = CardPage(dates=["2026-09-12"])
+        for status, body in ((500, statements_answer(["2031-09-04"])),
+                             (200, dict(statements_answer(["2031-09-04"]), errors=[{"message": "x"}]))):
+            page = CardPage(dates=["2031-09-04"])
             answer = CardResponse(page, body)
             answer.status = status
             page.list_answers = [answer]
@@ -1496,12 +1496,12 @@ class CardList(unittest.TestCase):
 
     def test_the_list_says_whether_it_has_another_page(self):
         def with_page_info(info):
-            answer = statements_answer(["2026-10-12", "2026-09-12"])
+            answer = statements_answer(["2031-10-04", "2031-09-04"])
             answer["data"]["viewer"]["creditCard"]["statements"]["pageInfo"] = info
             return answer
         for info, whole in (({"hasNextPage": False}, True), ({"hasNextPage": True}, False),
                             ({}, False), ("no", False), ({"hasNextPage": None}, False)):
-            page = CardPage(dates=["2026-10-12", "2026-09-12"])
+            page = CardPage(dates=["2031-10-04", "2031-09-04"])
             page.list_answers = [CardResponse(page, with_page_info(info))]
             if whole:
                 self.assertEqual(len(self.collect(page)), 2, info)
@@ -1510,17 +1510,17 @@ class CardList(unittest.TestCase):
                     self.collect(page)
 
     def test_a_list_without_a_page_info_has_to_miss_no_month(self):
-        page = CardPage(dates=["2026-10-12", "2026-08-12"])
+        page = CardPage(dates=["2031-10-04", "2031-08-04"])
         with self.assertRaises(site.CardListUnread):
             self.collect(page)
-        page = CardPage(dates=["2026-01-12", "2025-12-12"])
+        page = CardPage(dates=["2031-01-04", "2030-12-04"])
         self.assertEqual(len(self.collect(page)), 2, "a year's turn is no gap")
 
     def test_card_statements_come_after_the_other_families(self):
         page = CardPage()
         monthly = [site.RawDoc(title="Monthly Statement September 2026", date_text="2026-09-30")]
         tax = [site.RawDoc(title="1099-DA Tax Year 2025", date_text="2025-12-31", kind="tax")]
-        card = [site.RawDoc(title="Coinbase One Card Statement September 2026", date_text="2026-09-12")]
+        card = [site.RawDoc(title="Coinbase One Card Statement September 2031", date_text="2031-09-04")]
         with mock.patch.object(site, "goto_documents", lambda p: True), \
                 mock.patch.object(site, "_first_transaction", lambda p: "2026-08-01"), \
                 mock.patch.object(site, "_collect_statements", lambda p, f: list(monthly)), \
@@ -1570,8 +1570,8 @@ class CardDownload(unittest.TestCase):
     """One card statement, the row's own PDF button, the address the page
     was handed, fetched in the tab, checked, and back to the list."""
 
-    ISO = "2026-09-12"
-    LABEL = "September 2026"
+    ISO = "2031-09-04"
+    LABEL = "September 2031"
 
     def stopped(self, page, iso=ISO, label=LABEL):
         """The take, which has to stop the run, with nothing fetched or
@@ -1632,7 +1632,7 @@ class CardDownload(unittest.TestCase):
 
     def test_an_address_of_another_date_is_not_asked(self):
         page = CardPage()
-        other = card_url("2026-08-12")
+        other = card_url("2031-08-04")
         page.press_answers = {self.LABEL: [CardResponse(
             page, row_answer(other), op="CreditCardStatementRowQuery",
             variables={"statementId": page.sids[1]})]}
@@ -1723,7 +1723,7 @@ class CardDownload(unittest.TestCase):
             site.CARD_ROW_QUERY, page.sids[1])
         page.press_answers = {self.LABEL: [got]}
         self.assertIn("did not answer", self.stopped(page).reason)
-        for lands in ("", card_url("2026-10-12"), card_url(self.ISO, host="evil.test"),
+        for lands in ("", card_url("2031-10-04"), card_url(self.ISO, host="evil.test"),
                       card_url(self.ISO) + "&x=1"):
             page = CardPage()
             page.press_answers = {self.LABEL: evicted(page)}
@@ -1738,7 +1738,7 @@ class CardDownload(unittest.TestCase):
         self.assertIsNone(saved)
 
     def test_a_pdf_that_is_not_this_statement_is_not_saved(self):
-        for body in (card_pdf(words="Coinbase Card"), card_pdf(closing="Aug 12, 2026")):
+        for body in (card_pdf(words="Coinbase Card"), card_pdf(closing="Aug 4, 2031")):
             page = CardPage()
             page.fetch_body = body
             ok, saved, trace = self.take(page)
@@ -1767,7 +1767,7 @@ class CardDownload(unittest.TestCase):
     def test_a_statement_the_list_no_longer_names_stops_the_run(self):
         page = CardPage()
         with self.assertRaises(site.pressing.Stop) as stop:
-            self.take(page, iso="2026-07-12", label="July 2026")
+            self.take(page, iso="2031-07-04", label="July 2031")
         self.assertFalse(stop.exception.after_a_press)
         self.assertEqual([c for c in page.clicked if isinstance(c, str)], [])
 
@@ -1775,7 +1775,7 @@ class CardDownload(unittest.TestCase):
         """Listed whole at discovery, and read again for the statement. A
         list that is not whole now stops the run, rather than leave this
         statement for review and go on to the next."""
-        page = CardPage(rows=[label_of("2026-10-12"), label_of("2026-09-12")])
+        page = CardPage(rows=[label_of("2031-10-04"), label_of("2031-09-04")])
         with self.assertRaises(site.pressing.Stop) as stop:
             self.take(page)
         self.assertIn("card statements", stop.exception.lines[0])
@@ -1786,7 +1786,7 @@ class CardDownload(unittest.TestCase):
 
     def test_a_row_that_reads_another_month_at_the_press_is_not_pressed(self):
         page = CardPage()
-        page.row_says[1] = "August 2026"
+        page.row_says[1] = "August 2031"
         ok, saved, trace = self.take(page)
         self.assertFalse(ok)
         self.assertEqual([c for c in page.clicked if isinstance(c, str)], [])
@@ -1849,10 +1849,10 @@ class CardDownload(unittest.TestCase):
             with tempfile.TemporaryDirectory() as td:
                 self.assertTrue(site.download_bill(
                     page, Path(td), self.ISO, Path(td) / "o.pdf",
-                    title="Coinbase One Card Statement September 2026", trace=[]))
+                    title="Coinbase One Card Statement September 2031", trace=[]))
                 self.assertFalse(site.download_bill(
-                    page, Path(td), "2026-08-12", Path(td) / "o.pdf",
-                    title="Coinbase One Card Statement September 2026", trace=[]))
+                    page, Path(td), "2031-08-04", Path(td) / "o.pdf",
+                    title="Coinbase One Card Statement September 2031", trace=[]))
         self.assertEqual(said, [(self.LABEL, self.ISO, [site.STATEMENTS_URL])])
 
 
@@ -1879,16 +1879,16 @@ class CardRun(unittest.TestCase):
         with mock.patch.object(site, "goto_documents", lambda page: True), \
                 mock.patch.object(site, "download_bill", stops):
             with self.assertRaises(site.pressing.Stop):
-                app.process(self.docs_for(app, "2026-10-12", "2026-09-12"))
-        self.assertEqual(asked, ["2026-10-12"], "the run went on to the next statement")
+                app.process(self.docs_for(app, "2031-10-04", "2031-09-04"))
+        self.assertEqual(asked, ["2031-10-04"], "the run went on to the next statement")
 
     def test_a_failed_attempt_names_no_signed_address(self):
         app, _failures = built_app(self)
-        doc = self.docs_for(app, "2026-09-12")[0]
-        page = mock.Mock(url=card_url("2026-09-12"))
+        doc = self.docs_for(app, "2031-09-04")[0]
+        page = mock.Mock(url=card_url("2031-09-04"))
         with mock.patch.object(site, "goto_documents", lambda page: True), \
                 mock.patch.object(site, "download_bill", lambda *a, **kw: False):
-            app.download_one(page, doc, "2026-09-12 Coinbase One Card Statement.pdf")
+            app.download_one(page, doc, "2031-09-04 Coinbase One Card Statement.pdf")
         said = (app.paths.diagnostics / "download-attempt.json").read_text(encoding="utf-8")
         for secret in (CARD_TOKEN, CARD_SIGNATURE, CARD_KEYPAIR, "Expires", "_Coinbase.pdf"):
             self.assertNotIn(secret, said, secret)
@@ -1897,7 +1897,7 @@ class CardRun(unittest.TestCase):
     def test_where_landed_keeps_coinbase_s_own_address(self):
         self.assertEqual(site.where_landed(mock.Mock(url=site.CARD_LIST_URL)),
                          site.redact(site.CARD_LIST_URL))
-        self.assertEqual(site.where_landed(mock.Mock(url=card_url("2026-09-12"))),
+        self.assertEqual(site.where_landed(mock.Mock(url=card_url("2031-09-04"))),
                          "statements.cardless.com")
         self.assertEqual(site.where_landed(mock.Mock(url="")), "")
 
@@ -1906,10 +1906,10 @@ class CardRecords(unittest.TestCase):
     def test_rules_and_file_name(self):
         from paperpull_core import doc_types
         rules = doc_types.load_rules(HERE / "document_rules.json")
-        c, s, _ = doc_types.classify_document("Coinbase One Card Statement September 2026", rules)
+        c, s, _ = doc_types.classify_document("Coinbase One Card Statement September 2031", rules)
         self.assertEqual((c, s), ("Statement", "One Card Statement"))
-        self.assertEqual(docs.build_pdf_filename("2026-09-12", s, ""),
-                         "2026-09-12 Coinbase One Card Statement.pdf")
+        self.assertEqual(docs.build_pdf_filename("2031-09-04", s, ""),
+                         "2031-09-04 Coinbase One Card Statement.pdf")
 
     def test_a_card_statement_is_recorded_without_its_ids(self):
         app, _failures = built_app(self)
@@ -1919,27 +1919,27 @@ class CardRecords(unittest.TestCase):
                 app._record_rawdoc(r, site.BILLING_URL)
         app.discovery.save()
         self.assertEqual(sorted(app.discovery.data), [
-            "Statement:2026-08-12:Coinbase One Card Statement August 2026:Unnamed",
-            "Statement:2026-09-12:Coinbase One Card Statement September 2026:Unnamed",
-            "Statement:2026-10-12:Coinbase One Card Statement October 2026:Unnamed"])
+            "Statement:2031-08-04:Coinbase One Card Statement August 2031:Unnamed",
+            "Statement:2031-09-04:Coinbase One Card Statement September 2031:Unnamed",
+            "Statement:2031-10-04:Coinbase One Card Statement October 2031:Unnamed"])
         stored = app.paths.discovery_json.read_text(encoding="utf-8")
         for secret in (CARD_SID, CARD_OTHER_SID, CARD_ACCOUNT, "cardless"):
             self.assertNotIn(secret, stored)
 
     def test_a_card_statement_is_filed_under_its_closing_date(self):
         app, failures = built_app(self)
-        doc = docs.Document(title="Coinbase One Card Statement September 2026", category="Statement",
-                            summary="One Card Statement", date="2026-09-12")
+        doc = docs.Document(title="Coinbase One Card Statement September 2031", category="Statement",
+                            summary="One Card Statement", date="2031-09-04")
 
         def hands_over(page, dl_dir, iso, out_path, title="", trace=None, **kw):
             Path(out_path).write_bytes(card_pdf())
             return True
         with mock.patch.object(site, "goto_documents", lambda page: True), \
                 mock.patch.object(site, "download_bill", hands_over):
-            app.download_one(object(), doc, "2026-09-12 Coinbase One Card Statement.pdf")
+            app.download_one(object(), doc, "2031-09-04 Coinbase One Card Statement.pdf")
         rec = app.progress.get(doc.key)
         self.assertEqual(rec["state"], docs.State.COMPLETED.value, rec.get("notes"))
-        self.assertEqual(Path(rec["pdf_path"]).name, "2026-09-12 Coinbase One Card Statement.pdf")
+        self.assertEqual(Path(rec["pdf_path"]).name, "2031-09-04 Coinbase One Card Statement.pdf")
         self.assertEqual(failures, [])
 
 
@@ -2003,9 +2003,9 @@ class CardListLeft(unittest.TestCase):
             "accounts null": dict(answers=[CardResponse(None, {"data": {"viewer": {
                 "creditCard": {"accounts": None, "id": "x"}}}})]),
             "an unrelated query erroring": dict(
-                answers=[unrelated, CardResponse(None, statements_answer(["2026-10-12", "2026-09-12"]))],
-                dates=("2026-10-12", "2026-09-12")),
-            "a missing month": dict(dates=("2026-10-12", "2026-08-12")),
+                answers=[unrelated, CardResponse(None, statements_answer(["2031-10-04", "2031-09-04"]))],
+                dates=("2031-10-04", "2031-09-04")),
+            "a missing month": dict(dates=("2031-10-04", "2031-08-04")),
         }
 
     def test_a_run_takes_the_other_families_and_ends_not_whole(self):
@@ -2071,8 +2071,8 @@ class CardListLeft(unittest.TestCase):
         app, _failures = built_app(self)
         app._delay = lambda *a, **k: None
         app._on_its_site = lambda: object()
-        doc = docs.Document(title="Coinbase One Card Statement September 2026", category="Statement",
-                            summary="One Card Statement", date="2026-09-12")
+        doc = docs.Document(title="Coinbase One Card Statement September 2031", category="Statement",
+                            summary="One Card Statement", date="2031-09-04")
 
         def signed_out(*a, **kw):
             raise site.SessionExpired("the credit card tab opened the sign-in page")
@@ -2090,7 +2090,7 @@ if __name__ == "__main__":
 
 
 def test_the_card_statement_address_carries_its_signing_keys_and_nothing_else():
-    iso = "2026-09-12"
+    iso = "2031-09-04"
     assert site.is_card_statement_url(card_url(iso), iso)
     assert site.is_card_statement_url(card_url(iso).split("?")[0], iso)
     signed = card_url(iso)
