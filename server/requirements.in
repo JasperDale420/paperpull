@@ -1,0 +1,16 @@
+# The packages the server image runs, each pinned to the version the
+# panel's and the apps' test suites pass on. Raise one here on purpose, with
+# a test run, then run python server/lock.py, which writes requirements.txt
+# with every package these bring in and the hashes of their files, so an
+# image built today and one built next month hold the same thing.
+fastapi==0.141.1
+uvicorn==0.52.3
+# The browser screen's connection through the panel (gui/server_mode.py).
+websockets==17.2
+openpyxl==3.1.5
+pdfplumber==0.11.10
+pypdf[crypto]==6.19.0
+playwright==1.63.0
+# What builds paperpull-core inside the image, taken from this lock rather
+# than fetched unchecked at build time (--no-build-isolation in the Dockerfile).
+setuptools==84.0.0

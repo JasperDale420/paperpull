@@ -55,7 +55,14 @@ password manager.
 - **HTTPS.** On your home network the panel speaks plain HTTP, like most
   things on a NAS. If its traffic crosses a network you do not trust, put it
   behind a reverse proxy that adds HTTPS, and list the name the proxy is
-  reached by in `PAPERPULL_HOSTS`.
+  reached by in `PAPERPULL_HOSTS`. When the proxy says the browser came by
+  HTTPS, in `X-Forwarded-Proto` or `Forwarded`, the sign-in cookie is one
+  of its own, marked to travel over HTTPS only, so a plain HTTP visit to
+  the proxy's name never carries it. Caddy and Traefik say so on their own, and nginx
+  does with `proxy_set_header X-Forwarded-Proto $scheme;`. Anyone else on
+  a network the panel's plain HTTP crosses can read what it carries, the
+  password as you sign in included, so a guest network or a device you do
+  not trust on the same network is reason enough for HTTPS.
 - **Rented servers** are not recommended, see "Where to run it" in
   [SERVER.md](SERVER.md).
 
@@ -78,6 +85,12 @@ password manager.
 - **Chrome keeps no passwords.** Its password manager and card autofill are
   switched off by policy, since a container's browser profile has no
   operating system keyring to protect them.
+- **Its Python packages are the ones it was tested with.**
+  `server/requirements.txt` names every package the image installs from
+  the Python Package Index, the ones they bring in too, each at one
+  version with the hashes of its built files, and the image is built with
+  pip refusing any file whose hash differs. PaperPull's own core is built
+  from the repository with the setuptools named there.
 
 ## Where the provider code runs
 

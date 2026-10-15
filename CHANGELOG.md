@@ -7,6 +7,33 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Security
+- **PaperPull Server's sign-in cookie stays off plain HTTP behind an HTTPS
+  proxy.** The cookie that keeps you signed in was never marked to travel
+  over HTTPS alone, so with the server behind a reverse proxy that adds
+  HTTPS, a plain HTTP visit to the proxy's name, one typed without https
+  before the proxy sent the browser on, carried it in the clear. When the
+  browser reached the server over HTTPS, which a proxy says in
+  `X-Forwarded-Proto` or `Forwarded`, the server now gives it a cookie of
+  its own name marked that way. Reached on the home network by plain
+  HTTP, nothing changes, since a browser keeps no such cookie sent that
+  way. The two names keep a plain HTTP sign-in at the proxy's name
+  working after an HTTPS one, since a browser lets no plain HTTP page
+  replace a Secure cookie of the same name.
+- **The server image installs only the package files it was built and
+  tested with.** `server/requirements.txt` named the packages the server
+  runs, each at one version, but not the packages those bring in, which
+  came at whatever version was newest on the day an image was built, and
+  no file was checked. It now names every package, at one version, with
+  the hashes of its built files, resolved by `server/lock.py` in the
+  image's own Python, and the image is built with pip checking every file
+  against its hash and taking only built packages. The direct pins a person
+  raises are in `server/requirements.in`, and a test fails when one is
+  raised without the lock written again. PaperPull's own core is built
+  with the setuptools from the lock rather than one fetched unchecked.
+
 ## [0.53.0] - 2026-10-15
 
 Bilt Card statements arrive, there is a Mac package for Intel, and Wells

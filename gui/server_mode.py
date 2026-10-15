@@ -55,6 +55,13 @@ from fastapi import HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 SESSION_COOKIE = "paperpull_session"
+# The session given to a browser that came by HTTPS. A browser lets no page
+# reached by plain HTTP replace a Secure cookie of the same name, so with one
+# name for both, a person who signed in once through an HTTPS proxy could
+# never sign in again by plain HTTP at that name. The prefix makes the
+# browser keep this one only as Secure.
+SECURE_SESSION_COOKIE = "__Secure-paperpull_session"
+SESSION_COOKIES = (SECURE_SESSION_COOKIE, SESSION_COOKIE)
 SESSION_SECONDS = 14 * 86400
 # How often an open Browser Screen asks whether its session still holds, so
 # signing out, a new password or reset_password.py ends it within seconds.
@@ -257,6 +264,39 @@ def _cookie(headers: dict, name: str) -> str:
     return ""
 
 
+def session_token(headers: dict) -> str:
+    """The session a request carries, in either cookie. A browser that
+    signed in both ways sends both over HTTPS, so a live one is taken first."""
+    tokens = [token for token in (_cookie(headers, name) for name in SESSION_COOKIES) if token]
+    return next((token for token in tokens if session_valid(token)), tokens[0] if tokens else "")
+
+
+def _first_header(scope, name: str) -> str:
+    """The first line of a header, where _headers keeps the last."""
+    for key, value in scope.get("headers", []):
+        if key.decode("latin-1").lower() == name:
+            return value.decode("latin-1")
+    return ""
+
+
+def over_https(scope) -> bool:
+    """Whether the browser reached the panel over HTTPS, itself or through a
+    reverse proxy that says so in X-Forwarded-Proto or Forwarded. Only the
+    first entry counts, the one the proxy nearest the browser wrote. The
+    answer only ever chooses the session cookie that travels over HTTPS
+    alone, so a request that claims HTTPS falsely harms nobody but itself,
+    its browser refusing a cookie like that over plain HTTP."""
+    if scope.get("scheme") in ("https", "wss"):
+        return True
+    if _first_header(scope, "x-forwarded-proto").split(",")[0].strip().lower() == "https":
+        return True
+    for part in _first_header(scope, "forwarded").split(",")[0].split(";"):
+        key, _, value = part.strip().partition("=")
+        if key.lower() == "proto" and value.strip('"').lower() == "https":
+            return True
+    return False
+
+
 def same_origin(headers: dict) -> bool:
     """Whether a request came from the panel's own page, on the desktop and
     on the server alike. Sec-Fetch-Site says so plainly in every current
@@ -337,7 +377,7 @@ def not_its_name(name: str) -> str:
 
 
 def signed_in(scope) -> bool:
-    return session_valid(_cookie(_headers(scope), SESSION_COOKIE))
+    return session_valid(session_token(_headers(scope)))
 
 
 def client_of(scope) -> str:
@@ -501,10 +541,16 @@ def install(app) -> None:
         body = (await request.body())[:8192].decode("utf-8", "replace")
         return {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}
 
-    def signed_in_answer(token: str):
+    def signed_in_answer(request: Request, token: str):
+        # Secure only over HTTPS, since a home network reaches the panel by
+        # plain HTTP and a browser keeps no Secure cookie sent that way.
+        # Behind an HTTPS proxy it keeps the cookie off a plain HTTP visit
+        # to the proxy's name, which would otherwise carry it in the clear.
+        secure = over_https(request.scope)
         answer = RedirectResponse("/", status_code=303)
-        answer.set_cookie(SESSION_COOKIE, token, max_age=SESSION_SECONDS, httponly=True,
-                          samesite="strict", path="/")
+        answer.set_cookie(SECURE_SESSION_COOKIE if secure else SESSION_COOKIE, token,
+                          max_age=SESSION_SECONDS, httponly=True, samesite="strict", path="/",
+                          secure=secure)
         return answer
 
     def refused(body: str, status: int = 401):
@@ -537,7 +583,7 @@ def install(app) -> None:
             note_failure(client)
             return refused(login_body("That is not the password."))
         note_success(client)
-        return signed_in_answer(new_session())
+        return signed_in_answer(request, new_session())
 
     @app.get("/setup", include_in_schema=False)
     def setup_page():
@@ -572,16 +618,20 @@ def install(app) -> None:
         note_success(client)
         set_password(password)
         print("A password was chosen for PaperPull Server.", flush=True)
-        return signed_in_answer(new_session())
+        return signed_in_answer(request, new_session())
 
     @app.post("/logout", include_in_schema=False)
     def logout(request: Request):
         only_on_the_server()
         if not same_origin(dict(request.headers)):
             return refused(login_body("That request did not come from this page."), 403)
-        end_session(request.cookies.get(SESSION_COOKIE, ""))
+        for name in SESSION_COOKIES:
+            end_session(request.cookies.get(name, ""))
         answer = RedirectResponse("/login", status_code=303)
-        answer.delete_cookie(SESSION_COOKIE, path="/")
+        answer.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="strict")
+        if over_https(request.scope):
+            answer.delete_cookie(SECURE_SESSION_COOKIE, path="/", secure=True, httponly=True,
+                                 samesite="strict")
         return answer
 
     @app.get("/screen", include_in_schema=False)
@@ -608,7 +658,7 @@ def install(app) -> None:
         # live keyboard and mouse on every provider signed in there, so the
         # session is asked again every few seconds and the screen closes once
         # it has ended, by signing out, a new password or reset_password.py.
-        token = websocket.cookies.get(SESSION_COOKIE, "")
+        token = session_token(dict(websocket.headers))
         asked = websocket.headers.get("sec-websocket-protocol", "")
         await websocket.accept(subprotocol="binary" if "binary" in asked else None)
         try:

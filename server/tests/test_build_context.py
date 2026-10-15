@@ -18,6 +18,7 @@ REPO = SERVER.parent
 sys.path.insert(0, str(SERVER))
 
 import build  # noqa: E402
+import lock  # noqa: E402
 
 
 # -- what is chosen --------------------------------------------------------------
@@ -221,11 +222,73 @@ def test_chrome_keeps_no_passwords_and_reports_nothing():
     assert policies["SyncDisabled"] is True
 
 
+def requirement_lines(name: str) -> list:
+    return [line.split("#")[0].strip() for line in
+            (SERVER / name).read_text(encoding="utf-8").splitlines()
+            if line.split("#")[0].strip()]
+
+
+def dist_name(requirement: str) -> str:
+    return re.sub(r"[-_.]+", "-", re.split(r"[\[=<>~! ]", requirement)[0]).lower()
+
+
 def test_every_package_is_pinned():
-    lines = [line.strip() for line in
-             (SERVER / "requirements.txt").read_text(encoding="utf-8").splitlines()
-             if line.strip() and not line.startswith("#")]
+    lines = requirement_lines("requirements.in")
     assert lines and all("==" in line for line in lines), lines
+
+
+def locked() -> dict:
+    """Each package in requirements.txt, its version and its hashes."""
+    packages, current = {}, None
+    for line in requirement_lines("requirements.txt"):
+        line = line.rstrip("\\").strip()
+        if line.startswith("--hash="):
+            assert current, line
+            packages[current][1].append(line)
+        elif line.startswith("--"):
+            assert line == "--only-binary :all:", line
+        else:
+            name, _, version = line.partition("==")
+            assert version, "%s is not pinned to one version" % line
+            current = dist_name(name)
+            packages[current] = (version, [])
+    return packages
+
+
+def test_the_lock_names_every_package_at_one_version_with_its_hashes():
+    packages = locked()
+    assert len(packages) > len(requirement_lines("requirements.in"))
+    for name, (version, hashes) in packages.items():
+        assert hashes and all(re.fullmatch(r"--hash=sha256:[0-9a-f]{64}", h) for h in hashes), name
+
+
+def test_the_lock_holds_each_direct_pin_at_its_version():
+    """requirements.in is what a person raises, and the image installs the
+    lock, so a pin raised without running server/lock.py again is caught."""
+    packages = locked()
+    for line in requirement_lines("requirements.in"):
+        name, version = dist_name(line), line.partition("==")[2]
+        assert name in packages, "%s is not in requirements.txt, run server/lock.py" % name
+        assert packages[name][0] == version, \
+            "requirements.txt has %s %s, run server/lock.py" % (name, packages[name][0])
+
+
+def test_the_lock_was_resolved_in_the_image_s_own_base():
+    image = lock.base_image()
+    assert image.startswith("python:")
+    text = (SERVER / "requirements.txt").read_text(encoding="utf-8")
+    assert text.startswith(lock.header(image)), "the lock was resolved in another base"
+
+
+def test_the_image_installs_only_the_lock_s_files():
+    text = (SERVER / "Dockerfile").read_text(encoding="utf-8")
+    install = [line for line in text.splitlines() if "-r /tmp/requirements.txt" in line]
+    assert len(install) == 1
+    assert "--require-hashes" in install[0] and "--only-binary :all:" in install[0]
+    core = [line for line in text.splitlines() if "pip install" in line and "/opt/paperpull/core" in line]
+    assert len(core) == 1
+    assert "--no-deps" in core[0] and "--no-build-isolation" in core[0]
+    assert "pip install" not in text.replace(install[0], "").replace(core[0], "")
 
 
 def test_everything_runs_as_pp_after_the_root_step():

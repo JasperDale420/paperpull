@@ -202,6 +202,118 @@ def test_signing_in_and_out(base, on_server):
     assert ask(base + "/", session=session)[0] == 303
 
 
+def session_cookies(headers) -> dict:
+    """{name: the whole Set-Cookie line} for each session cookie an answer sets."""
+    out = {}
+    for value in headers.get_all("Set-Cookie") or []:
+        name = value.partition("=")[0]
+        if name in server_mode.SESSION_COOKIES:
+            out[name] = value
+    return out
+
+
+def is_secure(cookie: str) -> bool:
+    return "secure" in [part.strip().lower() for part in cookie.split(";")]
+
+
+def test_the_session_cookie_travels_only_over_https_when_it_came_that_way(base, on_server):
+    """On the home network the panel speaks plain HTTP, and a browser keeps
+    no Secure cookie sent that way, so there the cookie is not marked.
+    Behind a reverse proxy that adds HTTPS it is, under a name of its own,
+    so a later plain HTTP visit to the proxy's name never carries it in the
+    clear, and a plain HTTP sign-in at that name is never refused its cookie
+    because the browser holds a Secure one of the same name."""
+    server_mode.set_password(PASSWORD)
+    plain = session_cookies(ask(base + "/login", "POST", {"password": PASSWORD})[1])
+    assert list(plain) == [server_mode.SESSION_COOKIE]
+    assert not is_secure(plain[server_mode.SESSION_COOKIE])
+    for proxy in ({"X-Forwarded-Proto": "https"},
+                  {"X-Forwarded-Proto": "https, http"},
+                  {"Forwarded": 'for=192.0.2.1;proto="https", for=10.0.0.2;proto=http'}):
+        status, headers, _ = ask(base + "/login", "POST", {"password": PASSWORD}, headers=proxy)
+        cookies = session_cookies(headers)
+        assert status == 303 and list(cookies) == [server_mode.SECURE_SESSION_COOKIE], proxy
+        assert is_secure(cookies[server_mode.SECURE_SESSION_COOKIE]), proxy
+    for proxy in ({"X-Forwarded-Proto": "http"}, {"X-Forwarded-Proto": "http, https"},
+                  {"Forwarded": "for=192.0.2.1;proto=http"}):
+        status, headers, _ = ask(base + "/login", "POST", {"password": PASSWORD}, headers=proxy)
+        assert status == 303 and list(session_cookies(headers)) == [server_mode.SESSION_COOKIE]
+
+
+def test_a_session_from_either_cookie_is_signed_in_and_signing_out_ends_both(base, on_server):
+    plain = signed_in(base)
+    over_https = {"X-Forwarded-Proto": "https"}
+    secure = session_cookies(ask(base + "/login", "POST", {"password": PASSWORD},
+                                 headers=over_https)[1])[server_mode.SECURE_SESSION_COOKIE]
+    secure = secure.split(";")[0].partition("=")[2]
+    both = {"Cookie": "%s=%s; %s=%s" % (server_mode.SECURE_SESSION_COOKIE, secure,
+                                        server_mode.SESSION_COOKIE, plain)}
+    as_secure = {"Cookie": "%s=%s" % (server_mode.SECURE_SESSION_COOKIE, secure)}
+    assert ask(base + "/", headers=as_secure)[0] == 200
+    assert ask(base + "/", session=plain)[0] == 200
+    # A plain cookie whose session ended does not hide a live Secure one.
+    stale = {"Cookie": "%s=%s; %s=%s" % (server_mode.SESSION_COOKIE, "ended",
+                                         server_mode.SECURE_SESSION_COOKIE, secure)}
+    assert ask(base + "/", headers=stale)[0] == 200
+
+    status, headers, _ = ask(base + "/logout", "POST", headers=dict(both, **over_https))
+    assert status == 303
+    cleared = session_cookies(headers)
+    assert sorted(cleared) == sorted(server_mode.SESSION_COOKIES)
+    assert is_secure(cleared[server_mode.SECURE_SESSION_COOKIE])
+    assert ask(base + "/", headers=as_secure)[0] == 303
+    assert ask(base + "/", session=plain)[0] == 303
+
+
+def test_signing_out_by_plain_http_leaves_the_secure_cookie_alone(base, on_server):
+    """A browser would refuse to clear it from a plain HTTP page anyway."""
+    session = signed_in(base)
+    status, headers, _ = ask(base + "/logout", "POST", session=session)
+    assert status == 303 and list(session_cookies(headers)) == [server_mode.SESSION_COOKIE]
+
+
+def test_choosing_the_password_through_an_https_proxy_marks_the_cookie(base, on_server):
+    ask(base + "/setup")
+    status, headers, _ = ask(base + "/setup", "POST",
+                             {"code": server_mode._SETUP["code"], "password": PASSWORD,
+                              "again": PASSWORD}, headers={"X-Forwarded-Proto": "https"})
+    cookies = session_cookies(headers)
+    assert status == 303 and list(cookies) == [server_mode.SECURE_SESSION_COOKIE]
+    assert is_secure(cookies[server_mode.SECURE_SESSION_COOKIE])
+
+
+def scope_with(scheme: str, *headers) -> dict:
+    return {"scheme": scheme, "headers": [(k.encode(), v.encode()) for k, v in headers]}
+
+
+def test_what_a_proxy_says_is_read_from_its_first_line_and_entry():
+    """Read straight from the scope, since the test server's uvicorn trusts
+    proxy headers from 127.0.0.1 and turns some into the scheme itself."""
+    https = server_mode.over_https
+    assert https(scope_with("https")) and https(scope_with("wss"))
+    assert not https(scope_with("http")) and not https(scope_with("ws"))
+    assert https(scope_with("http", ("x-forwarded-proto", "https")))
+    assert https(scope_with("http", ("X-Forwarded-Proto", " HTTPS , http")))
+    assert not https(scope_with("http", ("x-forwarded-proto", "http, https")))
+    assert https(scope_with("http", ("x-forwarded-proto", "https"), ("x-forwarded-proto", "http")))
+    assert not https(scope_with("http", ("x-forwarded-proto", "http"), ("x-forwarded-proto", "https")))
+    assert https(scope_with("http", ("forwarded", 'for=192.0.2.1;Proto="https";host=nas')))
+    assert not https(scope_with("http", ("forwarded", "for=192.0.2.1;proto=http, proto=https")))
+    assert not https(scope_with("http", ("forwarded", "for=192.0.2.1")))
+
+
+def test_the_session_is_found_in_either_cookie(on_server):
+    server_mode.set_password(PASSWORD)
+    live = server_mode.new_session()
+    secure, plain = server_mode.SECURE_SESSION_COOKIE, server_mode.SESSION_COOKIE
+    assert server_mode.session_token({"cookie": "%s=%s" % (secure, live)}) == live
+    assert server_mode.session_token({"cookie": "%s=%s" % (plain, live)}) == live
+    assert server_mode.session_token({"cookie": "%s=old; %s=%s" % (secure, plain, live)}) == live
+    assert server_mode.session_token({"cookie": "%s=old; %s=%s" % (plain, secure, live)}) == live
+    assert server_mode.session_token({"cookie": "other=%s" % live}) == ""
+    assert server_mode.session_token({}) == ""
+
+
 def test_wrong_passwords_make_an_address_wait(base, on_server):
     server_mode.set_password(PASSWORD)
     for _ in range(server_mode.FREE_TRIES):
@@ -441,8 +553,9 @@ def test_a_closed_screen_tab_ends_its_connection_quietly(on_server, monkeypatch)
     run(scenario())
 
 
+@pytest.mark.parametrize("cookie", server_mode.SESSION_COOKIES)
 @pytest.mark.parametrize("end", ["signing out", "a new password", "the reset tool"])
-def test_an_open_browser_screen_closes_once_its_session_ends(on_server, monkeypatch, end):
+def test_an_open_browser_screen_closes_once_its_session_ends(on_server, monkeypatch, end, cookie):
     """The gate looks at the session when the Browser Screen connects, and
     the connection then carried keyboard and mouse until one side closed.
     Signing out, a new password and reset_password.py all left a screen
@@ -478,7 +591,7 @@ def test_an_open_browser_screen_closes_once_its_session_ends(on_server, monkeypa
 
         scope = {"type": "websocket", "path": "/screen/websockify", "query_string": b"",
                  "headers": [(b"host", b"nas.local:8765"), (b"origin", b"http://nas.local:8765"),
-                             (b"cookie", ("%s=%s" % (server_mode.SESSION_COOKIE, token)).encode())]}
+                             (b"cookie", ("%s=%s" % (cookie, token)).encode())]}
         screen = asyncio.ensure_future(app(scope, receive, send))
         try:
             await asyncio.wait_for(connected.wait(), 10)
