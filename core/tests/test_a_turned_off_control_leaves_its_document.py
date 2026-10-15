@@ -116,7 +116,7 @@ STOPS = {
 # this census. It finds them by what they do, this only keeps it from
 # passing on finding none.
 LEAVES = {
-    ("alpaca", "_press"), ("amex", "download_document"),
+    ("alpaca", "_press"), ("amex", "download_document"), ("bilt", "_press"),
     ("amfam", "_catch_pdf"), ("applecard", "_catch_pdf"), ("att", "_catch_pdf"),
     ("chasebusiness", "_press_row"), ("coinbase", "_catch_statement"), ("firsthorizon", "_press"),
     ("etrade", "_catch_pdf"), ("golden1", "_catch_pdf"), ("nelnet", "_catch_pdf"),
@@ -633,6 +633,22 @@ def _firsthorizon_card(off: bool) -> str:
             'Download PDF</button></div></div>' % (" disabled" if off else ""))
 
 
+def _bilt(site, page, out, staging, trace):
+    """Bilt's capture on the bound statement, the only statement button on
+    the page. Its one press site, _press, serves the statement's own button
+    here, with the browser's downloads staged as a run stages them."""
+    run = site.Run(staged=True)
+    run.attach(page.context)
+    target = site.Target("2026-06-30", "st-0001", "0f0f0f0f-1234-4abc-8def-0123456789ab", "4321")
+    return site._catch_statement(page, run, target, out, trace)
+
+
+def _bilt_button(off: bool) -> str:
+    return ('<button id="get" type="button" class="ctl" aria-label="Download statement for '
+            'June 30, 2026"%s onclick="window.presses++; fetch(\'/statement.pdf\');">'
+            'June 30, 2026</button>' % (" disabled" if off else ""))
+
+
 VENMO_PROFILE = "1234567890123456"
 
 
@@ -672,6 +688,8 @@ def _how(app: str, function: str, monkeypatch):
             "2026-06-30</td><td>trade_confirmation"
     if (app, function) == ("amex", "download_document"):
         return "amex_site", _amex, _amex_button, "June 30, 2026"
+    if (app, function) == ("bilt", "_press"):
+        return "bilt_site", _bilt, _bilt_button, "Statements"
     if (app, function) == ("vanguard", "download_document"):
         return "vanguard_site", _vanguard(monkeypatch), _vanguard_icon, \
             "%s</td><td>08/31/2026" % VG_ACCOUNT

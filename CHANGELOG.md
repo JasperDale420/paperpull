@@ -19,6 +19,26 @@ All notable changes to PaperPull are recorded here. Versioning follows
   `packaging/build_macos.py` takes `--arch arm64` or `--arch x86_64`, the
   Mac's own when left out, and an Apple Silicon Mac can build the Intel one
   through Rosetta.
+- **Bilt Card statements.** A new app saves the monthly statements of the
+  Bilt Card 2.0, the card Cardless services, from the Bilt wallet. It
+  presses only three things, the card's "View balance summary", "View
+  statements" and one statement's own button, which opens the PDF in a
+  tab. The statement is kept only when exactly one tab opened, on Bilt's
+  statement host at the address of that statement's date, the page's own
+  answer named that statement, and the PDF prints its date. The tab is
+  closed afterwards. A second tab, a browser download or a tab on another
+  host stops the run. The list is read from the page's own answer and has
+  to match the buttons shown, count and dates, or the list stops rather
+  than being called whole. An answer that holds more than its list and
+  count, or a sheet that offers more or older statements, stops the list
+  too. Nothing that pays, transfers a balance, redeems points, locks the
+  card, adds a user or refers anyone is ever pressed, and the card id,
+  statement ids, last four and your name stay out of every log and
+  diagnostic file. Files are named `<date> Bilt Card Statement.pdf`, and
+  a Download again of a statement whose file is still there saves a
+  second copy beside it. Built from a live survey of one account and run
+  live on it, eight statements saved. Statements of the Wells Fargo
+  issued Bilt card, before February 2026, are not here.
 
 ### Changed
 - **Wells Fargo is confirmed for credit card statements (#27).** A tester
