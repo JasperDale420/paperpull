@@ -19,6 +19,18 @@ All notable changes to PaperPull are recorded here. Versioning follows
   savings, mortgage and tax documents have not been run on a real account
   yet, and the tables and the panel say so.
 
+### Fixed
+- **The transaction export reads the closing date on Navy Federal Visa
+  statements whose label row pdfplumber cuts into pieces (#32).** On those
+  statements every piece of the "Statement Closing Date" row sits at one
+  height, but "i ng Date" came out long enough to be kept as a line of its
+  own, and it sorted ahead of the rest of the row, so the label never stood
+  before its date and the statement had no Period End. A longer piece at
+  the height of the scattered characters is now rebuilt with them. Found,
+  measured and fixed by @dertbv on their September and October statements,
+  with the other five of their statements unchanged. The export reads every
+  statement again once after the update.
+
 ## [0.52.0] - 2026-10-14
 
 Six providers arrive, First Horizon Bank checking statements, Chase

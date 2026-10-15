@@ -50,7 +50,7 @@ from typing import Dict, List, Optional, Tuple
 
 INDEX_SUFFIX = " Document Index.csv"
 CACHE_NAME = ".transactions-cache.json"
-CACHE_VERSION = 8      # 2: the index date drives the year, #29. 3: split decimals, empty brackets, #32. 4: sidebar bleed, neighbor descriptions. 5: dates checked against the period. 6: credits signed by their heading, #32. 7: scattered lines rebuilt, #32. 8: rebuilt by touching characters, not bands of height, #32
+CACHE_VERSION = 9      # 2: the index date drives the year, #29. 3: split decimals, empty brackets, #32. 4: sidebar bleed, neighbor descriptions. 5: dates checked against the period. 6: credits signed by their heading, #32. 7: scattered lines rebuilt, #32. 8: rebuilt by touching characters, not bands of height, #32. 9: a longer piece of a scattered row rebuilt with it, #32
 
 # -- shapes -----------------------------------------------------------------------
 _MON = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
@@ -685,6 +685,10 @@ ROW_HEIGHTS = 0.5
 SURE_CHARS = 3
 # A character's height when pdfplumber gives none.
 CHAR_HEIGHT_PT = 8.0
+# A longer piece is rebuilt with the scattered ones when it sits within this
+# many points of at least this many of them, so it is one of their row.
+ROW_JOIN_PT = 1.0
+ROW_JOIN_MIN = 2
 
 
 def _height(c: dict) -> float:
@@ -778,8 +782,17 @@ def page_lines(text_lines: List[dict]) -> List[str]:
     short = {i for i, tl in enumerate(text_lines) if len((tl.get("text") or "").strip()) <= 2}
     if len(short) < SCATTER_MIN:
         return [tl["text"] for tl in text_lines]
-    chars = [c for i in sorted(short) for c in (text_lines[i].get("chars") or [])]
-    kept = [(tl["top"], n, tl["text"]) for n, tl in enumerate(text_lines) if n not in short]
+    # A longer piece cut from a scattered row sits at the very height of the
+    # single characters beside it. Kept as a line of its own, it sorted ahead
+    # of the row it was cut from, as "i ng Date" did on a Navy Federal Visa,
+    # and the label lost its date (#32, found by @dertbv). It is rebuilt with
+    # them.
+    tops = [text_lines[i]["top"] for i in short]
+    joined = {i for i, tl in enumerate(text_lines) if i not in short
+              and sum(1 for t in tops if abs(tl["top"] - t) <= ROW_JOIN_PT) >= ROW_JOIN_MIN}
+    group = short | joined
+    chars = [c for i in sorted(group) for c in (text_lines[i].get("chars") or [])]
+    kept = [(tl["top"], n, tl["text"]) for n, tl in enumerate(text_lines) if n not in group]
     rebuilt = [(top, len(text_lines) + n, txt) for n, (top, txt) in enumerate(_band_lines(chars))]
     return [txt for _, _, txt in sorted(kept + rebuilt)]
 
