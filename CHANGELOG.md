@@ -7,7 +7,14 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
-## [Unreleased]
+## [0.53.0] - 2026-10-15
+
+Bilt Card statements arrive, there is a Mac package for Intel, and Wells
+Fargo is confirmed on a real account. The release also has E*TRADE tell
+several accounts' statements apart, a sign-in leave alone a port a hung
+browser still holds, the transaction export find the closing date on Navy
+Federal Visa statements, and repairs to Alpaca, First Horizon and
+Robinhood.
 
 ### Added
 - **A Mac package for Intel (#88).** Next to `PaperPull-<version>-arm64.dmg`
@@ -45,8 +52,8 @@ All notable changes to PaperPull are recorded here. Versioning follows
   ran the app from 0.52.0 on a real account and it downloaded the credit
   card statements, the first account it has met since it was built without
   one. So Wells Fargo moves from waiting for a tester to supported, in the
-  provider tables, the panel's list, its README and its status lines, and
-  sixty-eight providers are supported and six wait for a tester. Checking,
+  provider tables, the panel's list, its README and its status lines. With
+  Bilt, sixty-nine providers are supported and six wait for a tester. Checking,
   savings, mortgage and tax documents have not been run on a real account
   yet, and the tables and the panel say so.
 - **A release goes out with every download or not at all.**
