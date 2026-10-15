@@ -139,7 +139,21 @@ The labels in the UGOS Docker app may differ a little from these.
 With an image you built yourself, import `paperpull-server.tar` first. In
 the Docker app, open **Image** and choose to add or import a local image.
 
-Synology and Unraid should work the same way and have not been tried yet.
+### On Unraid
+
+A tester ran it on Unraid 7.3.3 with the Compose Manager plugin, from
+Community Applications.
+
+1. Put `compose.yaml` and `seccomp-chrome.json` together in a folder of
+   their own, such as `/mnt/user/appdata/paperpull`, and fill in
+   `compose.yaml` as above.
+2. Write the two paths in `compose.yaml` that start with `./` as absolute
+   paths to that folder, `seccomp=/mnt/user/appdata/paperpull/seccomp-chrome.json`
+   and `/mnt/user/appdata/paperpull/data:/data`.
+3. In Compose Manager, add a new stack, paste `compose.yaml` into it and
+   start it with Compose Up. The setup code is in the container's log.
+
+Synology should work the same way and has not been tried yet.
 
 ## Paperless
 
