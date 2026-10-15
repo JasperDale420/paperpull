@@ -1085,6 +1085,7 @@ class CardPage:
         self.sids = list(sids or ["sid-invented-%04d" % i for i in range(len(self.dates))])
         self.rows_drawn = rows if rows is not None else [label_of(d) for d in self.dates]
         self.links = list(links)
+        self.hrefs = {}            # a link's href by its text, None for none
         self.lands_on = lands_on
         self.handlers = []
         self.navigated = False
@@ -1149,15 +1150,31 @@ class CardPage:
 
     def locator(self, sel):
         page = self
-        if sel == site.CARD_LINK_CSS:
+        if sel.startswith(site.CARD_LINK_CSS):
+            rest = sel[len(site.CARD_LINK_CSS):]
+
+            def fits(text):
+                href = page.hrefs.get(text)
+                if rest == ":not([href])":
+                    return href is None
+                if rest.startswith("[href='"):
+                    return href == rest[len("[href='"):-2]
+                return rest == ""
+
             class Link:
-                def __init__(s, i): s.i = i
-                def inner_text(s, **kw): return page.links[s.i]
-                def get_attribute(s, name): return None
+                def __init__(s, text): s.text = text
+                def inner_text(s, **kw): return s.text
+                def get_attribute(s, name): return page.hrefs.get(s.text)
+
             class Links:
-                def count(s): return len(page.links)
-                def nth(s, i): return Link(i)
-            return Links()
+                def __init__(s, texts): s.texts = texts
+                def count(s): return len(s.texts)
+                def nth(s, i): return Link(s.texts[i])
+                def inner_text(s, **kw): return s.texts[0]
+                def get_attribute(s, name): return page.hrefs.get(s.texts[0])
+                def filter(s, has_text=None):
+                    return Links([x for x in s.texts if has_text.search(x)])
+            return Links([x for x in page.links if fits(x)])
         if sel == site._LOAD_MORE:
             return mock.Mock(count=lambda: page.load_more)
         if sel == "button":
@@ -1297,7 +1314,7 @@ class CardList(unittest.TestCase):
             ("Coinbase One Card Statement October 2026", "2026-10-12"),
             ("Coinbase One Card Statement September 2026", "2026-09-12"),
             ("Coinbase One Card Statement August 2026", "2026-08-12")])
-        self.assertEqual(page.clicked, [("link", "Credit Card", site.CARD_LINK_CSS,
+        self.assertEqual(page.clicked, [("link", "Credit Card", site.CARD_LINK_CSS + ":not([href])",
                                          "open the credit card statements")])
         self.assertEqual(page.handlers, [], "the listener was removed")
         self.assertEqual(page.fetched, [], "nothing was asked for")
@@ -1392,30 +1409,53 @@ class CardList(unittest.TestCase):
                            ("Apply for Credit Card", None)):
             self.assertFalse(site.is_card_tab(text, href), (text, href))
         page = CardPage()
-        hrefs = {"Transactions": None, "Credit Card": "/creditcard"}
-        real = page.locator
-
-        def locator(sel):
-            loc = real(sel)
-            if sel == site.CARD_LINK_CSS:
-                nth = loc.nth
-                class Links:
-                    def count(s): return loc.count()
-                    def nth(s, i):
-                        link = nth(i)
-                        link.get_attribute = lambda name: hrefs[link.inner_text()]
-                        return link
-                return Links()
-            return loc
-        page.locator = locator
+        page.hrefs = {"Credit Card": "/creditcard"}
         self.assertEqual(self.collect(page), [])
         self.assertEqual(page.clicked, [], "a Credit Card link to another address is not pressed")
+        page = CardPage()
+        page.hrefs = {"Credit Card": "/statements/credit-card"}
+        self.assertEqual(len(self.collect(page)), 3)
+        self.assertEqual(page.clicked[0][2], site.CARD_LINK_CSS + "[href='/statements/credit-card']",
+                         "pressed through a selector only that link fits")
+
+    def test_the_tab_is_looked_for_only_on_the_statements_page(self):
+        page = CardPage()
+        page.url = "https://accounts.coinbase.com/settings"
+        with self.assertRaises(site.ListStopped):
+            self.collect(page)
+        self.assertEqual(page.clicked, [])
+
+    def test_a_tab_the_press_cannot_find_once_alone_is_not_pressed(self):
+        """Found by its text and address, then found again for the press
+        by a selector only it fits and its exact text. Anything but one
+        there, and nothing is pressed."""
+        page = CardPage(links=("Transactions", "Credit Card", "Credit Card "))
+        page.hrefs = {"Credit Card ": "/statements/credit-card"}
+        with self.assertRaises(site.ListStopped):
+            self.collect(page)
+        self.assertEqual(page.clicked, [])
 
     def test_an_account_without_a_card_lists_nothing(self):
         for answer in ({"data": {"viewer": {"creditCard": None}}}, accounts_answer(())):
             page = CardPage(dates=[], rows=[])
             page.list_answers = [CardResponse(page, answer)]
             self.assertEqual(self.collect(page), [], answer)
+
+    def test_no_card_is_believed_only_from_a_clean_answer(self):
+        for status, body in ((500, {"data": {"viewer": {"creditCard": None}}}),
+                             (200, {"data": {"viewer": {"creditCard": None}}, "errors": [{"m": 1}]}),
+                             (200, ValueError("not json"))):
+            page = CardPage(dates=[], rows=[])
+            answer = CardResponse(page, body)
+            answer.status = status
+            page.list_answers = [answer]
+            with self.assertRaises(site.ListStopped, msg=(status, body)):
+                self.collect(page)
+        page = CardPage(dates=[], rows=[])
+        page.list_answers = [CardResponse(page, ValueError("not json")),
+                             CardResponse(page, {"data": {"viewer": {"creditCard": None}}})]
+        with self.assertRaises(site.ListStopped):
+            self.collect(page)
 
     def test_an_empty_list_heard_is_empty(self):
         page = CardPage(dates=[], rows=[])
@@ -1572,12 +1612,12 @@ class CardDownload(unittest.TestCase):
                       card_url(self.ISO, token="tokOther")):
             page = CardPage()
             page.press_lands = {self.LABEL: lands}
-            self.assertIn("did not arrive", self.stopped(page).reason, lands)
+            self.assertIn("not at the address", self.stopped(page).reason, lands)
 
     def test_a_tab_that_never_moves_takes_nothing(self):
         page = CardPage()
         page.press_lands = {self.LABEL: ""}
-        self.assertIn("did not arrive", self.stopped(page).reason)
+        self.assertIn("not at the address", self.stopped(page).reason)
 
     def test_two_answers_to_one_press_take_nothing(self):
         page = CardPage()
@@ -1589,14 +1629,24 @@ class CardDownload(unittest.TestCase):
                          op="CreditCardStatementRowQuery", variables={"statementId": sid})]}
         self.assertIn("more than once", self.stopped(page).reason)
 
-    def test_an_answer_that_cannot_be_read_takes_nothing(self):
+    def test_an_answer_that_does_not_name_the_statement_stops_the_run(self):
+        """The row was pressed, and without one clean answer naming its
+        address the press cannot be bound to its statement."""
+        def answered(page, status=200, body=None):
+            answer = CardResponse(page, body, op="CreditCardStatementRowQuery",
+                                  variables={"statementId": page.sids[1]})
+            answer.status = status
+            return [answer]
+        for status, body in ((200, RuntimeError("no body")), (500, row_answer(card_url(self.ISO))),
+                             (200, dict(row_answer(card_url(self.ISO)), errors=[{"m": 1}])),
+                             (200, {"data": {"viewer": {"creditCard": {"id": "x"}}}}),
+                             (200, {"data": {"viewer": {"creditCard": {"statementUrl": 7}}}})):
+            page = CardPage()
+            page.press_answers = {self.LABEL: answered(page, status, body)}
+            self.stopped(page)
         page = CardPage()
-        page.press_answers = {self.LABEL: [CardResponse(
-            page, RuntimeError("no body"), op="CreditCardStatementRowQuery",
-            variables={"statementId": page.sids[1]})]}
-        ok, saved, trace = self.take(page)
-        self.assertFalse(ok)
-        self.assertEqual(page.fetched, [])
+        page.press_answers = {self.LABEL: []}
+        self.assertIn("did not answer", self.stopped(page).reason)
 
     def test_html_where_the_pdf_should_be_is_not_saved(self):
         page = CardPage()
@@ -1632,11 +1682,25 @@ class CardDownload(unittest.TestCase):
         self.assertIn("download", self.stopped(page).reason)
         dl.cancel.assert_called_once_with()
 
-    def test_a_statement_the_list_does_not_name_once_is_not_pressed(self):
+    def test_a_statement_the_list_no_longer_names_stops_the_run(self):
         page = CardPage()
-        ok, saved, trace = self.take(page, iso="2026-07-12", label="July 2026")
-        self.assertFalse(ok)
+        with self.assertRaises(site.pressing.Stop) as stop:
+            self.take(page, iso="2026-07-12", label="July 2026")
+        self.assertFalse(stop.exception.after_a_press)
         self.assertEqual([c for c in page.clicked if isinstance(c, str)], [])
+
+    def test_a_list_that_cannot_be_read_again_stops_the_run(self):
+        """Listed whole at discovery, and read again for the statement. A
+        list that is not whole now stops the run, rather than leave this
+        statement for review and go on to the next."""
+        page = CardPage(rows=[label_of("2026-10-12"), label_of("2026-09-12")])
+        with self.assertRaises(site.pressing.Stop) as stop:
+            self.take(page)
+        self.assertIn("card statements", stop.exception.lines[0])
+        self.assertEqual([c for c in page.clicked if isinstance(c, str)], [])
+        page = CardPage(links=("Transactions",))
+        with self.assertRaises(site.pressing.Stop):
+            self.take(page)
 
     def test_a_row_that_reads_another_month_at_the_press_is_not_pressed(self):
         page = CardPage()

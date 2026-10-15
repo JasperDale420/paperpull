@@ -1425,6 +1425,12 @@ def _listen(page) -> Tuple[list, object]:
     return heard, on_response
 
 
+def _clean(entry: dict) -> bool:
+    """An answer heard whole: status 200, a JSON object, and no errors."""
+    body = entry.get("body")
+    return entry.get("status") == 200 and isinstance(body, dict) and not body.get("errors")
+
+
 def _card_of(body):
     """viewer.creditCard of an answer, or None when the answer has none."""
     try:
@@ -1513,22 +1519,43 @@ def _card_rows(page) -> list:
         return []
 
 
+_CARD_TAB_TEXT_RE = re.compile(r"^\s*Credit\s+Card\s*$")
+
+
 def _card_tab(page):
-    """The Statements page's own Credit Card tab, or None when the page
-    shows none. Two that are, or one that cannot be read, stops the list."""
+    """The Statements page's own Credit Card tab, as (locator, selector),
+    or None when the page shows none. Looked for only on the statements
+    page itself. Found by its text and its address (is_card_tab), then
+    found again for the press by a selector only a link with that address
+    fits and by its exact text, which Playwright holds it to at the press
+    itself, so a link drawn anew in between is never the one pressed. Two
+    that are, or one that cannot be read, stops the list."""
+    if _no_fragment(page.url).rstrip("/") != STATEMENTS_URL:
+        raise ListStopped("the statements page is not open, so its Credit Card tab is not looked for")
     try:
         links = page.locator(CARD_LINK_CSS)
         found = []
         for i in range(links.count()):
             link = links.nth(i)
-            if is_card_tab(link.inner_text(timeout=2000), link.get_attribute("href")):
-                found.append(link)
+            href = link.get_attribute("href")
+            if is_card_tab(link.inner_text(timeout=2000), href):
+                found.append(href)
+        if len(found) > 1:
+            raise ListStopped("the statements page shows two Credit Card tabs")
+        if not found:
+            return None
+        href = found[0]
+        css = CARD_LINK_CSS + (":not([href])" if href is None else "[href='%s']" % href)
+        tab = page.locator(css).filter(has_text=_CARD_TAB_TEXT_RE)
+        if tab.count() != 1 or not is_card_tab(tab.inner_text(timeout=2000),
+                                               tab.get_attribute("href")):
+            raise ListStopped("the statements page's Credit Card tab could not be found alone")
+    except ListStopped:
+        raise
     except Exception as e:
         raise ListStopped("the statements page's sub-navigation could not be read (%s)"
                           % type(e).__name__)
-    if len(found) > 1:
-        raise ListStopped("the statements page shows two Credit Card tabs")
-    return found[0] if found else None
+    return tab, css
 
 
 def _left_the_list(step: str, why: str) -> pressing.Stop:
@@ -1541,20 +1568,30 @@ def _left_the_list(step: str, why: str) -> pressing.Stop:
         after_a_press=True)
 
 
+def _list_changed(step: str, why: str) -> pressing.Stop:
+    """The run's stop for a card list that, read again for one statement,
+    is not the list discovery read whole. Nothing was pressed for it."""
+    return pressing.Stop(step, why, [
+        "The list of card statements changed since it was read (%s), so the run stops "
+        "here rather than leave this statement and go on to the next." % why,
+        "Nothing was pressed for it. Run this again to read the list afresh."])
+
+
 def open_card_list(page) -> Optional[CardList]:
     """Press the Statements page's Credit Card tab, hear the page's own
     list of card statements, and match it to the rows it draws. None when
     the page shows no Credit Card tab, or its answer says the account has
     no card. A list that cannot be read whole raises ListStopped, and a tab
     that took the page anywhere but the card list stops the run."""
-    tab = _card_tab(page)
-    if tab is None:
+    found_tab = _card_tab(page)
+    if found_tab is None:
         return None
+    tab, css = found_tab
     heard, on_response = _listen(page)
     page.on("response", on_response)
     rows: list = []
     try:
-        pressing.click(page, tab, css=CARD_LINK_CSS, what="the Credit Card tab of the statements page",
+        pressing.click(page, tab, css=css, what="the Credit Card tab of the statements page",
                        words=_words(), step="open the credit card statements")
         waited = 0
         while True:
@@ -1584,7 +1621,10 @@ def open_card_list(page) -> Optional[CardList]:
             pass
     if _no_fragment(page.url) != CARD_LIST_URL:
         raise _left_the_list("open the credit card statements",
-                             "the Credit Card tab did not open the card statements page")
+                             "the credit card tab did not open the card statements page")
+    if any(not _clean(h) for h in heard):
+        raise ListStopped("an answer the page had for its card statements could not be read, "
+                          "or came back with an error")
     lists = [h for h in heard if _statements_of(h["body"]) is not None]
     if not lists:
         if any(_has_no_card(h["body"]) for h in heard) and not rows:
@@ -1593,8 +1633,6 @@ def open_card_list(page) -> Optional[CardList]:
         raise ListStopped("the page's own list of card statements was not heard")
     if len(lists) > 1:
         raise ListStopped("the page answered its list of card statements more than once")
-    if any(h["body"] is None for h in heard):
-        raise ListStopped("an answer of the page's could not be read beside its list of card statements")
     edges = _card_edges(lists[0])
     try:
         if page.locator(_LOAD_MORE).count():
@@ -1743,24 +1781,25 @@ def _take_card_statement(page, label: str, iso: str, out_path: Path, trace: Opti
     popup, a download, the tab arriving anywhere but the address the page
     named, or an answer that names another statement or another date,
     stops the run. A statement whose PDF does not prove itself is left for
-    review."""
+    review, since by then its address was bound to its row."""
     def note(what: str, **more) -> None:
         if trace is not None:
             trace.append(dict({"note": what}, **more))
 
     step = "take a card statement"
+    # The list was read whole at discovery, and is read again for this
+    # statement. One that is not whole now, or no longer names this
+    # statement once, stops the run, before anything is pressed for it.
     try:
         found = open_card_list(page)
     except ListStopped as stop:
         note("the card list could not be read", why=str(stop)[:120])
-        return False
+        raise _list_changed(step, "the list of card statements could not be read again")
     if found is None:
-        note("the page shows no card statements")
-        return False
+        raise _list_changed(step, "the page shows no card statements now")
     sids = [s for s, d in found.edges if d == iso]
     if len(sids) != 1 or _card_label(iso) != label:
-        note("the card list does not name this statement once")
-        return False
+        raise _list_changed(step, "the list of card statements does not name this one once now")
     sid = sids[0]
     popups: list = []
     downloads: list = []
@@ -1801,20 +1840,20 @@ def _take_card_statement(page, label: str, iso: str, out_path: Path, trace: Opti
                     pass
             raise _left_the_list(step, "a popup or a download came" if popups and downloads
                                  else ("a popup came" if popups else "a download came"))
+        # From the press on, a statement whose address cannot be bound to
+        # its row stops the run, so no second row is pressed after it.
         got = answers()
+        if not got:
+            raise _left_the_list(step, "the page did not answer with the address of the statement")
         if len(got) != 1:
-            if not got:
-                note("the page's own answer naming the statement was not heard")
-                return False
             raise _left_the_list(step, "the page answered one press more than once")
         answer = got[0]
         if answer["statement_id"] != sid:
-            raise _left_the_list(step, "the press asked for another statement than its row's")
-        card = _card_of(answer["body"])
+            raise _left_the_list(step, "the press asked for another statement than its row")
+        card = _card_of(answer["body"]) if _clean(answer) else None
         url = card.get("statementUrl") if isinstance(card, dict) else None
-        if answer["status"] != 200 or not isinstance(url, str) or answer["body"].get("errors"):
-            note("the page's own answer naming the statement could not be read")
-            return False
+        if not isinstance(url, str):
+            raise _left_the_list(step, "the page answer naming the statement could not be read")
         if not is_card_statement_url(url, iso):
             host = ""
             try:
@@ -1823,10 +1862,10 @@ def _take_card_statement(page, label: str, iso: str, out_path: Path, trace: Opti
                 pass
             if host != CARD_STATEMENT_HOST:
                 note("the statement's address is refused", host=host[:60])
-                raise _left_the_list(step, "the statement's address is on another host")
-            raise _left_the_list(step, "the statement's address names another date or shape")
+                raise _left_the_list(step, "the address of the statement is on another host")
+            raise _left_the_list(step, "the address of the statement names another date")
         if _no_fragment(page.url) != url:
-            raise _left_the_list(step, "the tab did not arrive at the statement's address")
+            raise _left_the_list(step, "the tab is not at the address of the statement")
         try:
             resp = page.context.request.get(url, max_redirects=0, timeout=60000)
         except Exception as e:
