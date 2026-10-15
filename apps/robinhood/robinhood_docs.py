@@ -231,9 +231,9 @@ def _clear(path) -> None:
 
 # Fewer characters than this say too little to tell one account's statement
 # from another's, a page number or a logo's words, and give no text digest.
-# The digest reads every page, and a real HTML month's first page alone is
-# some 140 characters without its spaces, its address, period and masked
-# account.
+# The digest reads every page, and a real HTML month's first page alone,
+# its address, period and masked account, is some 170 characters with its
+# spaces and still more than this without them.
 MIN_TEXT_FOR_DIGEST = 120
 
 
