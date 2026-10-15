@@ -30,7 +30,7 @@ new documents can go straight into Paperless. Both are free.
 
 ![The PaperPull control panel's Accounts page on the sample archive, each provider with its status and one button. Every name and amount is invented.](docs/panel.png)
 
-**Watch it:** a [77-second demo](https://youtu.be/TfeOMngCgLM) on the real panel with made-up accounts. **Website:** [paperpull.net](https://paperpull.net), with the [getting-started guide](https://paperpull.net/guide.html), the [provider directory](https://paperpull.net/providers.html) and the [Paperless-ngx tutorial](https://paperpull.net/paperless.html). **Download:** the [latest release](https://github.com/rheeloaded/paperpull/releases/latest), Windows 10 or 11 and macOS on Apple Silicon, Linux from source. **Self-hosting** takes the Docker image `ghcr.io/rheeloaded/paperpull-server` and [three steps](#paperpull-server).
+**Watch it:** a [77-second demo](https://youtu.be/TfeOMngCgLM) on the real panel with made-up accounts. **Website:** [paperpull.net](https://paperpull.net), with the [getting-started guide](https://paperpull.net/guide.html), the [provider directory](https://paperpull.net/providers.html) and the [Paperless-ngx tutorial](https://paperpull.net/paperless.html). **Download:** the [latest release](https://github.com/rheeloaded/paperpull/releases/latest), Windows 10 or 11 and macOS on Apple Silicon or Intel, Linux from source. **Self-hosting** takes the Docker image `ghcr.io/rheeloaded/paperpull-server` and [three steps](#paperpull-server).
 
 **It also turns those PDFs into spreadsheets.** Your receipts become one
 long table of every item you have ever bought, across every store and every
@@ -543,8 +543,9 @@ $9.99 one time, and what the price buys is convenience, a Store-signed
 package that installs with no warning, updates through the Store, and
 uninstalls cleanly, plus the knowledge that it keeps the project going.
 Nothing is held back from either edition. The AGPL permits selling copies and the source stays public. For macOS
-there is `PaperPull-<version>-arm64.dmg`, Apple Silicon only, signed and
-notarized, so it opens with no warning. Drag PaperPull to Applications and
+there is `PaperPull-<version>-arm64.dmg` for Apple Silicon and
+`PaperPull-<version>-x86_64.dmg` for Intel, both signed and notarized, so
+they open with no warning. Drag PaperPull to Applications and
 double-click it. The Windows installer and the program inside it are
 code-signed with Azure Artifact Signing. SmartScreen can still show its
 prompt while the certificate is new, since it learns to trust a publisher

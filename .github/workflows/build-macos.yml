@@ -1,7 +1,9 @@
-# Builds the macOS bundle and disk image on a clean Apple Silicon runner,
-# signs it with the Developer ID certificate held in the repository's
-# secrets, has Apple notarize it, and staples the ticket on. Apple Silicon
-# only, by decision.
+# Builds the macOS bundle and disk image twice, arm64 on a clean Apple
+# Silicon runner and x86_64 on a clean Intel one (#88), signs each with the
+# Developer ID certificate held in the repository's secrets, has Apple
+# notarize it, and staples the ticket on. The two run side by side, so the
+# Intel build adds no time to a release, and each is smoke-tested on the
+# hardware it is for.
 #
 # When the certificate secret is absent the signing steps skip themselves
 # and the dmg is unsigned, so a fork without the secrets still builds.
@@ -24,7 +26,17 @@ env:
 
 jobs:
   build:
-    runs-on: macos-15
+    strategy:
+      # One failing does not cancel the other, so the run still carries the
+      # dmg that did build, to look at or attach by hand.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -32,10 +44,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Confirm the runner is Apple Silicon
+      - name: Confirm the runner is ${{ matrix.arch }}
         run: |
           uname -m
-          test "$(uname -m)" = "arm64"
+          test "$(uname -m)" = "${{ matrix.arch }}"
 
       # A keychain that exists only for this job. The certificate is decoded
       # into it, the identity's name is read back out for codesign, and the
@@ -83,11 +95,11 @@ jobs:
         env:
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
-        run: python packaging/build_macos.py --sign
+        run: python packaging/build_macos.py --sign --arch ${{ matrix.arch }}
 
       - name: Build unsigned (no certificate in this repository)
         if: env.HAVE_CERT != 'true'
-        run: python packaging/build_macos.py
+        run: python packaging/build_macos.py --arch ${{ matrix.arch }}
 
       - name: Prove the panel starts from the bundle
         run: |
@@ -118,7 +130,7 @@ jobs:
       - name: Upload the disk image and checksums
         uses: actions/upload-artifact@v4
         with:
-          name: PaperPull-macos-arm64
+          name: PaperPull-macos-${{ matrix.arch }}
           path: |
             dist/PaperPull-*.dmg
             dist/SHA256SUMS.txt

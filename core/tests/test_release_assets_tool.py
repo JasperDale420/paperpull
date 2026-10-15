@@ -64,6 +64,7 @@ def test_every_asset_a_release_carries_says_what_it_is_for():
     for name, use in (("PaperPull-1.2.3-setup.exe", "Windows installer"),
                       ("PaperPull-1.2.3.zip", "Windows, no installer"),
                       ("PaperPull-1.2.3-arm64.dmg", "Mac with Apple Silicon"),
+                      ("PaperPull-1.2.3-x86_64.dmg", "Mac with an Intel processor"),
                       ("PaperPull-Server-1.2.3.zip", "PaperPull Server setup files")):
         assert release_assets.label(name, "1.2.3") == "%s (%s)" % (use, name)
     assert release_assets.label("SHA256SUMS.txt", "1.2.3") == "SHA256SUMS.txt"
@@ -77,7 +78,8 @@ def test_the_notes_end_with_downloads_once():
     assert once.startswith(notes.rstrip("\n")) and once.count("## Downloads") == 1
     assert release_assets.with_downloads(once, "1.2.3") == once
     for name in ("PaperPull-1.2.3-setup.exe", "PaperPull-1.2.3.zip",
-                 "PaperPull-1.2.3-arm64.dmg", "PaperPull-Server-1.2.3.zip"):
+                 "PaperPull-1.2.3-arm64.dmg", "PaperPull-1.2.3-x86_64.dmg",
+                 "PaperPull-Server-1.2.3.zip"):
         assert "`%s`" % name in once, name
 
 

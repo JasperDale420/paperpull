@@ -59,8 +59,8 @@ recording and then several rounds of exactly that.
 - **An account** with the provider, with at least one statement, bill or
   receipt in it. An account you opened yesterday has nothing to download and
   nothing to record.
-- **Windows 10 or 11, or a Mac with Apple silicon.** Both installers are on
-  the releases page.
+- **Windows 10 or 11, or a Mac.** The installers are on the releases page,
+  and the Mac has one for Apple silicon and one for Intel.
 - **Edge or Chrome.** Whichever you already have. PaperPull opens it with a
   separate profile so your normal browsing is untouched.
 - **Twenty minutes.** Ten of it is the install.

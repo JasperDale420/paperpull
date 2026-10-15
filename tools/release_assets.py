@@ -70,6 +70,7 @@ def label(name: str, version: str) -> str:
     uses = {"PaperPull-%s-setup.exe" % version: "Windows installer",
             "PaperPull-%s.zip" % version: "Windows, no installer",
             "PaperPull-%s-arm64.dmg" % version: "Mac with Apple Silicon",
+            "PaperPull-%s-x86_64.dmg" % version: "Mac with an Intel processor",
             server_kit_name(version): "PaperPull Server setup files"}
     use = uses.get(name)
     return "%s (%s)" % (use, name) if use else name
@@ -84,6 +85,8 @@ def downloads_section(version: str) -> str:
             "a folder you unzip anywhere.\n"
             "- **Mac**, `PaperPull-{v}-arm64.dmg`. For Macs with Apple Silicon, signed and "
             "notarized.\n"
+            "- **Intel Mac**, `PaperPull-{v}-x86_64.dmg`. The same, for Macs with an Intel "
+            "processor.\n"
             "- **PaperPull Server**, `PaperPull-Server-{v}.zip`. The two setup files the "
             "guide asks for. The server itself downloads from "
             "`ghcr.io/rheeloaded/paperpull-server` when you start it.\n"

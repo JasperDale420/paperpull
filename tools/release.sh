@@ -124,7 +124,8 @@ done
 rm -rf "$WORK/flat"; mkdir -p "$WORK/flat"
 for f in "$WORK"/*/*/PaperPull-"$VERSION"-setup.exe \
          "$WORK"/*/*/PaperPull-"$VERSION".zip \
-         "$WORK"/*/*/PaperPull-"$VERSION"-arm64.dmg; do
+         "$WORK"/*/*/PaperPull-"$VERSION"-arm64.dmg \
+         "$WORK"/*/*/PaperPull-"$VERSION"-x86_64.dmg; do
   [ -f "$f" ] && cp "$f" "$WORK/flat/"
 done
 

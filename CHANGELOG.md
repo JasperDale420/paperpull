@@ -7,6 +7,19 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Added
+- **A Mac package for Intel (#88).** Next to `PaperPull-<version>-arm64.dmg`
+  for Apple Silicon, a release carries `PaperPull-<version>-x86_64.dmg` for
+  Macs with an Intel processor, signed and notarized the same way, so an
+  Intel Mac no longer has to run PaperPull from a checkout. The macOS
+  workflow builds the two side by side, each on a GitHub runner of its own
+  architecture, so a release takes no longer, and each is smoke-tested on
+  the hardware it is for. `packaging/build_macos.py` takes `--arch arm64` or
+  `--arch x86_64`, the Mac's own when left out, and an Apple Silicon Mac can
+  build the Intel one through Rosetta.
+
 ## [0.52.0] - 2026-10-14
 
 Six providers arrive, First Horizon Bank checking statements, Chase
