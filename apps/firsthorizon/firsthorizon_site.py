@@ -71,10 +71,9 @@ KNOWN CEILINGS (left until a live run shows otherwise)
     the list.
   * A panel the page hides, or draws only after the list is read, stops
     the list, so a hidden account is never listed.
-  * A panel drawn late is seen only until the walk ends. The page then
-    settles twice, 1.5 seconds each, and a panel drawn after the second
-    read is not seen. With one account that is 4.5 seconds after load when
-    its panel is open on load, and 6 seconds when it is pressed open.
+  * A panel drawn late is seen only until shortly after the walk ends. The
+    page then settles twice, 1.5 seconds each, and is read after each, so
+    a panel drawn more than 3 seconds after the walk ends is not seen.
   * A panel expanded when the page loads is bound to its answer only when
     the dates make the pairing unique; otherwise the list stops. A panel is
     never collapsed to recover.
@@ -1217,9 +1216,9 @@ def collect_download_docs(page, run: Optional[Run] = None) -> List[RawDoc]:
     is pressed open once. A title not of the surveyed shape is skipped and
     the list is then not called whole. Once the walk is done the page
     settles twice and is read after each (_held_still), and a panel that is
-    not one of the panels walked, as one the page drew late, stops the list. Raises ListStopped
-    holding what was read, SessionExpired for a signed-out session and
-    DeadlineReached."""
+    not one of the panels walked, as one the page drew late, stops the
+    list. Raises ListStopped holding what was read, SessionExpired for a
+    signed-out session and DeadlineReached."""
     run = run or Run()
     opened = _open(page, run)
     docs: List[RawDoc] = []
