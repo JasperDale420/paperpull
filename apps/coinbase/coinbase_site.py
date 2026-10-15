@@ -446,6 +446,24 @@ class ListStopped(Exception):
         self.docs = list(docs or [])
 
 
+class CardListUnread(Exception):
+    """The Coinbase One Card statements could not be read whole, so none of
+    them is listed and they are left for the next run. Only that family is
+    left. `docs` holds the monthly statements and tax documents the listing
+    read, which a run still takes, and the listing is then not called
+    whole."""
+
+    def __init__(self, why: str, docs=None):
+        super().__init__(why)
+        self.docs = list(docs or [])
+
+
+class SessionExpired(Exception):
+    """Coinbase showed its sign-in page, by its address or a password field,
+    where a page of its own was expected. The run stops for the account
+    holder to sign in again."""
+
+
 _PDF_BTN = "button[data-testid='statements-pdf-v2']"
 # How long a statement's capture waits, once a download has come, for a
 # second one. One press of one PDF button hands over one PDF, so a second
@@ -939,10 +957,14 @@ def shown_documents(page) -> List[RawDoc]:
 def collect_download_docs(page) -> List[RawDoc]:
     """Every monthly statement, every tax document and every Coinbase One
     Card statement. Nothing is pressed except Load more and the Credit Card
-    tab. A statements list or a card list that stopped partway still has the
-    others read, and then raises ListStopped holding everything."""
+    tab. A statements list that stopped partway still has the others read,
+    and then raises ListStopped holding everything. A card list that cannot
+    be read whole leaves only the card statements, none of them listed, and
+    raises CardListUnread holding the monthly statements and tax documents,
+    which a run still takes."""
     docs: List[RawDoc] = []
     stopped = None
+    unread = None
     if not goto_documents(page):
         raise ListStopped("the statements page did not open")
     first = _first_transaction(page)
@@ -958,12 +980,14 @@ def collect_download_docs(page) -> List[RawDoc]:
         raise
     try:
         docs.extend(_collect_card(page))
-    except ListStopped as stop:
-        docs.extend(stop.docs)
-        stopped = stopped or stop
+    except CardListUnread as card:
+        unread = card
     if stopped is not None:
         stopped.docs = docs
         raise stopped
+    if unread is not None:
+        unread.docs = docs
+        raise unread
     return docs
 
 
@@ -1521,6 +1545,14 @@ def _has_no_card(body) -> bool:
     return card is None or (isinstance(card, dict) and card.get("accounts") == [])
 
 
+def _card_accounts(body) -> int:
+    """How many card accounts an answer names, 0 when it names no list of
+    them."""
+    card = _card_of(body)
+    accounts = card.get("accounts") if isinstance(card, dict) else None
+    return len(accounts) if isinstance(accounts, list) else 0
+
+
 def _statements_of(body):
     """The `statements` object of a card list answer, or None for an answer
     that is not one."""
@@ -1650,8 +1682,10 @@ def open_card_list(page) -> Optional[CardList]:
     """Press the Statements page's Credit Card tab, hear the page's own
     list of card statements, and match it to the rows it draws. None when
     the page shows no Credit Card tab, or its answer says the account has
-    no card. A list that cannot be read whole raises ListStopped, and a tab
-    that took the page anywhere but the card list stops the run."""
+    no card. A list that cannot be read whole, or that names more than one
+    card account, raises ListStopped. A tab that took the page to the
+    sign-in page raises SessionExpired, and one that took it anywhere else
+    but the card list stops the run."""
     found_tab = _card_tab(page)
     if found_tab is None:
         return None
@@ -1689,11 +1723,19 @@ def open_card_list(page) -> Optional[CardList]:
         except Exception:
             pass
     if _no_fragment(page.url) != CARD_LIST_URL:
+        # A tab that went to the sign-in page was signed out, and that is the
+        # account holder's to answer by signing in again.
+        if looks_signed_out(page):
+            raise SessionExpired("the credit card tab opened the sign-in page")
         raise _left_the_list("open the credit card statements",
                              "the credit card tab did not open the card statements page")
     if any(not _clean(h) for h in heard):
         raise ListStopped("an answer the page had for its card statements could not be read, "
                           "or came back with an error")
+    # The statements of one card account are read. An answer naming more
+    # than one is a list this cannot tell apart, never one account's alone.
+    if any(_card_accounts(h["body"]) > 1 for h in heard):
+        raise ListStopped("the page names more than one card account")
     lists = [h for h in heard if _statements_of(h["body"]) is not None]
     if not lists:
         if any(_has_no_card(h["body"]) for h in heard) and not rows:
@@ -1725,8 +1767,13 @@ def open_card_list(page) -> Optional[CardList]:
 def _collect_card(page) -> List[RawDoc]:
     """One RawDoc per Coinbase One Card statement, newest first, titled by
     its row's month and dated by its closing day. Nothing about it that is
-    the account's own, its id or the statement's, is kept."""
-    found = open_card_list(page)
+    the account's own, its id or the statement's, is kept. A list that
+    cannot be read whole raises CardListUnread, which leaves the card
+    statements alone and never the other families."""
+    try:
+        found = open_card_list(page)
+    except ListStopped as stop:
+        raise CardListUnread(str(stop))
     if found is None:
         log.info("no card statements are listed, since the page shows no card")
         return []

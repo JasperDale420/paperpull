@@ -1324,27 +1324,27 @@ class CardList(unittest.TestCase):
 
     def test_a_count_that_disagrees_stops_the_list(self):
         page = CardPage(rows=[label_of("2026-10-12"), label_of("2026-09-12")])
-        with self.assertRaises(site.ListStopped) as stop:
+        with self.assertRaises(site.CardListUnread) as stop:
             self.collect(page)
         self.assertIn("2", str(stop.exception))
         self.assertEqual(stop.exception.docs, [])
 
     def test_months_that_disagree_stop_the_list(self):
         page = CardPage(rows=[label_of("2026-10-12"), label_of("2026-09-12"), "July 2026"])
-        with self.assertRaises(site.ListStopped):
+        with self.assertRaises(site.CardListUnread):
             self.collect(page)
 
     def test_a_row_without_a_month_or_a_month_twice_stops_the_list(self):
         for rows in ([label_of("2026-10-12"), label_of("2026-09-12"), ""],
                      [label_of("2026-10-12"), label_of("2026-10-12"), label_of("2026-08-12")]):
-            with self.assertRaises(site.ListStopped):
+            with self.assertRaises(site.CardListUnread):
                 self.collect(CardPage(rows=rows))
 
     def test_an_answer_not_heard_stops_the_list(self):
         page = CardPage()
         page.list_answers = [CardResponse(page, {"errors": [{"extensions": {
             "code": "PERSISTED_QUERY_NOT_FOUND"}}]}, method="GET")]
-        with self.assertRaises(site.ListStopped):
+        with self.assertRaises(site.CardListUnread):
             self.collect(page)
 
     def test_a_list_the_get_persisted_query_answers_is_heard(self):
@@ -1360,14 +1360,14 @@ class CardList(unittest.TestCase):
         page = CardPage()
         page.list_answers = [CardResponse(page, statements_answer(page.dates),
                                           url="https://accounts.coinbase.com/graphql/query")]
-        with self.assertRaises(site.ListStopped):
+        with self.assertRaises(site.CardListUnread):
             self.collect(page)
 
     def test_two_lists_that_differ_stop_the_list(self):
         page = CardPage()
         page.list_answers = [CardResponse(page, statements_answer(page.dates)),
                              CardResponse(page, statements_answer(page.dates[:2]))]
-        with self.assertRaises(site.ListStopped):
+        with self.assertRaises(site.CardListUnread):
             self.collect(page)
 
     def test_a_statement_the_list_cannot_read_stops_the_list(self):
@@ -1378,7 +1378,7 @@ class CardList(unittest.TestCase):
             answer = {"data": {"viewer": {"creditCard": {"statements": {"edges": [{"node": bad}]}}}}}
             page = CardPage(dates=["2026-09-12"])
             page.list_answers = [CardResponse(page, answer)]
-            with self.assertRaises(site.ListStopped):
+            with self.assertRaises(site.CardListUnread):
                 self.collect(page)
 
     def test_no_credit_card_tab_lists_nothing(self):
@@ -1387,7 +1387,7 @@ class CardList(unittest.TestCase):
         self.assertEqual(page.clicked, [])
 
     def test_two_credit_card_tabs_stop_the_list(self):
-        with self.assertRaises(site.ListStopped):
+        with self.assertRaises(site.CardListUnread):
             self.collect(CardPage(links=("Credit Card", "Credit Card")))
 
     def test_a_tab_that_opens_another_page_stops_the_list(self):
@@ -1424,7 +1424,7 @@ class CardList(unittest.TestCase):
     def test_the_tab_is_looked_for_only_on_the_statements_page(self):
         page = CardPage()
         page.url = "https://accounts.coinbase.com/settings"
-        with self.assertRaises(site.ListStopped):
+        with self.assertRaises(site.CardListUnread):
             self.collect(page)
         self.assertEqual(page.clicked, [])
 
@@ -1434,7 +1434,7 @@ class CardList(unittest.TestCase):
         there, and nothing is pressed."""
         page = CardPage(links=("Transactions", "Credit Card", "Credit Card "))
         page.hrefs = {"Credit Card ": "/statements/credit-card"}
-        with self.assertRaises(site.ListStopped):
+        with self.assertRaises(site.CardListUnread):
             self.collect(page)
         self.assertEqual(page.clicked, [])
 
@@ -1452,12 +1452,12 @@ class CardList(unittest.TestCase):
             answer = CardResponse(page, body)
             answer.status = status
             page.list_answers = [answer]
-            with self.assertRaises(site.ListStopped, msg=(status, body)):
+            with self.assertRaises(site.CardListUnread, msg=(status, body)):
                 self.collect(page)
         page = CardPage(dates=[], rows=[])
         page.list_answers = [CardResponse(page, ValueError("not json")),
                              CardResponse(page, {"data": {"viewer": {"creditCard": None}}})]
-        with self.assertRaises(site.ListStopped):
+        with self.assertRaises(site.CardListUnread):
             self.collect(page)
 
     def test_an_empty_list_heard_is_empty(self):
@@ -1467,14 +1467,14 @@ class CardList(unittest.TestCase):
     def test_a_load_more_on_the_card_list_stops_it(self):
         page = CardPage()
         page.load_more = 1
-        with self.assertRaises(site.ListStopped):
+        with self.assertRaises(site.CardListUnread):
             self.collect(page)
 
     def test_the_list_answered_twice_stops_even_when_the_same(self):
         page = CardPage()
         page.list_answers = [CardResponse(page, statements_answer(page.dates, page.sids)),
                              CardResponse(page, statements_answer(page.dates, page.sids))]
-        with self.assertRaises(site.ListStopped):
+        with self.assertRaises(site.CardListUnread):
             self.collect(page)
 
     def test_a_list_answer_that_is_not_ok_stops_the_list(self):
@@ -1484,14 +1484,14 @@ class CardList(unittest.TestCase):
             answer = CardResponse(page, body)
             answer.status = status
             page.list_answers = [answer]
-            with self.assertRaises(site.ListStopped):
+            with self.assertRaises(site.CardListUnread):
                 self.collect(page)
 
     def test_an_answer_that_cannot_be_read_beside_the_list_stops_it(self):
         page = CardPage()
         page.list_answers = [CardResponse(page, ValueError("not json")),
                              CardResponse(page, statements_answer(page.dates, page.sids))]
-        with self.assertRaises(site.ListStopped):
+        with self.assertRaises(site.CardListUnread):
             self.collect(page)
 
     def test_the_list_says_whether_it_has_another_page(self):
@@ -1506,12 +1506,12 @@ class CardList(unittest.TestCase):
             if whole:
                 self.assertEqual(len(self.collect(page)), 2, info)
             else:
-                with self.assertRaises(site.ListStopped, msg=info):
+                with self.assertRaises(site.CardListUnread, msg=info):
                     self.collect(page)
 
     def test_a_list_without_a_page_info_has_to_miss_no_month(self):
         page = CardPage(dates=["2026-10-12", "2026-08-12"])
-        with self.assertRaises(site.ListStopped):
+        with self.assertRaises(site.CardListUnread):
             self.collect(page)
         page = CardPage(dates=["2026-01-12", "2025-12-12"])
         self.assertEqual(len(self.collect(page)), 2, "a year's turn is no gap")
@@ -1528,13 +1528,42 @@ class CardList(unittest.TestCase):
                 mock.patch.object(site, "_collect_card", lambda p: list(card)):
             self.assertEqual(site.collect_download_docs(page), monthly + tax + card)
 
-            def stops(p):
-                raise site.ListStopped("the card list stopped", card[:0])
-            with mock.patch.object(site, "_collect_card", stops):
-                with self.assertRaises(site.ListStopped) as stopped:
+            def unread(p):
+                raise site.CardListUnread("the card list could not be read")
+            with mock.patch.object(site, "_collect_card", unread):
+                with self.assertRaises(site.CardListUnread) as stopped:
                     site.collect_download_docs(page)
             self.assertEqual(stopped.exception.docs, monthly + tax,
                              "what the other families listed is kept")
+
+            # A statements list that stopped stops the listing whole, as it
+            # always did, whatever the card list did.
+            def cut(p, f):
+                raise site.ListStopped("the statements list stopped", list(monthly))
+            with mock.patch.object(site, "_collect_statements", cut), \
+                    mock.patch.object(site, "_collect_card", unread):
+                with self.assertRaises(site.ListStopped) as stopped:
+                    site.collect_download_docs(page)
+            self.assertNotIsInstance(stopped.exception, site.CardListUnread)
+            self.assertEqual(stopped.exception.docs, monthly + tax)
+
+    def test_more_than_one_card_account_leaves_the_card_list(self):
+        """The statements of one card account are read. An answer naming two
+        is never taken for one account's list."""
+        page = CardPage()
+        page.list_answers = [CardResponse(page, accounts_answer(({"id": "acct-a"}, {"id": "acct-b"}))),
+                             CardResponse(page, statements_answer(page.dates, page.sids))]
+        with self.assertRaises(site.CardListUnread) as stop:
+            self.collect(page)
+        self.assertIn("more than one card account", str(stop.exception))
+        self.assertNotIn("acct-", str(stop.exception))
+
+    def test_a_tab_that_opens_the_sign_in_page_asks_for_a_sign_in(self):
+        page = CardPage(lands_on="https://login.coinbase.com/signin?return_to=x")
+        with self.assertRaises(site.SessionExpired):
+            self.collect(page)
+        self.assertEqual(page.handlers, [], "the listener was removed")
+        self.assertEqual(page.fetched, [])
 
 
 class CardDownload(unittest.TestCase):
@@ -1912,6 +1941,148 @@ class CardRecords(unittest.TestCase):
         self.assertEqual(rec["state"], docs.State.COMPLETED.value, rec.get("notes"))
         self.assertEqual(Path(rec["pdf_path"]).name, "2026-09-12 Coinbase One Card Statement.pdf")
         self.assertEqual(failures, [])
+
+
+class CardListLeft(unittest.TestCase):
+    """A card list that cannot be read whole leaves only the card
+    statements. The monthly statements and tax documents are listed and
+    taken as they always were, no card statement is listed, and the run ends
+    as one that did not finish, its listing not called whole."""
+
+    MONTHLY = "Monthly Statement September 2026"
+    TAX = "1099-DA Tax Year 2025"
+
+    def run_with(self, answers=None, mode="all", dates=(), lands_on="list"):
+        from contextlib import redirect_stdout
+        import io
+        app, failures = built_app(self)
+        app.args.yes = True
+        app._delay = lambda *a, **k: None
+        page = CardPage(dates=dates, lands_on=lands_on)
+        if answers is not None:
+            for a in answers:
+                a.page = page
+            page.list_answers = answers
+        app.page = lambda: page
+        app._on_its_site = lambda: page
+        asked = []
+
+        def hands_over(pg, dl_dir, iso, out_path, title="", trace=None, **kw):
+            asked.append(title)
+            Path(out_path).write_bytes(pdf_saying(
+                SEPTEMBER if title == self.MONTHLY else "Invented tax form for tax year 2025"))
+            return True
+        monthly = [site.RawDoc(title=self.MONTHLY, date_text="2026-09-30", kind="statement")]
+        tax = [site.RawDoc(title=self.TAX, date_text="2025-12-31", kind="tax",
+                           document_id="form-invented-0001")]
+        code = None
+        with mock.patch.object(site, "goto_documents", lambda p: True), \
+                mock.patch.object(site, "_first_transaction", lambda p: "2024-01-05"), \
+                mock.patch.object(site, "_collect_statements", lambda p, f, today=None: list(monthly)), \
+                mock.patch.object(site, "_collect_tax", lambda p, f: list(tax)), \
+                mock.patch.object(site.pressing, "click", clicks_the_tab), \
+                mock.patch.object(site, "download_bill", hands_over), \
+                redirect_stdout(io.StringIO()) as said:
+            try:
+                if mode == "pilot":
+                    app.cmd_pilot()
+                elif mode == "discover":
+                    app.cmd_discover()
+                elif mode == "all":
+                    app.cmd_run("all")
+            except SystemExit as stop:
+                code = stop.code
+        return app, asked, said.getvalue(), code, failures
+
+    # The shapes a Credit Card tab may answer with that this cannot read.
+    def shapes(self):
+        unrelated = CardResponse(None, {"data": None, "errors": [
+            {"message": "x", "extensions": {"code": "NOT_FOUND"}}]}, op="SomeOtherQuery")
+        return {
+            "no answer at all": dict(answers=[]),
+            "accounts null": dict(answers=[CardResponse(None, {"data": {"viewer": {
+                "creditCard": {"accounts": None, "id": "x"}}}})]),
+            "an unrelated query erroring": dict(
+                answers=[unrelated, CardResponse(None, statements_answer(["2026-10-12", "2026-09-12"]))],
+                dates=("2026-10-12", "2026-09-12")),
+            "a missing month": dict(dates=("2026-10-12", "2026-08-12")),
+        }
+
+    def test_a_run_takes_the_other_families_and_ends_not_whole(self):
+        from paperpull_core import listing
+        for name, how in self.shapes().items():
+            app, asked, said, code, failures = self.run_with(**how)
+            self.assertEqual(code, 1, name)
+            self.assertEqual(asked, [self.MONTHLY, self.TAX], name)
+            self.assertEqual((app.stats["statements"], app.stats["tax_documents"]), (1, 1), name)
+            self.assertEqual(listing.last(app), listing.STOPPED, name)
+            self.assertFalse([k for k in app.discovery.data if "One Card" in k], name)
+            self.assertIn("One Card statements could not be read", said, name)
+            self.assertIn("left for the next one", said, name)
+            self.assertIn("did not finish", said, name)
+            self.assertEqual([f[0] for f in failures], ["read the card statements list"], name)
+
+    def test_a_pilot_takes_its_documents_and_ends_not_whole(self):
+        app, asked, said, code, _failures = self.run_with(mode="pilot", answers=[])
+        self.assertEqual(code, 1)
+        self.assertEqual(asked, [self.MONTHLY, self.TAX])
+        self.assertIn("No problems detected in the pilot", said)
+        self.assertIn("did not finish", said)
+
+    def test_discover_alone_lists_the_other_families_and_ends_not_whole(self):
+        from paperpull_core import listing
+        app, asked, said, code, _failures = self.run_with(mode="discover", answers=[])
+        self.assertEqual(code, 1)
+        self.assertEqual(asked, [])
+        self.assertEqual(len(app.discovery.data), 2, "the monthly statement and the tax form")
+        self.assertEqual(listing.last(app), listing.STOPPED)
+        self.assertIn("stopped short of the card statements", said)
+
+    def test_a_resume_after_it_is_not_finished(self):
+        from contextlib import redirect_stdout
+        import io
+        app, asked, _said, code, _failures = self.run_with(answers=[])
+        self.assertEqual(code, 1)
+        with redirect_stdout(io.StringIO()) as said, self.assertRaises(SystemExit):
+            app.cmd_resume()
+        self.assertNotIn("everything in scope is complete", said.getvalue())
+        self.assertIn("not read to its end", said.getvalue())
+
+    def test_no_card_at_all_is_a_whole_empty_card_list(self):
+        from paperpull_core import listing
+        app, asked, said, code, failures = self.run_with(
+            answers=[CardResponse(None, {"data": {"viewer": {"creditCard": None}}})])
+        self.assertIsNone(code)
+        self.assertEqual(asked, [self.MONTHLY, self.TAX])
+        self.assertEqual(listing.last(app), listing.COMPLETE)
+        self.assertEqual(failures, [])
+
+    def test_a_sign_out_at_the_credit_card_tab_asks_for_a_sign_in(self):
+        app, asked, said, code, _failures = self.run_with(
+            lands_on="https://login.coinbase.com/signin?return_to=x")
+        self.assertEqual(code, 0)
+        self.assertEqual(asked, [])
+        self.assertIn("signed you out", said)
+        self.assertIn("Sign in again", said)
+
+    def test_a_sign_out_on_the_way_to_a_card_statement_asks_for_a_sign_in(self):
+        from contextlib import redirect_stdout
+        import io
+        app, _failures = built_app(self)
+        app._delay = lambda *a, **k: None
+        app._on_its_site = lambda: object()
+        doc = docs.Document(title="Coinbase One Card Statement September 2026", category="Statement",
+                            summary="One Card Statement", date="2026-09-12")
+
+        def signed_out(*a, **kw):
+            raise site.SessionExpired("the credit card tab opened the sign-in page")
+        with mock.patch.object(site, "goto_documents", lambda page: True), \
+                mock.patch.object(site, "download_bill", signed_out), \
+                redirect_stdout(io.StringIO()) as said, self.assertRaises(SystemExit) as stop:
+            app.process([doc])
+        self.assertEqual(stop.exception.code, 0)
+        self.assertIn("signed you out", said.getvalue())
+        self.assertIsNone(app.progress.get(doc.key), "nothing is recorded as failed")
 
 
 if __name__ == "__main__":
