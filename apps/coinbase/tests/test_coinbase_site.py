@@ -1003,5 +1003,799 @@ class Persisted(unittest.TestCase):
             self.assertEqual((c, s), (cat, summ), title)
 
 
+
+# ---------------------------------------------------------------------------
+# Coinbase One Card statements. Every id, token and date here is invented.
+# ---------------------------------------------------------------------------
+
+CARD_SID = "sid-invented-0001-aaaa"
+CARD_OTHER_SID = "sid-invented-0002-bbbb"
+CARD_ACCOUNT = "acct-invented-9999-zzzz"
+CARD_TOKEN = "tokInvented77"
+CARD_SIGNATURE = "SigInventedQQ"
+CARD_KEYPAIR = "KPInventedWW"
+
+
+def card_url(iso, token=CARD_TOKEN, host="statements.cardless.com"):
+    return ("https://%s/%s_%s_Coinbase.pdf?Expires=1999999999&Signature=%s&Key-Pair-Id=%s"
+            % (host, token, iso, CARD_SIGNATURE, CARD_KEYPAIR))
+
+
+def card_pdf(closing="Sep 12, 2026", words="Coinbase One Card"):
+    """A card statement's text as the live one reads, its period and its
+    new balance, with no amount."""
+    return pdf_saying("New balance as of %s Payment due by Oct 7, 2026 %s Aug 13 - %s"
+                      % (closing, words, closing))
+
+
+class CardResponse:
+    """A graphql-direct answer as a response event hands it over. Its body
+    is gone once the tab has gone on to the statement, the way a navigation
+    evicts bodies, so it is readable only inside the handler."""
+
+    def __init__(self, page, body, method="POST", op="", variables=None, url=None):
+        self.page, self._body = page, body
+        self.url = url or site.GRAPHQL_URL + "?operationName=x"
+        self.request = mock.Mock(method=method, post_data_json={
+            "operationName": op, "variables": variables or {}})
+        self.status = 200
+        self.headers = {"content-type": "application/json"}
+
+    def json(self):
+        if self.page.navigated:
+            raise RuntimeError("Response body is unavailable for redirect responses")
+        if isinstance(self._body, Exception):
+            raise self._body
+        return self._body
+
+
+def statements_answer(dates, sids=None):
+    sids = sids or ["sid-invented-%04d" % i for i in range(len(dates))]
+    return {"data": {"viewer": {"creditCard": {"statements": {"edges": [
+        {"node": {"statementId": s, "statementDate": d + "T00:00:00Z", "amount": "123.45"}}
+        for s, d in zip(sids, dates)]}}}}}
+
+
+def accounts_answer(accounts=({"id": CARD_ACCOUNT},)):
+    return {"data": {"viewer": {"creditCard": {"accounts": list(accounts), "id": "x"}, "id": "y"}}}
+
+
+def row_answer(url):
+    return {"data": {"viewer": {"creditCard": {"statementUrl": url, "id": "x"}, "id": "y"}}}
+
+
+MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August",
+               "September", "October", "November", "December"]
+
+
+def label_of(iso):
+    return "%s %s" % (MONTH_NAMES[int(iso[5:7]) - 1], iso[:4])
+
+
+class CardPage:
+    """The statements page, its Credit Card tab, the card list it draws and
+    the signed PDF address a row's PDF button sends the tab to. Spies on
+    every press, every fetch and every go back."""
+
+    def __init__(self, dates=("2026-10-12", "2026-09-12", "2026-08-12"), sids=None,
+                 rows=None, links=("Transactions", "Credit Card"), lands_on="list"):
+        self.url = site.STATEMENTS_URL
+        self.main_frame = object()
+        self.dates = list(dates)
+        self.sids = list(sids or ["sid-invented-%04d" % i for i in range(len(self.dates))])
+        self.rows_drawn = rows if rows is not None else [label_of(d) for d in self.dates]
+        self.links = list(links)
+        self.lands_on = lands_on
+        self.handlers = []
+        self.navigated = False
+        self.clicked = []
+        self.backs = 0
+        self.loads = []
+        self.waits = []
+        self.shown = []            # the card rows, once the tab is open
+        self.load_more = 0
+        self.list_answers = None   # what the Credit Card tab's open answers
+        self.press_answers = None  # what a PDF button's press answers, by row label
+        self.press_lands = None    # where a press sends the tab, by row label
+        self.popup_on_press = False
+        self.download_on_press = None
+        self.row_says = {}
+        self.fetched = []
+        self.fetch_status = 200
+        self.fetch_body = card_pdf()
+        page = self
+
+        class Req:
+            def get(s, url, **kw):
+                page.fetched.append((url, kw.get("max_redirects")))
+                return mock.Mock(status=page.fetch_status, ok=page.fetch_status == 200,
+                                 body=lambda: page.fetch_body)
+
+            def post(s, url, **kw):
+                page.fetched.append(("POST", url))
+                raise AssertionError("the app asked for something itself")
+        self.request = Req()
+        self.context = mock.Mock(request=self.request, pages=[])
+
+    # -- events ---------------------------------------------------------
+    def on(self, ev, cb): self.handlers.append((ev, cb))
+    def remove_listener(self, ev, cb): self.handlers.remove((ev, cb))
+
+    def emit(self, ev, thing):
+        for e, cb in list(self.handlers):
+            if e == ev:
+                cb(thing)
+
+    # -- what the tab shows --------------------------------------------
+    def evaluate(self, js, *a):
+        if js == site._CARD_ROWS_JS:
+            if site._no_fragment(self.url) != site.CARD_LIST_URL:
+                return []
+            return [{"label": lab, "button": "\U000f0382 PDF", "i": 10 + i}
+                    for i, lab in enumerate(self.shown)]
+        return []
+
+    def wait_for_timeout(self, ms): self.waits.append(ms)
+    def wait_for_selector(self, sel, **kw): return True
+
+    def goto(self, url, **kw):
+        self.loads.append(url)
+        self.url, self.navigated, self.shown = url, False, []
+
+    def go_back(self, **kw):
+        self.backs += 1
+        self.url, self.navigated = site.CARD_LIST_URL, False
+        self.shown = list(self.rows_drawn)
+
+    def locator(self, sel):
+        page = self
+        if sel == site.CARD_LINK_CSS:
+            class Link:
+                def __init__(s, i): s.i = i
+                def inner_text(s, **kw): return page.links[s.i]
+                def get_attribute(s, name): return None
+            class Links:
+                def count(s): return len(page.links)
+                def nth(s, i): return Link(i)
+            return Links()
+        if sel == site._LOAD_MORE:
+            return mock.Mock(count=lambda: page.load_more)
+        if sel == "button":
+            class Button:
+                def __init__(s, i): s.i = i
+                def element_handle(s, **kw): return CardButton(page, s.i - 10)
+            return mock.Mock(nth=lambda i: Button(i))
+        return mock.Mock(count=lambda: 0)
+
+    # -- the Credit Card tab's press -----------------------------------
+    def open_card_tab(self):
+        """What pressing the Credit Card link does on the live page."""
+        if self.lands_on != "list":
+            self.url = self.lands_on
+            return
+        self.url = site.CARD_LIST_URL
+        answers = self.list_answers
+        if answers is None:
+            answers = [CardResponse(self, {"errors": [{"extensions": {
+                           "code": "PERSISTED_QUERY_NOT_FOUND"}}]}, method="GET"),
+                       CardResponse(self, accounts_answer()),
+                       CardResponse(self, statements_answer(self.dates, self.sids))]
+        for a in answers:
+            self.emit("response", a)
+        self.shown = list(self.rows_drawn)
+
+    def press_pdf(self, label):
+        """What pressing a row's PDF button does on the live page: the page
+        asks for the statement's address and the tab goes there."""
+        iso = self.dates[[label_of(d) for d in self.dates].index(label)] \
+            if label in [label_of(d) for d in self.dates] else "2026-01-12"
+        sid = self.sids[self.dates.index(iso)] if iso in self.dates else "none"
+        url = card_url(iso)
+        answers = (self.press_answers or {}).get(label)
+        if answers is None:
+            answers = [CardResponse(self, {"data": None, "errors": [{"extensions": {
+                           "code": "PERSISTED_QUERY_NOT_FOUND"}}]}, method="GET",
+                           op="CreditCardStatementRowQuery", variables={"statementId": sid}),
+                       CardResponse(self, row_answer(url), op="CreditCardStatementRowQuery",
+                                    variables={"accountUuid": CARD_ACCOUNT, "statementId": sid})]
+        for a in answers:
+            self.emit("response", a)
+        if self.popup_on_press:
+            self.emit("popup", mock.Mock())
+        if self.download_on_press is not None:
+            self.emit("download", self.download_on_press)
+        lands = (self.press_lands or {}).get(label, url)
+        if lands:
+            self.url, self.navigated, self.shown = lands, True, []
+
+
+class CardButton:
+    """One card row's PDF button, held as an element. The core's own reads
+    of it find nothing, as on a page that lets no script answer."""
+
+    def __init__(self, page, i): self.page, self.i = page, i
+
+    def evaluate(self, js, arg=None):
+        if js == site._CARD_LABEL_OF_JS:
+            return self.page.row_says.get(self.i, self.page.shown[self.i]
+                                          if 0 <= self.i < len(self.page.shown) else "")
+        return None
+
+    def scroll_into_view_if_needed(self, **kw): pass
+    def dispose(self): pass
+
+    def click(self, **kw):
+        label = self.page.shown[self.i]
+        self.page.clicked.append(label)
+        self.page.press_pdf(label)
+
+
+def clicks_the_tab(page, loc, **kw):
+    """pressing.click, as the Credit Card link answers it."""
+    page.clicked.append(("link", loc.inner_text(), kw["css"], kw["step"]))
+    page.open_card_tab()
+
+
+class CardHosts(unittest.TestCase):
+    """statements.cardless.com is taken only as the address the page was
+    handed, and is on none of the app's own host lists."""
+
+    def test_the_card_statement_address(self):
+        self.assertTrue(site.is_card_statement_url(card_url("2026-09-12"), "2026-09-12"))
+        for url, iso in [(card_url("2026-09-12"), "2026-08-12"),
+                         (card_url("2026-09-12", host="evil.example"), "2026-09-12"),
+                         (card_url("2026-09-12", host="statements.cardless.com.evil.test"), "2026-09-12"),
+                         (card_url("2026-09-12", host="x.statements.cardless.com"), "2026-09-12"),
+                         (card_url("2026-09-12").replace("https:", "http:"), "2026-09-12"),
+                         (card_url("2026-09-12").replace(".com/", ".com:8443/"), "2026-09-12"),
+                         (card_url("2026-09-12").replace("https://", "https://u@"), "2026-09-12"),
+                         (card_url("2026-09-12").replace("_Coinbase.pdf", "_Other.pdf"), "2026-09-12"),
+                         (card_url("2026-09-12").replace(CARD_TOKEN, "a/b"), "2026-09-12"),
+                         ("https://statements.cardless.com/2026-09-12_Coinbase.pdf", "2026-09-12"),
+                         ("", "2026-09-12"), (None, "2026-09-12"), (card_url("2026-09-12"), "")]:
+            self.assertFalse(site.is_card_statement_url(url, iso), (url, iso))
+
+    def test_the_card_host_is_on_no_host_list_of_the_app(self):
+        url = card_url("2026-09-12")
+        self.assertFalse(site.is_safe_url(url))
+        self.assertFalse(site.is_list_url(url))
+        self.assertFalse(site.is_download_url(url))
+        self.assertNotIn("statements.cardless.com", site.ALLOWED_HOSTS | site.DOWNLOAD_HOSTS)
+
+    def test_the_app_never_asks_graphql_direct_itself(self):
+        self.assertFalse(site.is_list_url(site.GRAPHQL_URL))
+        self.assertFalse(site.is_list_url(site.CARD_LIST_URL))
+        with self.assertRaises(RuntimeError):
+            site._get_json(object(), site.GRAPHQL_URL)
+
+    def test_the_card_pdf_button_label(self):
+        for label in ["PDF", "\U000f0382 PDF", "PDF", " PDF "]:
+            self.assertTrue(site.is_card_pdf_label(label), repr(label))
+        for label in ["Download PDF", "PDF CSV", "Generate", "CSV", "HTML", "", None,
+                      "Credit Card", "\U000f0382", "PDF | Generate"]:
+            self.assertFalse(site.is_card_pdf_label(label), repr(label))
+
+    def test_the_closing_date_is_read_the_way_the_statement_prints_it(self):
+        rx = site.closing_date_re("2026-09-12")
+        for text in ["as of Sep 12, 2026", "Aug 13 - Sept 12, 2026", "September 12, 2026"]:
+            self.assertTrue(rx.search(text), text)
+        for text in ["Sep 13, 2026", "Sep 12, 2025", "Oct 12, 2026", "Sep 1, 2026", "Sep 122, 2026"]:
+            self.assertFalse(rx.search(text), text)
+
+
+class CardList(unittest.TestCase):
+    """The card list is the page's own answer, heard, matched row for row."""
+
+    def collect(self, page):
+        with mock.patch.object(site.pressing, "click", clicks_the_tab):
+            return site._collect_card(page)
+
+    def test_the_list_heard_is_one_document_per_statement(self):
+        page = CardPage()
+        got = self.collect(page)
+        self.assertEqual([(d.title, d.date_text) for d in got], [
+            ("Coinbase One Card Statement October 2026", "2026-10-12"),
+            ("Coinbase One Card Statement September 2026", "2026-09-12"),
+            ("Coinbase One Card Statement August 2026", "2026-08-12")])
+        self.assertEqual(page.clicked, [("link", "Credit Card", site.CARD_LINK_CSS,
+                                         "open the credit card statements")])
+        self.assertEqual(page.handlers, [], "the listener was removed")
+        self.assertEqual(page.fetched, [], "nothing was asked for")
+        for d in got:
+            self.assertEqual(d.document_id, "", "a statement id is never kept")
+            self.assertNotIn("sid-", repr(d))
+
+    def test_a_count_that_disagrees_stops_the_list(self):
+        page = CardPage(rows=[label_of("2026-10-12"), label_of("2026-09-12")])
+        with self.assertRaises(site.ListStopped) as stop:
+            self.collect(page)
+        self.assertIn("2", str(stop.exception))
+        self.assertEqual(stop.exception.docs, [])
+
+    def test_months_that_disagree_stop_the_list(self):
+        page = CardPage(rows=[label_of("2026-10-12"), label_of("2026-09-12"), "July 2026"])
+        with self.assertRaises(site.ListStopped):
+            self.collect(page)
+
+    def test_a_row_without_a_month_or_a_month_twice_stops_the_list(self):
+        for rows in ([label_of("2026-10-12"), label_of("2026-09-12"), ""],
+                     [label_of("2026-10-12"), label_of("2026-10-12"), label_of("2026-08-12")]):
+            with self.assertRaises(site.ListStopped):
+                self.collect(CardPage(rows=rows))
+
+    def test_an_answer_not_heard_stops_the_list(self):
+        page = CardPage()
+        page.list_answers = [CardResponse(page, {"errors": [{"extensions": {
+            "code": "PERSISTED_QUERY_NOT_FOUND"}}]}, method="GET")]
+        with self.assertRaises(site.ListStopped):
+            self.collect(page)
+
+    def test_a_get_answer_is_not_heard(self):
+        page = CardPage()
+        page.list_answers = [CardResponse(page, statements_answer(page.dates), method="GET")]
+        with self.assertRaises(site.ListStopped):
+            self.collect(page)
+
+    def test_an_answer_from_another_address_is_not_heard(self):
+        page = CardPage()
+        page.list_answers = [CardResponse(page, statements_answer(page.dates),
+                                          url="https://accounts.coinbase.com/graphql/query")]
+        with self.assertRaises(site.ListStopped):
+            self.collect(page)
+
+    def test_two_lists_that_differ_stop_the_list(self):
+        page = CardPage()
+        page.list_answers = [CardResponse(page, statements_answer(page.dates)),
+                             CardResponse(page, statements_answer(page.dates[:2]))]
+        with self.assertRaises(site.ListStopped):
+            self.collect(page)
+
+    def test_a_statement_the_list_cannot_read_stops_the_list(self):
+        page = CardPage()
+        for bad in ({"statementId": "", "statementDate": "2026-09-12T00:00:00Z"},
+                    {"statementId": "s1", "statementDate": "2026-13-12T00:00:00Z"},
+                    {"statementId": "s1"}, {"statementId": 7, "statementDate": "2026-09-12T00:00:00Z"}):
+            answer = {"data": {"viewer": {"creditCard": {"statements": {"edges": [{"node": bad}]}}}}}
+            page = CardPage(dates=["2026-09-12"])
+            page.list_answers = [CardResponse(page, answer)]
+            with self.assertRaises(site.ListStopped):
+                self.collect(page)
+
+    def test_no_credit_card_tab_lists_nothing(self):
+        page = CardPage(links=("Transactions",))
+        self.assertEqual(self.collect(page), [])
+        self.assertEqual(page.clicked, [])
+
+    def test_two_credit_card_tabs_stop_the_list(self):
+        with self.assertRaises(site.ListStopped):
+            self.collect(CardPage(links=("Credit Card", "Credit Card")))
+
+    def test_a_tab_that_opens_another_page_stops_the_list(self):
+        """Checked after the press as well as before it, and a tab that took
+        the page anywhere else stops the run rather than the list."""
+        page = CardPage(lands_on="https://accounts.coinbase.com/statements/other")
+        with self.assertRaises(site.pressing.Stop) as stop:
+            self.collect(page)
+        self.assertTrue(stop.exception.after_a_press)
+        self.assertEqual(page.handlers, [])
+
+    def test_a_credit_card_link_to_another_address_is_not_the_tab(self):
+        """The product page's own "Credit Card" link has the address
+        /creditcard. Only the sub-navigation's, with no address or the card
+        list's, is the tab."""
+        self.assertTrue(site.is_card_tab("Credit Card", None))
+        self.assertTrue(site.is_card_tab(" Credit  Card ", ""))
+        self.assertTrue(site.is_card_tab("Credit Card", "/statements/credit-card"))
+        self.assertTrue(site.is_card_tab("Credit Card", site.CARD_LIST_URL))
+        for text, href in (("Credit Card", "/creditcard"), ("Credit Card", "https://evil.example/"),
+                           ("Credit Cards", None), ("Transactions", None), ("", None),
+                           ("Apply for Credit Card", None)):
+            self.assertFalse(site.is_card_tab(text, href), (text, href))
+        page = CardPage()
+        hrefs = {"Transactions": None, "Credit Card": "/creditcard"}
+        real = page.locator
+
+        def locator(sel):
+            loc = real(sel)
+            if sel == site.CARD_LINK_CSS:
+                nth = loc.nth
+                class Links:
+                    def count(s): return loc.count()
+                    def nth(s, i):
+                        link = nth(i)
+                        link.get_attribute = lambda name: hrefs[link.inner_text()]
+                        return link
+                return Links()
+            return loc
+        page.locator = locator
+        self.assertEqual(self.collect(page), [])
+        self.assertEqual(page.clicked, [], "a Credit Card link to another address is not pressed")
+
+    def test_an_account_without_a_card_lists_nothing(self):
+        for answer in ({"data": {"viewer": {"creditCard": None}}}, accounts_answer(())):
+            page = CardPage(dates=[], rows=[])
+            page.list_answers = [CardResponse(page, answer)]
+            self.assertEqual(self.collect(page), [], answer)
+
+    def test_an_empty_list_heard_is_empty(self):
+        page = CardPage(dates=[], rows=[])
+        self.assertEqual(self.collect(page), [])
+
+    def test_a_load_more_on_the_card_list_stops_it(self):
+        page = CardPage()
+        page.load_more = 1
+        with self.assertRaises(site.ListStopped):
+            self.collect(page)
+
+    def test_the_list_answered_twice_stops_even_when_the_same(self):
+        page = CardPage()
+        page.list_answers = [CardResponse(page, statements_answer(page.dates, page.sids)),
+                             CardResponse(page, statements_answer(page.dates, page.sids))]
+        with self.assertRaises(site.ListStopped):
+            self.collect(page)
+
+    def test_a_list_answer_that_is_not_ok_stops_the_list(self):
+        for status, body in ((500, statements_answer(["2026-09-12"])),
+                             (200, dict(statements_answer(["2026-09-12"]), errors=[{"message": "x"}]))):
+            page = CardPage(dates=["2026-09-12"])
+            answer = CardResponse(page, body)
+            answer.status = status
+            page.list_answers = [answer]
+            with self.assertRaises(site.ListStopped):
+                self.collect(page)
+
+    def test_an_answer_that_cannot_be_read_beside_the_list_stops_it(self):
+        page = CardPage()
+        page.list_answers = [CardResponse(page, ValueError("not json")),
+                             CardResponse(page, statements_answer(page.dates, page.sids))]
+        with self.assertRaises(site.ListStopped):
+            self.collect(page)
+
+    def test_the_list_says_whether_it_has_another_page(self):
+        def with_page_info(info):
+            answer = statements_answer(["2026-10-12", "2026-09-12"])
+            answer["data"]["viewer"]["creditCard"]["statements"]["pageInfo"] = info
+            return answer
+        for info, whole in (({"hasNextPage": False}, True), ({"hasNextPage": True}, False),
+                            ({}, False), ("no", False), ({"hasNextPage": None}, False)):
+            page = CardPage(dates=["2026-10-12", "2026-09-12"])
+            page.list_answers = [CardResponse(page, with_page_info(info))]
+            if whole:
+                self.assertEqual(len(self.collect(page)), 2, info)
+            else:
+                with self.assertRaises(site.ListStopped, msg=info):
+                    self.collect(page)
+
+    def test_a_list_without_a_page_info_has_to_miss_no_month(self):
+        page = CardPage(dates=["2026-10-12", "2026-08-12"])
+        with self.assertRaises(site.ListStopped):
+            self.collect(page)
+        page = CardPage(dates=["2026-01-12", "2025-12-12"])
+        self.assertEqual(len(self.collect(page)), 2, "a year's turn is no gap")
+
+    def test_card_statements_come_after_the_other_families(self):
+        page = CardPage()
+        monthly = [site.RawDoc(title="Monthly Statement September 2026", date_text="2026-09-30")]
+        tax = [site.RawDoc(title="1099-DA Tax Year 2025", date_text="2025-12-31", kind="tax")]
+        card = [site.RawDoc(title="Coinbase One Card Statement September 2026", date_text="2026-09-12")]
+        with mock.patch.object(site, "goto_documents", lambda p: True), \
+                mock.patch.object(site, "_first_transaction", lambda p: "2026-08-01"), \
+                mock.patch.object(site, "_collect_statements", lambda p, f: list(monthly)), \
+                mock.patch.object(site, "_collect_tax", lambda p, f: list(tax)), \
+                mock.patch.object(site, "_collect_card", lambda p: list(card)):
+            self.assertEqual(site.collect_download_docs(page), monthly + tax + card)
+
+            def stops(p):
+                raise site.ListStopped("the card list stopped", card[:0])
+            with mock.patch.object(site, "_collect_card", stops):
+                with self.assertRaises(site.ListStopped) as stopped:
+                    site.collect_download_docs(page)
+            self.assertEqual(stopped.exception.docs, monthly + tax,
+                             "what the other families listed is kept")
+
+
+class CardDownload(unittest.TestCase):
+    """One card statement: the row's own PDF button, the address the page
+    was handed, fetched in the tab, checked, and back to the list."""
+
+    ISO = "2026-09-12"
+    LABEL = "September 2026"
+
+    def stopped(self, page, iso=ISO, label=LABEL):
+        """The take, which has to stop the run, with nothing fetched or
+        saved, every listener gone and the tab back on the list."""
+        with self.assertRaises(site.pressing.Stop) as stop:
+            self.take(page, iso, label)
+        self.assertTrue(stop.exception.after_a_press)
+        self.assertEqual(page.fetched, [])
+        self.assertEqual(page.handlers, [])
+        self.assertEqual(site._no_fragment(page.url), site.CARD_LIST_URL)
+        return stop.exception
+
+    def take(self, page, iso=ISO, label=LABEL):
+        trace = []
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "out.pdf"
+            with mock.patch.object(site.pressing, "click", clicks_the_tab):
+                ok = site._take_card_statement(page, label, iso, out, trace)
+            saved = out.read_bytes() if out.exists() else None
+        return ok, saved, trace
+
+    def test_the_statement_is_taken_from_the_address_the_page_was_handed(self):
+        page = CardPage()
+        ok, saved, trace = self.take(page)
+        self.assertTrue(ok, trace)
+        self.assertTrue(saved.startswith(b"%PDF-"))
+        self.assertIn(self.LABEL, page.clicked, "the row's own PDF button was pressed")
+        self.assertEqual([c for c in page.clicked if c == self.LABEL], [self.LABEL])
+        self.assertEqual(page.fetched, [(card_url(self.ISO), 0)],
+                         "the exact address, once, no redirect followed")
+        self.assertEqual(page.backs, 1, "the tab went back to the list")
+        self.assertEqual(site._no_fragment(page.url), site.CARD_LIST_URL)
+        self.assertEqual(page.handlers, [], "every listener was removed")
+
+    def test_the_answer_is_read_before_the_tab_moves_on(self):
+        """The body of the page's answer is gone once the tab is at the
+        statement, so it has to have been read as it came."""
+        page = CardPage()
+        ok, _saved, trace = self.take(page)
+        self.assertTrue(ok, trace)
+        self.assertTrue(page.navigated is False, "back on the list")
+
+    def test_a_press_that_asks_for_another_statement_takes_nothing(self):
+        page = CardPage()
+        page.press_answers = {self.LABEL: [CardResponse(
+            page, row_answer(card_url(self.ISO)), op="CreditCardStatementRowQuery",
+            variables={"statementId": CARD_OTHER_SID})]}
+        self.assertIn("another statement", self.stopped(page).reason)
+
+    def test_an_address_on_another_host_is_not_asked(self):
+        page = CardPage()
+        bad = card_url(self.ISO, host="evil.example")
+        page.press_answers = {self.LABEL: [CardResponse(
+            page, row_answer(bad), op="CreditCardStatementRowQuery",
+            variables={"statementId": page.sids[1]})]}
+        page.press_lands = {self.LABEL: bad}
+        self.assertIn("another host", self.stopped(page).reason)
+
+    def test_an_address_of_another_date_is_not_asked(self):
+        page = CardPage()
+        other = card_url("2026-08-12")
+        page.press_answers = {self.LABEL: [CardResponse(
+            page, row_answer(other), op="CreditCardStatementRowQuery",
+            variables={"statementId": page.sids[1]})]}
+        page.press_lands = {self.LABEL: other}
+        self.assertIn("another date", self.stopped(page).reason)
+
+    def test_a_tab_that_lands_elsewhere_takes_nothing(self):
+        for lands in ("https://accounts.coinbase.com/statements/credit-card/other",
+                      card_url(self.ISO, token="tokOther")):
+            page = CardPage()
+            page.press_lands = {self.LABEL: lands}
+            self.assertIn("did not arrive", self.stopped(page).reason, lands)
+
+    def test_a_tab_that_never_moves_takes_nothing(self):
+        page = CardPage()
+        page.press_lands = {self.LABEL: ""}
+        self.assertIn("did not arrive", self.stopped(page).reason)
+
+    def test_two_answers_to_one_press_take_nothing(self):
+        page = CardPage()
+        sid = page.sids[1]
+        page.press_answers = {self.LABEL: [
+            CardResponse(page, row_answer(card_url(self.ISO)), op="CreditCardStatementRowQuery",
+                         variables={"statementId": sid}),
+            CardResponse(page, row_answer(card_url(self.ISO, token="tokTwo")),
+                         op="CreditCardStatementRowQuery", variables={"statementId": sid})]}
+        self.assertIn("more than once", self.stopped(page).reason)
+
+    def test_an_answer_that_cannot_be_read_takes_nothing(self):
+        page = CardPage()
+        page.press_answers = {self.LABEL: [CardResponse(
+            page, RuntimeError("no body"), op="CreditCardStatementRowQuery",
+            variables={"statementId": page.sids[1]})]}
+        ok, saved, trace = self.take(page)
+        self.assertFalse(ok)
+        self.assertEqual(page.fetched, [])
+
+    def test_html_where_the_pdf_should_be_is_not_saved(self):
+        page = CardPage()
+        page.fetch_body = b"<!doctype html><html><body>viewer</body></html>"
+        ok, saved, trace = self.take(page)
+        self.assertFalse(ok)
+        self.assertIsNone(saved)
+
+    def test_a_pdf_that_is_not_this_statement_is_not_saved(self):
+        for body in (card_pdf(words="Coinbase Card"), card_pdf(closing="Aug 12, 2026")):
+            page = CardPage()
+            page.fetch_body = body
+            ok, saved, trace = self.take(page)
+            self.assertFalse(ok)
+            self.assertIsNone(saved)
+
+    def test_an_answer_that_is_not_ok_is_not_saved(self):
+        page = CardPage()
+        page.fetch_status = 302
+        ok, saved, trace = self.take(page)
+        self.assertFalse(ok)
+        self.assertIsNone(saved)
+
+    def test_a_popup_takes_nothing(self):
+        page = CardPage()
+        page.popup_on_press = True
+        self.assertIn("popup", self.stopped(page).reason)
+
+    def test_a_download_takes_nothing_and_is_cancelled(self):
+        page = CardPage()
+        dl = mock.Mock()
+        page.download_on_press = dl
+        self.assertIn("download", self.stopped(page).reason)
+        dl.cancel.assert_called_once_with()
+
+    def test_a_statement_the_list_does_not_name_once_is_not_pressed(self):
+        page = CardPage()
+        ok, saved, trace = self.take(page, iso="2026-07-12", label="July 2026")
+        self.assertFalse(ok)
+        self.assertEqual([c for c in page.clicked if isinstance(c, str)], [])
+
+    def test_a_row_that_reads_another_month_at_the_press_is_not_pressed(self):
+        page = CardPage()
+        page.row_says[1] = "August 2026"
+        ok, saved, trace = self.take(page)
+        self.assertFalse(ok)
+        self.assertEqual([c for c in page.clicked if isinstance(c, str)], [])
+
+    def test_a_turned_off_button_leaves_the_statement(self):
+        page = CardPage()
+        off = site.pressing.TurnedOff("press a control", "the control is turned off", ["off"])
+        with mock.patch.object(site.pressing, "press_once", side_effect=off):
+            ok, saved, trace = self.take(page)
+        self.assertFalse(ok)
+        self.assertIn("turned off", " ".join(t.get("note", "") for t in trace))
+        self.assertEqual(page.handlers, [])
+
+    def test_the_press_goes_through_the_core_with_its_own_guard(self):
+        page = CardPage()
+        real = site.pressing.press_once
+        asked = []
+
+        def recorded(pg, el, **kw):
+            asked.append(dict(kw, check_said=kw["check"]()))
+            return real(pg, el, **kw)
+        with mock.patch.object(site.pressing, "press_once", recorded):
+            ok, saved, trace = self.take(page)
+        self.assertTrue(ok, trace)
+        self.assertEqual(len(asked), 1)
+        self.assertIs(asked[0]["guard"], site.is_card_pdf_label)
+        self.assertEqual(asked[0]["check_said"], "")
+
+    def test_a_list_that_does_not_come_back_loads_the_statements_page(self):
+        page = CardPage()
+        page.go_back = lambda **kw: setattr(page, "backs", page.backs + 1)
+        ok, saved, trace = self.take(page)
+        self.assertTrue(ok, "the statement checked is kept")
+        self.assertEqual(page.loads, [site.STATEMENTS_URL], "the tab is not left at the address")
+        self.assertIn("the card list did not show again", " ".join(t.get("note", "") for t in trace))
+
+    def test_nothing_private_reaches_the_trace_or_the_log(self):
+        page = CardPage(sids=[CARD_OTHER_SID, CARD_SID, "sid-invented-0003-cccc"])
+        with self.assertLogs("coinbase_docs.site", level="DEBUG") as logs:
+            site.log.debug("start")
+            ok, saved, trace = self.take(page)
+            page2 = CardPage(sids=[CARD_OTHER_SID, CARD_SID, "sid-invented-0003-cccc"])
+            page2.fetch_body = b"<html></html>"
+            self.take(page2)
+        self.assertTrue(ok)
+        said = json.dumps(trace) + "\n".join(logs.output)
+        for secret in (CARD_SID, CARD_OTHER_SID, CARD_ACCOUNT, CARD_TOKEN, CARD_SIGNATURE,
+                       CARD_KEYPAIR, "Expires", "123.45", "cardless.com/"):
+            self.assertNotIn(secret, said, secret)
+
+    def test_download_bill_takes_a_card_statement_on_a_page_loaded_for_it(self):
+        page = CardPage()
+        page.url = site.CARD_LIST_URL
+        said = []
+
+        def taken(pg, label, iso, out_path, trace):
+            said.append((label, iso, list(pg.loads)))
+            return True
+        with mock.patch.object(site, "_take_card_statement", taken):
+            with tempfile.TemporaryDirectory() as td:
+                self.assertTrue(site.download_bill(
+                    page, Path(td), self.ISO, Path(td) / "o.pdf",
+                    title="Coinbase One Card Statement September 2026", trace=[]))
+                self.assertFalse(site.download_bill(
+                    page, Path(td), "2026-08-12", Path(td) / "o.pdf",
+                    title="Coinbase One Card Statement September 2026", trace=[]))
+        self.assertEqual(said, [(self.LABEL, self.ISO, [site.STATEMENTS_URL])])
+
+
+class CardRun(unittest.TestCase):
+    """What the run does with a card statement, through the app's own
+    process and download_one."""
+
+    def docs_for(self, app, *isos):
+        out = []
+        for iso in isos:
+            out.append(docs.Document(title="Coinbase One Card Statement %s" % label_of(iso),
+                                     category="Statement", summary="One Card Statement", date=iso))
+        return out
+
+    def test_a_stop_after_a_press_presses_no_second_statement(self):
+        app, _failures = built_app(self)
+        asked = []
+
+        def stops(page, dl_dir, iso, out_path, title="", trace=None, **kw):
+            asked.append(iso)
+            raise site._left_the_list("take a card statement", "a popup came")
+        app._on_its_site = lambda: object()
+        app._delay = lambda *a: None
+        with mock.patch.object(site, "goto_documents", lambda page: True), \
+                mock.patch.object(site, "download_bill", stops):
+            with self.assertRaises(site.pressing.Stop):
+                app.process(self.docs_for(app, "2026-10-12", "2026-09-12"))
+        self.assertEqual(asked, ["2026-10-12"], "the run went on to the next statement")
+
+    def test_a_failed_attempt_names_no_signed_address(self):
+        app, _failures = built_app(self)
+        doc = self.docs_for(app, "2026-09-12")[0]
+        page = mock.Mock(url=card_url("2026-09-12"))
+        with mock.patch.object(site, "goto_documents", lambda page: True), \
+                mock.patch.object(site, "download_bill", lambda *a, **kw: False):
+            app.download_one(page, doc, "2026-09-12 Coinbase One Card Statement.pdf")
+        said = (app.paths.diagnostics / "download-attempt.json").read_text(encoding="utf-8")
+        for secret in (CARD_TOKEN, CARD_SIGNATURE, CARD_KEYPAIR, "Expires", "_Coinbase.pdf"):
+            self.assertNotIn(secret, said, secret)
+        self.assertIn("statements.cardless.com", said.replace("\\", ""))
+
+    def test_where_landed_keeps_coinbase_s_own_address(self):
+        self.assertEqual(site.where_landed(mock.Mock(url=site.CARD_LIST_URL)),
+                         site.redact(site.CARD_LIST_URL))
+        self.assertEqual(site.where_landed(mock.Mock(url=card_url("2026-09-12"))),
+                         "statements.cardless.com")
+        self.assertEqual(site.where_landed(mock.Mock(url="")), "")
+
+
+class CardRecords(unittest.TestCase):
+    def test_rules_and_file_name(self):
+        from paperpull_core import doc_types
+        rules = doc_types.load_rules(HERE / "document_rules.json")
+        c, s, _ = doc_types.classify_document("Coinbase One Card Statement September 2026", rules)
+        self.assertEqual((c, s), ("Statement", "One Card Statement"))
+        self.assertEqual(docs.build_pdf_filename("2026-09-12", s, ""),
+                         "2026-09-12 Coinbase One Card Statement.pdf")
+
+    def test_a_card_statement_is_recorded_without_its_ids(self):
+        app, _failures = built_app(self)
+        page = CardPage(sids=[CARD_OTHER_SID, CARD_SID, "sid-invented-0003-cccc"])
+        with mock.patch.object(site.pressing, "click", clicks_the_tab):
+            for r in site._collect_card(page):
+                app._record_rawdoc(r, site.BILLING_URL)
+        app.discovery.save()
+        self.assertEqual(sorted(app.discovery.data), [
+            "Statement:2026-08-12:Coinbase One Card Statement August 2026:Unnamed",
+            "Statement:2026-09-12:Coinbase One Card Statement September 2026:Unnamed",
+            "Statement:2026-10-12:Coinbase One Card Statement October 2026:Unnamed"])
+        stored = app.paths.discovery_json.read_text(encoding="utf-8")
+        for secret in (CARD_SID, CARD_OTHER_SID, CARD_ACCOUNT, "cardless"):
+            self.assertNotIn(secret, stored)
+
+    def test_a_card_statement_is_filed_under_its_closing_date(self):
+        app, failures = built_app(self)
+        doc = docs.Document(title="Coinbase One Card Statement September 2026", category="Statement",
+                            summary="One Card Statement", date="2026-09-12")
+
+        def hands_over(page, dl_dir, iso, out_path, title="", trace=None, **kw):
+            Path(out_path).write_bytes(card_pdf())
+            return True
+        with mock.patch.object(site, "goto_documents", lambda page: True), \
+                mock.patch.object(site, "download_bill", hands_over):
+            app.download_one(object(), doc, "2026-09-12 Coinbase One Card Statement.pdf")
+        rec = app.progress.get(doc.key)
+        self.assertEqual(rec["state"], docs.State.COMPLETED.value, rec.get("notes"))
+        self.assertEqual(Path(rec["pdf_path"]).name, "2026-09-12 Coinbase One Card Statement.pdf")
+        self.assertEqual(failures, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,26 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Added
+- **Coinbase One Card statements.** The Coinbase app now also saves your
+  Coinbase One Card statements, as `<closing date> Coinbase One Card
+  Statement.pdf` in the Statements folder. It opens the Statements page's
+  Credit Card tab, reads the list of statements the page itself asks
+  Coinbase for, and needs the rows the page shows to match that list
+  exactly. For each statement it presses that row's own PDF button once,
+  takes the address the page was handed for that statement only when it is
+  on Coinbase's card statement host and carries that statement's closing
+  date, and keeps the file only when it is a PDF that says Coinbase One
+  Card and prints that closing date. A popup, a download, the tab going
+  anywhere else, or an answer naming another statement or another date
+  stops the run. The statement's id, the card account's id, the signed
+  address and the amounts are never logged or kept. Your monthly account
+  statements and tax documents are taken exactly as before. The list and
+  one statement were checked live on a signed-in account, and a full run is
+  still to come.
+
 ## [0.52.0] - 2026-10-14
 
 Six providers arrive, First Horizon Bank checking statements, Chase

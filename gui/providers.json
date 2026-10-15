@@ -26,7 +26,7 @@
     "chase": {"gets": "Credit card statements", "group": "banks"},
     "chasebusiness": {"gets": "Business checking statements, up to seven years (business card untested)", "group": "banks", "note": "Tested on one profile, checking only"},
     "citi": {"gets": "Credit card statements, about two years online", "group": "banks"},
-    "coinbase": {"gets": "Monthly statements and tax documents", "group": "investing"},
+    "coinbase": {"gets": "Monthly statements, One Card statements and tax documents", "group": "investing", "note": "One Card statements are new, not yet taken on a full run"},
     "costco": {"gets": "Warehouse, gas, pharmacy and costco.com receipts", "group": "shopping", "note": "Tested on one membership so far"},
     "discovercard": {"gets": "Credit card statements", "group": "banks", "note": "For a card moved to Capital One, choose Capital One"},
     "dominion": {"gets": "Billing statements", "group": "bills"},

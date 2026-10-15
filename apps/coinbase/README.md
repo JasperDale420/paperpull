@@ -38,12 +38,31 @@ address.
   mark-read and mark-downloaded calls never happen. Each is kept under its
   own id from that list.
 
+- **Coinbase One Card statements.** The Statements page's Credit Card tab
+  lists one statement for each month the card has closed. The app presses
+  that tab, reads the list the page itself asks Coinbase for, and needs the
+  rows it shows to match that list exactly. Each statement is saved by
+  pressing its row's own PDF button once, on a page loaded afresh for it.
+  The page is then handed the statement's own address, and the browser
+  goes there itself. The app takes it only from Coinbase's card statement
+  host (statements.cardless.com) and only when that address carries the
+  statement's closing date, fetches that exact address, and keeps it only
+  as a PDF that says Coinbase One Card and prints that closing date. It is
+  named `<closing date> Coinbase One Card Statement.pdf`. A popup, a
+  download, the browser going anywhere else, or an answer naming another
+  statement or another date stops the run. An account whose Statements
+  page shows no Credit Card tab has no card statements listed.
+
 The statements list is called whole only when it reaches back to the month
 of the account's first transaction, and a tax list that names another year
 or has a page this does not read stops the listing too.
 
 Never touched are the custom statement generator, the tax report generator,
-and anything that trades, sends, stakes or changes a setting.
+the card's payments and settings, and anything that trades, sends, stakes or
+changes a setting. The app never asks Coinbase's card list or a statement's
+address for itself, it only hears what the page asks. The statement's id,
+the card account's id, the signed address and the amounts are never logged
+or kept.
 
 ## Validation status
 
@@ -52,3 +71,11 @@ saved 66 statements and 2 tax documents, every one a valid PDF. Automated
 tests cover the guard, the hosts, the statement rows and their months, the
 tax lists, the press of a statement's PDF button and what it brings, and
 filing a statement only under its own month.
+
+Coinbase One Card statements: the Credit Card tab, its list of 13
+statements and the fetch of one statement's PDF were confirmed live on a
+signed-in account by a read-only survey on 2026-10-15. A run of the app
+itself, Discover and a Pilot, is still to come. Automated tests cover the
+card list heard and matched to its rows, the press of a row's PDF button,
+the address and the PDF checked, every stop, and that no id or signed
+address is logged or kept.

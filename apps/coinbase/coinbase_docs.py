@@ -1,8 +1,9 @@
 """Coinbase statement and tax-document downloader (local, supervised).
 
 Coinbase is a crypto exchange at www.coinbase.com. This downloads the
-monthly account statements from its Statements page and the tax documents
-from its Taxes page. The orchestrator below is the same one every other
+monthly account statements from its Statements page, the Coinbase One Card
+statements from that page's Credit Card tab, and the tax documents from its
+Taxes page. The orchestrator below is the same one every other
 statement app runs on. Everything about the site itself is in
 coinbase_site.py.
 
@@ -633,7 +634,9 @@ class App:
             attempt = self.paths.diagnostics / "download-attempt.json"
             write_shaped(attempt, {
                 "timestamp": now_iso(), "date": doc.date,
-                "landed_on": site.redact(page.url or ""),
+                # Only the host off Coinbase's own, since a card statement's
+                # address is signed (site.where_landed).
+                "landed_on": site.redact(site.where_landed(page)),
                 "responses": trace[:80]}, words_for('Coinbase', site))
             print(f"  What the site answered is in {attempt}, attach it to the issue.")
             self._record(doc, State.NEEDS_MANUAL_REVIEW,
@@ -996,7 +999,9 @@ class App:
             for name, sel in [("doc_row", site.FALLBACK["doc_row"]),
                               ("table rows", "table tbody tr"),
                               ("pdf links", "a[href*='.pdf']"),
-                              ("download attrs", "a[download]")]:
+                              ("download attrs", "a[download]"),
+                              # Counted, never pressed: Transactions and Credit Card.
+                              ("sub-navigation links", site.CARD_LINK_CSS)]:
                 try:
                     info["row_counts"][name] = page.locator(sel).count()
                 except Exception as e:
