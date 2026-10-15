@@ -10,34 +10,33 @@ Read-only, delete-safe, part of [PaperPull](../../README.md).
 
 ## Validation status
 
-**Surveyed live, run pending.** Built from a read-only survey of one
-signed-in account on 2026-10-15, which showed one Bilt Blue Card with eight
-statements, October 06, 2026 back to March 06, 2026, and opened one of
-them. Discover, Pilot and Run All have not been run yet. What the survey
-saw:
+**Run live on one account on 2026-10-15.** Discover listed the wallet's one
+Bilt Blue Card and its eight statements, October 06, 2026 back to March 06,
+2026. Pilot took the newest and Run All the other seven, every one a PDF
+that printed its own statement date and the card's last four, and Verify
+found eight index rows with no problem. Three loads of the wallet in that
+session (Discover, Pilot, Run All) listed the same eight ids, so a
+statement's id held from one load to the next. What the run showed, past
+the survey it was built from:
 
 - The wallet shows the card under a "View balance summary" button. That
   opens a sheet with "View statements", which opens a second sheet with one
-  button per statement, "Download statement for October 06, 2026".
+  button per statement, "Download statement for October 06, 2026". The
+  card's label on the wallet is split across elements, the name, the masked
+  number and the card's own "View" button, and the "View statements"
+  control's accessible name carries the name of an icon nested in it, so
+  both are read by their own text.
 - Opening the list makes the page ask Bilt's API for the card's
   statements, and the app hears that answer. It never asks the API itself.
 - A statement's button makes the page ask for that statement's details and
-  then open a new tab at `statements.cardless.com` holding the PDF. No
-  browser download begins.
+  then open a new tab at `statements.cardless.com` holding the PDF, at a
+  signed address: the statement's own date in its path and exactly the
+  query keys Expires, Signature and Key-Pair-Id. No browser download
+  begins. The tab is closed once the PDF is taken.
 
-What the first live run has to confirm:
-
-- That the PDF can be read from the tab's own answer, or, if Chrome's PDF
-  viewer keeps it, that asking the tab's exact address once more works.
-- That the tab's address carries no query and its date is the pressed
-  statement's own date.
-- Whether the page's details answer names the tab's own address.
-- That a statement keeps the same id from one load and sign-in to the
-  next, and that the list is asked again on every load of the wallet.
-- That the PDF prints its statement date in a way the app reads, and the
-  card's last four where it prints a masked card number.
-- The address of Bilt's sign-in page, which the survey never saw.
-- How long Bilt keeps an idle session.
+Still unseen: the address of Bilt's sign-in page (the survey and the run
+never met it), how long Bilt keeps an idle session, and whether a
+statement's id holds across a fresh sign-in.
 
 Statements of the earlier Bilt card issued by Wells Fargo, before February
 2026, are not in the Bilt wallet. They are Wells Fargo's, and the

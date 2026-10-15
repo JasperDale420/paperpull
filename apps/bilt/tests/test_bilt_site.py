@@ -211,6 +211,9 @@ class Loc:
     def is_visible(self):
         return self._labels() is not None
 
+    def filter(self, **kw):
+        return self
+
     def evaluate(self, js):
         assert js == site._LABELS_JS
         return list(self._labels() or [])
@@ -393,6 +396,8 @@ class Wallet:
             return Loc(self, "password")
         if css == "body":
             return Loc(self, "body")
+        if css == site.OPENER_CSS:
+            return Loc(self, "button", site.STATEMENTS_LABEL)
         return Loc(self, "other")
 
     def on(self, ev, f):
@@ -1005,3 +1010,76 @@ def test_the_failure_file_names_its_provider():
     src = (HERE / "bilt_docs.py").read_text(encoding="utf-8")
     assert "provider='Bilt'" in src and "First Horizon" not in src
     assert "firsthorizon" not in (HERE / "bilt_site.py").read_text(encoding="utf-8")
+
+
+def test_the_view_statements_control_is_found_by_its_own_text():
+    """On the live sheet its accessible name is "View statements
+    action-right", an icon button's name nested in it, so a role query by
+    the exact name finds nothing. It is looked for among the shown buttons
+    by its own exact text instead."""
+    calls = []
+
+    class Spy:
+        def __init__(self, path):
+            self.path = path
+
+        def filter(self, **kw):
+            calls.append(kw)
+            return Spy(self.path + ["filter"])
+
+    class Page:
+        def locator(self, css):
+            calls.append(("locator", css))
+            return Spy(["locator"])
+
+        def get_by_role(self, *a, **kw):
+            raise AssertionError("a role query would miss the control")
+
+    found = site._view_statements(Page())
+    assert found.path == ["locator", "filter", "filter"]
+    assert calls[0] == ("locator", 'button, [role="button"]')
+    assert calls[1]["has_text"].pattern == site.STATEMENTS_TEXT_RE.pattern
+    assert site.STATEMENTS_TEXT_RE.fullmatch(" View statements ")
+    assert not site.STATEMENTS_TEXT_RE.fullmatch("View statements and pay")
+    assert not site.STATEMENTS_TEXT_RE.fullmatch("action-right")
+    assert calls[2] == {"visible": True}
+
+
+def test_the_pdf_address_may_carry_its_signing_query_and_nothing_else():
+    """The live tab opens on the PDF's signed address, Expires, Signature
+    and Key-Pair-Id once each. That form is this statement's address too.
+    Any other query, a repeated key, an empty value or a fragment is not,
+    and every query value is a private word once the address is seen."""
+    signed = pdf_url("2026-10-06") + "?Expires=1760000000&Signature=MEUCIQabc~def_ghi&Key-Pair-Id=K2EXAMPLEID"
+    assert site.pdf_url_date(signed) == "2026-10-06"
+    assert site.pdf_token(signed) == TOKEN
+    for u in [signed + "&x=1",
+              signed.replace("&Key-Pair-Id=K2EXAMPLEID", ""),
+              signed + "&Expires=1",
+              signed.replace("Signature=MEUCIQabc~def_ghi", "Signature="),
+              signed + "#page=2",
+              pdf_url("2026-10-06") + "?Expires=1&Signature=s&Key-Pair-Id=k&Policy=p",
+              pdf_url("2026-10-06") + "?",
+              pdf_url("2026-10-06") + "?Expires"]:
+        assert site.pdf_url_date(u) is None, u
+        assert site.pdf_token(u) == "", u
+    site._guard_address(signed)
+    for word in [TOKEN, "MEUCIQabc~def_ghi", "K2EXAMPLEID", "1760000000"]:
+        assert word not in site.redact("tab %s" % signed), word
+
+
+def test_the_card_label_may_end_in_its_own_view_button_and_nothing_else():
+    """Live the smallest element holding the card's label also holds the
+    card's own "View" button, so that one word may follow the last four.
+    Any other suffix, or a view-like word, is not the card's label. The
+    page script reads the same pattern."""
+    ok = site.CARD_LABEL_RE.fullmatch
+    assert ok("Bilt Blue Card •••• 4821").group(1) == "4821"
+    assert ok("Bilt Blue Card •••• 4821 View").group(1) == "4821"
+    assert ok("Bilt Card **** 4821")
+    for label in ("Bilt Blue Card •••• 4821 View Pay card", "Bilt Blue Card •••• 4821 Viewer",
+                  "Bilt Blue Card •••• 4821 View View", "Bilt Blue Card •••• 482", "Card •••• 4821",
+                  "Bilt Blue Card 4821 View", "Bilt Blue Card •••• 4821\nCurrent balance"):
+        assert ok(label) is None, label
+    assert json.dumps(site.CARD_LABEL_RE.pattern) in site._STATE_JS
+    assert "new RegExp(CARD_LABEL_PATTERN)" in site._STATE_JS

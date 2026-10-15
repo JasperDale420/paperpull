@@ -4,10 +4,11 @@ When Bilt changes its wallet, repair this file only.
 
 STATUS: built from the account owner's read-only survey of a signed-in
 account on 2026-10-15 (the Bilt Card 2.0, serviced by Cardless, one card
-with eight statements, October 06, 2026 back to March 06, 2026). Not yet
-run: Discover, Pilot and Run All are pending a live run. What the survey
-saw is marked SURVEYED below, and what this app assumes without having
-seen it is marked ASSUMED, each a thing the live run must confirm.
+with eight statements, October 06, 2026 back to March 06, 2026), then run
+live on that account the same day: Discover listed the eight, Pilot and
+Run All saved them all, Verify found no problem. What the survey saw is
+marked SURVEYED below, and what the run then settled or left open is
+marked under WHAT THE RUN SETTLED.
 
 WHAT THE SURVEY ESTABLISHED (SURVEYED)
   * The account holder signs in at https://www.bilt.com, a Next.js app. The
@@ -39,23 +40,26 @@ WHAT THE SURVEY ESTABLISHED (SURVEYED)
          https://statements.cardless.com/<token>_<YYYY-MM-DD>_Bilt.pdf,
          the PDF itself. No browser download began, and the tab stays open.
 
-WHAT IS ASSUMED (the live run must confirm each)
-  * The popup's own answer (its navigation response) can be read whole by
-    Playwright. Chromium's PDF viewer may keep it, and then the popup's
-    exact address is asked once more with the browser's own cookies and no
-    redirect followed (_pdf_bytes). Which way it came is said in the trace.
-  * The popup's address carries no query, and its date is the pressed
-    statement's own. The survey's one popup was read with its digits
-    masked, so this was not seen for a known statement.
-  * Whether the details answer's downloadUrl is the popup's own address.
-    When it names statements.cardless.com it must be; when it names
-    another host that is only noted, yes or no.
-  * A statementId is the same on every load and sign-in, and the list is
-    asked anew on every load of the wallet.
-  * The PDF prints its statement date, in a way identity.date_variants
-    reads, and the card's last four when it prints a masked card number.
-  * The sign-in page's address (LOGIN_PATHS). It was never seen.
-  * One Bilt Card in the wallet. Only one was seen.
+WHAT THE RUN SETTLED (2026-10-15, eight statements saved)
+  * The popup's address is signed: the statement's own date in its path
+    and exactly the query keys Expires, Signature and Key-Pair-Id, each
+    once (SIGNED_KEYS). Every query value is a private word.
+  * The card's label on the wallet is split across elements, the name, the
+    masked number and the card's own "View" button in one row, so the
+    label pattern (CARD_LABEL_RE) allows that one word after the last four.
+  * The "View statements" control's accessible name is "View statements
+    action-right", an icon button's name nested in it, so it is found by
+    its own exact text among the shown buttons (_view_statements).
+  * The PDF is taken from the popup, read whole from its own answer or,
+    when Chromium's PDF viewer keeps that, asked once more at the exact
+    address with the browser's own cookies (_pdf_bytes). Which way it came
+    is said in the trace. The PDF prints its statement date and the card's
+    last four, and every one of the eight passed those checks.
+  * A statementId held across the three loads of one session (Discover,
+    Pilot, Run All), and the list was heard anew on each load.
+  Still open: the sign-in page's address (LOGIN_PATHS, never seen), how
+  long an idle session lasts, whether ids hold across a fresh sign-in, and
+  a wallet with more than one Bilt Card (only one was seen; two stop).
 
 THE THREE PRESSES. Nothing else is ever pressed, and each goes through one
 place, _press, which reads every label the control carries, asks this
@@ -526,17 +530,42 @@ def details_ids(url) -> Tuple[str, str]:
     return (m.group(1), m.group(2)) if m and set(m.group(2)) != {"-"} else ("", "")
 
 
+# The PDF's address is signed: the live tab opens on it with exactly these
+# three query keys (a CloudFront signed URL), each once, and nothing else.
+SIGNED_KEYS = ("Expires", "Signature", "Key-Pair-Id")
+
+
+def _signed_pdf(url):
+    """The parsed address when it is https on exactly statements.cardless.com
+    with no fragment and a query that is empty or exactly the three signing
+    keys, each once with a value, else None."""
+    if not isinstance(url, str) or "#" in url or not _host_allows(url, {PDF_HOST}, subdomains=False):
+        return None
+    try:
+        parts = urlsplit(url)
+        pairs = parse_qsl(parts.query, keep_blank_values=True, strict_parsing=bool(parts.query))
+    except ValueError:
+        return None
+    if "?" in url and not parts.query:
+        return None
+    keys = [k for k, _v in pairs]
+    if pairs and (sorted(keys) != sorted(SIGNED_KEYS) or any(not v for _k, v in pairs)):
+        return None
+    return parts
+
+
 def pdf_url_date(url) -> Optional[str]:
     """The date a statement PDF's own address carries, when it is exactly
-    https://statements.cardless.com/<token>_<YYYY-MM-DD>_Bilt.pdf with no
-    query, and the date exists. None for anything else."""
-    parts = _on(url, PDF_HOST)
+    https://statements.cardless.com/<token>_<YYYY-MM-DD>_Bilt.pdf, bare or
+    with its signing query (SIGNED_KEYS, each once), and the date exists.
+    None for anything else."""
+    parts = _signed_pdf(url)
     m = _PDF_PATH_RE.fullmatch(parts.path) if parts else None
     return statement_date(m.group(2)) if m else None
 
 
 def pdf_token(url) -> str:
-    parts = _on(url, PDF_HOST)
+    parts = _signed_pdf(url)
     m = _PDF_PATH_RE.fullmatch(parts.path) if parts else None
     return m.group(1) if m else ""
 
@@ -814,7 +843,14 @@ def read_details(response, card_id: str, statement: Statement) -> str:
 # ---------------------------------------------------------------------------
 # Reading the wallet. Read only; nothing on the page is changed.
 # ---------------------------------------------------------------------------
+# The one card's label on the wallet, "Bilt Blue Card •••• 1234", read from
+# the smallest element holding it. Live that element also holds the card's
+# own "View" button, so that one word may follow the last four and nothing
+# else may. The same pattern serves the page script and the tests.
+CARD_LABEL_RE = re.compile(r"^Bilt [A-Za-z ]*Card\s*[•*]+\s*(\d{4})(?: View)?$")
+
 _STATE_JS = r"""() => {
+  const CARD_LABEL_PATTERN = %s;
   const tidy = s => (s || '').replace(/\s+/g, ' ').trim();
   const shown = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
                       && getComputedStyle(el).visibility !== 'hidden';
@@ -829,7 +865,10 @@ _STATE_JS = r"""() => {
                          title: tidy(el.getAttribute('title')), shown: shown(el), tag: el.tagName});
   for (const a of document.querySelectorAll('a[href^="/wallet/transactions?cardId="]'))
     out.links.push({href: a.getAttribute('href') || '', shown: shown(a)});
-  const card = /^Bilt [A-Za-z ]*Card\s*[•*]+\s*(\d{4})$/;
+  // The label's smallest element on the live wallet holds the name, the
+  // masked number and the card's own "View" button, so that one word may
+  // follow the last four.
+  const card = new RegExp(CARD_LABEL_PATTERN);
   for (const el of document.querySelectorAll('body *')) {
     const t = tidy(el.innerText);
     if (!card.test(t) || !shown(el)) continue;
@@ -870,7 +909,7 @@ _STATE_JS = r"""() => {
   const body = (document.body && document.body.innerText) || '';
   for (const m of body.matchAll(/Welcome, ([^\n]{1,80})/g)) out.welcome.push(tidy(m[1]));
   return out;
-}"""
+}""" % json.dumps(CARD_LABEL_RE.pattern)
 
 _LABELS_JS = r"""el => [el.innerText, el.getAttribute('aria-label'), el.getAttribute('title')]
   .map(s => (s || '').replace(/\s+/g, ' ').trim()).filter(Boolean)"""
@@ -1018,6 +1057,19 @@ def _button(page, label: str):
     return page.get_by_role("button", name=label, exact=True)
 
 
+# The "View statements" control is a role=button div whose accessible name
+# also carries the name of an icon button nested inside it ("View
+# statements action-right" on the live sheet), so a role query by its exact
+# name misses it. It is found among the shown buttons by its own text.
+OPENER_CSS = 'button, [role="button"]'
+STATEMENTS_TEXT_RE = re.compile(r"^\s*View statements\s*$")
+
+
+def _view_statements(page):
+    """The one shown button whose text is exactly "View statements"."""
+    return page.locator(OPENER_CSS).filter(has_text=STATEMENTS_TEXT_RE).filter(visible=True)
+
+
 # ---------------------------------------------------------------------------
 # The wallet and its statements list
 # ---------------------------------------------------------------------------
@@ -1066,7 +1118,7 @@ def read_listing(page, run: Optional[Run] = None) -> Listing:
            guard=is_balance_summary, step="open the balance summary", run=run)
     if _wait_for(page, run, lambda s: len(_shown(s.get("openers"))) == 1, LIST_WAIT_MS) is None:
         raise ListStopped("the balance summary did not show View statements")
-    _press(page, _button(page, STATEMENTS_LABEL), what="View statements",
+    _press(page, _view_statements(page), what="View statements",
            guard=is_view_statements, step="open the statements", run=run)
     got: dict = {}
 

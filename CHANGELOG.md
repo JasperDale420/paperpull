@@ -25,7 +25,7 @@ All notable changes to PaperPull are recorded here. Versioning follows
   and the card id, statement ids, last four and your name stay out of
   every log and diagnostic file. Files are named
   `<date> Bilt Card Statement.pdf`. Built from a live survey of one
-  account; a full run is still to come. Statements of the Wells Fargo
+  account and run live on it, eight statements saved. Statements of the Wells Fargo
   issued Bilt card, before February 2026, are not here.
 
 ## [0.52.0] - 2026-10-14
