@@ -528,7 +528,7 @@ def test_a_retirement_statement_that_is_the_individual_file_is_refused(tmp_path,
     rec = _take(app, page, doc)
     assert pressed == [INDIVIDUAL, RETIREMENT]
     assert rec["state"] == State.NEEDS_MANUAL_REVIEW.value and rec["pdf_path"] == ""
-    assert "same file as the individual statement" in rec["notes"]
+    assert "The same statement as the individual one" in rec["notes"]
     assert not app._already_done(doc), "the copy in Manual Review must not count as done"
     assert app.stats["wrong_document"] == 1
     assert _statements_saved(app) == []
@@ -548,14 +548,14 @@ def test_a_retirement_statement_rendered_again_from_the_individual_html_is_refus
     # As short as a real HTML month's first page, which is all it holds.
     same = ["1 Example Plaza, Suite 100, Example City, ZZ 00000 help@robinhood.com",
             "01/01/2010 to 01/31/2010 # # Individual Account #:00000 1 Invented Street"]
-    assert len(" ".join(same)) >= robinhood_docs.MIN_TEXT_FOR_DIGEST
+    assert len("".join("".join(same).split())) >= robinhood_docs.MIN_TEXT_FOR_DIGEST
     stamp = iter(range(1, 10))
 
     def press(page, title, out_path, year=""):
         _text_pdf(Path(out_path), same)
         with open(out_path, "ab") as f:
             f.write(b"%% render %d\n" % next(stamp))
-        return True
+        return site.RENDERED
     monkeypatch.setattr(site, "download_named", press)
     page = _Tab(headings={RETIREMENT: ["Retirement"]})
     individual = _statement()
@@ -564,7 +564,7 @@ def test_a_retirement_statement_rendered_again_from_the_individual_html_is_refus
     Path(saved["pdf_path"]).unlink()
     rec = _take(app, page, _retirement())
     assert rec["state"] == State.NEEDS_MANUAL_REVIEW.value and rec["pdf_path"] == ""
-    assert "same file as the individual statement" in rec["notes"]
+    assert "The same statement as the individual one" in rec["notes"]
     assert app.stats["wrong_document"] == 1
 
 
@@ -624,6 +624,95 @@ def test_a_retirement_statement_of_its_own_is_saved_beside_the_individual_one(
     assert app.stats["wrong_document"] == 0
     assert _statements_saved(app) == ["2010-01-31 Robinhood Monthly Statement.pdf",
                                       "2010-01-31 Robinhood Retirement Monthly Statement.pdf"]
+
+
+def _renders(monkeypatch, lines):
+    """Each press saves a fresh render of an HTML month printing `lines`,
+    stamped with its own time as a print is."""
+    stamp = iter(range(1, 10))
+
+    def press(page, title, out_path, year=""):
+        _text_pdf(Path(out_path), lines)
+        with open(out_path, "ab") as f:
+            f.write(b"%% render %d\n" % next(stamp))
+        return site.RENDERED
+    monkeypatch.setattr(site, "download_named", press)
+
+
+def test_an_html_month_too_short_to_digest_goes_to_review_on_an_account_page(tmp_path, monkeypatch):
+    """With no text digest the other-account check has nothing to compare,
+    so a rendered month that short is not taken as the account page's own.
+    The record keeps no path and the next run asks for it again."""
+    app = _app(tmp_path)
+    _renders(monkeypatch, ["Robinhood", "1"])
+    page = _Tab(headings={RETIREMENT: ["Retirement"]})
+    doc = _retirement()
+    rec = _take(app, page, doc)
+    assert rec["state"] == State.NEEDS_MANUAL_REVIEW.value and rec["pdf_path"] == ""
+    assert "too little text" in rec["notes"]
+    assert not app._already_done(doc)
+    assert _statements_saved(app) == []
+    assert [p.name for p in app.paths.manual_review.glob("*.pdf")] == [
+        "2010-01-31 Robinhood Retirement Monthly Statement.pdf"]
+
+
+def test_an_html_month_too_short_to_digest_is_kept_on_the_individual_page(tmp_path, monkeypatch):
+    app = _app(tmp_path)
+    _renders(monkeypatch, ["Robinhood", "1"])
+    page = _Tab(headings={RETIREMENT: ["Retirement"]})
+    rec = _take(app, page, _statement())
+    assert rec["state"] == State.COMPLETED.value and rec["downloaded_ok"], rec.get("notes")
+
+
+def test_the_text_digest_ignores_how_the_words_are_spaced(tmp_path, monkeypatch):
+    """pypdf may space words differently after an update. The digest reads
+    the text with every whitespace character taken out."""
+    words = "Robinhood Securities LLC 01/01/2026 to 01/31/2026 Individual Account #:00000 " * 3
+    texts = iter([words, words.replace(" ", "  ").replace("LLC ", "LLC\n"), words.replace("Securities ", "Securities")])
+    monkeypatch.setattr(robinhood_docs.receipt_pdf, "pdf_text", lambda path: next(texts))
+    first = robinhood_docs._text_sha256(tmp_path / "a.pdf")
+    assert first and first == robinhood_docs._text_sha256(tmp_path / "b.pdf") == robinhood_docs._text_sha256(tmp_path / "c.pdf")
+
+
+def test_a_text_digest_saved_in_the_old_form_is_read_again_from_its_file(tmp_path, monkeypatch):
+    """A record saved before the digest dropped every whitespace character
+    holds a digest of the old form. While its file is there the file is
+    what is compared."""
+    app = _app(tmp_path)
+    same = ["1 Example Plaza, Suite 100, Example City, ZZ 00000 help@robinhood.com",
+            "01/01/2010 to 01/31/2010 # # Individual Account #:00000 1 Invented Street"]
+    _renders(monkeypatch, same)
+    page = _Tab(headings={RETIREMENT: ["Retirement"]})
+    individual = _statement()
+    saved = _take(app, page, individual)
+    app.progress.data[individual.key]["text_sha256"] = "0" * 64
+    rec = _take(app, page, _retirement())
+    assert rec["state"] == State.NEEDS_MANUAL_REVIEW.value, rec.get("notes")
+    assert "The same statement as the individual one" in rec["notes"]
+    assert saved["downloaded_ok"]
+
+
+def test_a_text_digest_saved_in_the_old_form_still_matches_once_its_file_is_gone(tmp_path, monkeypatch):
+    """0.51.0 and 0.52.0 kept the digest of the text with each run of
+    whitespace made one space. Once the person has deleted that file, the
+    stored digest is compared with that form of the new statement's text."""
+    import hashlib
+    app = _app(tmp_path)
+    same = ["1 Example Plaza, Suite 100, Example City, ZZ 00000 help@robinhood.com",
+            "01/01/2010 to 01/31/2010 # # Individual Account #:00000 1 Invented Street"]
+    _renders(monkeypatch, same)
+    page = _Tab(headings={RETIREMENT: ["Retirement"]})
+    individual = _statement()
+    saved = _take(app, page, individual)
+    text = robinhood_docs.receipt_pdf.pdf_text(Path(saved["pdf_path"]))
+    old_form = hashlib.sha256(" ".join(text.split()).encode("utf-8")).hexdigest()
+    assert old_form != saved["text_sha256"]
+    app.progress.data[individual.key]["text_sha256"] = old_form
+    Path(saved["pdf_path"]).unlink()
+    rec = _take(app, page, _retirement())
+    assert rec["state"] == State.NEEDS_MANUAL_REVIEW.value and rec["pdf_path"] == "", rec.get("notes")
+    assert "The same statement as the individual one" in rec["notes"]
+    assert app.stats["wrong_document"] == 1
 
 
 if __name__ == "__main__":

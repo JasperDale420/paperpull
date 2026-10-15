@@ -1154,9 +1154,11 @@ def challenge_text(page) -> Optional[str]:
     return None
 
 
-def download_named(page, title: str, out_path, year: str = "") -> bool:
+def download_named(page, title: str, out_path, year: str = ""):
     """Click the download control for the document whose title matches, and
-    capture the resulting download event to out_path.
+    capture the resulting download event to out_path. Answers False when
+    nothing was saved, RENDERED for a statement rendered from HTML, and True
+    otherwise.
 
     `year` is the tax year discovery read beside a form whose title has
     none. Forms of several years can share one title, so only a control the
@@ -1212,8 +1214,9 @@ def is_document_store_url(url: str) -> bool:
     return got.hostname.lower().rstrip(".") in DOCUMENT_STORE_HOSTS
 
 
-def _click_and_capture(page, control, title: str, out_path, label: str = "") -> bool:
-    """Click a download control and take the PDF however Robinhood serves it."""
+def _click_and_capture(page, control, title: str, out_path, label: str = ""):
+    """Click a download control and take the PDF however Robinhood serves it.
+    Answers as keep_fetched does."""
     import json as _json
     import time as _time
     from paperpull_core.receipt_pdf import save_download
@@ -1337,6 +1340,9 @@ def _click_and_capture(page, control, title: str, out_path, label: str = "") -> 
 # month and year, and written beside the target first so a half-made file is
 # never left in Statements.
 HTML_CONTROL_RE = re.compile(r"\bdownload\s+html\s*$", re.I)
+# What keep_fetched, and so download_named, answers for a statement it
+# rendered from HTML rather than took as a PDF. True to an "if", like True.
+RENDERED = "rendered"
 _MONTH_YEAR_IN_TITLE_RE = re.compile(
     r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|"
     r"Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+((?:19|20)\d{2})\b", re.I)
@@ -1429,17 +1435,19 @@ def names_month(text: str, month_word: str, year: str) -> bool:
     01/31/2026" or "Period: January 1, 2026 - January 31, 2026", or the date
     after "period ending" or "statement ended". A range printed bare, as an
     HTML month prints its period, counts when it is that whole month, the
-    1st to the last day, with no label word before it on its line, and every
-    such range on the page is that month. A date on its own, or a range under
-    another label, is not read, since a page of February can print trade
-    dates or an opening balance of January, and the day it was made."""
+    1st to the last day, with no label word before it on its line. Every
+    period end and every such range on the page must be that month, so a
+    page of February that also prints "Previous statement period 01/01/2026
+    to 01/31/2026" names no month at all, January or February. A date on its
+    own, or a range under another label, is not read, since a page of
+    February can print trade dates or an opening balance of January, and the
+    day it was made."""
     number = _MONTH_NUMBERS.get((month_word or "")[:3].lower())
     if not number:
         return False
-    for m in _PERIOD_END_RE.finditer(text or ""):
-        if _month_and_year(m.group(1) or m.group(2)) == (number, year):
-            return True
-    return _whole_months(text) == {(number, year)}
+    ends = {_month_and_year(m.group(1) or m.group(2)) for m in _PERIOD_END_RE.finditer(text or "")}
+    ends.discard(None)
+    return (ends | _whole_months(text)) == {(number, year)}
 
 
 def _first_page_text(path) -> str:
@@ -1463,11 +1471,13 @@ def rendered_names_statement(path, title: str) -> bool:
     return names_month(_first_page_text(Path(path)), m.group(1), m.group(2))
 
 
-def keep_fetched(page, data: bytes, title: str, out_path, label: str = "", render=None, check=None) -> bool:
+def keep_fetched(page, data: bytes, title: str, out_path, label: str = "", render=None, check=None):
     """Keep what the pre-signed link answered: a PDF as it is, or, behind a
     control labelled "Download HTML", the HTML statement rendered to one.
-    Anything else is refused and nothing is left behind. `render` and
-    `check` stand in for the core's print path and the text check in tests."""
+    Anything else is refused and nothing is left behind. Answers True for a
+    PDF, RENDERED for a rendered statement, False when nothing was kept.
+    `render` and `check` stand in for the core's print path and the text
+    check in tests."""
     out_path = Path(out_path)
     if data and b"%PDF-" in data[:1024]:
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1500,7 +1510,7 @@ def keep_fetched(page, data: bytes, title: str, out_path, label: str = "", rende
             return False
         tmp.replace(out_path)
         log.info("rendered the HTML statement for %r to PDF", title)
-        return True
+        return RENDERED
     finally:
         try:
             if tmp.exists():

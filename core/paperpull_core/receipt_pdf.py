@@ -12,6 +12,7 @@ Validation uses pypdf locally.
 from __future__ import annotations
 
 import base64
+import html as _html
 import logging
 import re
 from pathlib import Path
@@ -343,14 +344,46 @@ _ACTIVE_ELEMENTS = {"script", "iframe", "frameset", "object", "applet", "form"}
 # Looser than the strip: no closing ">" is needed, so an unclosed "<script"
 # left at the end of the page is still seen.
 _ACTIVE_LEFT_RE = re.compile(r"<\s*+/?\s*+(%s)\b" % _ACTIVE_NAMES, re.I)
-# A whole tag, a quoted value read as one piece, so a ">" inside quotes does
-# not end it. Possessive, and a tag with no ">" runs to the end of the page,
-# so the scan stays linear on a page of broken tags.
-_TAG_RE = re.compile(r"<[a-zA-Z/!](?:\"[^\"]*+\"|'[^']*+'|[^'\">]++)*+>?")
-# Inside one tag, quoted values first, so a handler is found only where it
-# stands as an attribute: after a space, a slash or a closing quote.
-_IN_TAG_RE = re.compile(r"(\"[^\"]*+\"|'[^']*+')|(?<=[\s/\"'])on[a-z]+\s*=\s*(?:\"[^\"]*+\"|'[^']*+'|[^\s>]*+)",
-                        re.I)
+# HTML's own whitespace, narrower than Python's \s. To a browser a no-break
+# space is part of a name or a value, never a gap between them.
+_W = "\t\n\f\r "
+# One attribute as a browser's tokenizer reads it, a name, which may start
+# with "=" and may hold quotes, then an optional "=" and value. A quote opens
+# a value only right after "=", and one with no partner runs to the end of
+# the page. A bare value runs to whitespace or ">".
+_NAME = r"[^%s/>][^%s/>=]*+" % (_W, _W)
+_VALUE = r"(?:\"[^\"]*+\"?|'[^']*+'?|[^%s>]*+)" % _W
+_EQUALS = r"[%s]*+=[%s]*+" % (_W, _W)
+# A whole tag, or a comment. A comment runs to its own "-->" (or "--!>", or
+# ends at once as "<!-->"), and a quote inside it opens nothing, so a later
+# tag is never read as part of it. "<!", "<?" and "</" with no name end at
+# the first ">", as a browser reads them. Possessive, and a tag with no ">"
+# runs to the end of the page, so the scan stays linear on a page of broken
+# tags.
+_TAG_RE = re.compile(
+    r"<!--(?:-?>|(?:[^-]++|-(?!-!?>))*+(?:--!?>)?)"
+    r"|(</?[a-zA-Z][^%s/>]*+)((?:[%s/]++|%s(?:%s%s)?)*+)(>?)"
+    r"|<(?:[!?]|/(?![a-zA-Z]))[^>]*+>?" % (_W, _W, _NAME, _EQUALS, _VALUE))
+# Inside one tag, after its name, each gap, and each attribute's name and
+# value, in the same reading as _TAG_RE.
+_IN_TAG_RE = re.compile(r"([%s/]++)|(%s)(?:(%s)(%s))?" % (_W, _NAME, _EQUALS, _VALUE))
+# Elements whose body a browser reads as text up to the element's own end
+# tag, never as tags or comments, so a "<!--" or a quote there opens
+# nothing. Script and iframe go whole in _drop_active. Inside svg or math
+# these names hold markup instead, and the page does not say which reading
+# the browser takes, so the body is made text in either one
+# (_raw_text_body).
+_RAW_TEXT_END_RES = {
+    name: re.compile(r"</%s(?=[%s/>])" % (name, _W), re.I | re.A)
+    for name in ("style", "title", "textarea", "xmp", "noembed", "noframes")}
+_TAG_OPENER_RE = re.compile(r"<(?=[a-zA-Z!/?])")
+_COMMENT_CLOSE_RE = re.compile(r"--!?>")
+_HANDLER_RE = re.compile(r"on[a-z]+", re.I)
+# A browser reads "src=x/onerror=y" as one bare value. The part from the
+# handler's name on is taken out of it all the same.
+_IN_VALUE_RE = re.compile(r"(?<=[/\"'])on[a-z]+[%s]*+=.*" % _W, re.I | re.S)
+_URL_ATTRS = {"href", "src", "action", "formaction", "xlink:href"}
+_C0_AND_SPACE = "".join(chr(c) for c in range(33))
 # The whitespace runs here and in the two tag patterns above are possessive
 # (Python 3.11 and later), so a run of spaces with nothing after it is read
 # once, not again for every way of splitting it. "<" and 20,000 spaces took
@@ -388,13 +421,102 @@ class UnsafeHtml(ValueError):
     """The HTML still held an active tag after every strip, and is not drawn."""
 
 
-def _strip_handlers(tag: str) -> str:
-    return _IN_TAG_RE.sub(lambda m: m.group(1) or "", tag)
+def _script_url(value: str) -> bool:
+    """Whether an attribute value is a javascript: URL as a browser reads
+    it, with character references decoded, tabs and newlines anywhere
+    dropped, and leading spaces and control characters stripped."""
+    if value[:1] in ("'", '"'):
+        value = value[1:-1] if len(value) > 1 and value[-1] == value[0] else value[1:]
+    for v in (value, _html.unescape(value)):
+        v = re.sub(r"[\t\n\r]", "", v).lstrip(_C0_AND_SPACE)
+        if v[:11].lower() == "javascript:":
+            return True
+    return False
+
+
+def _strip_attribute(m) -> str:
+    if m.group(1):
+        return m.group(1)
+    name, equals, value = m.group(2), m.group(3) or "", m.group(4) or ""
+    if _HANDLER_RE.fullmatch(name):
+        return ""
+    if equals and name.lower() in _URL_ATTRS and _script_url(value):
+        q = value[:1] if value[:1] in ("'", '"') else ""
+        return f"{name}{equals}{q}#{q}"
+    if value[:1] not in ("'", '"'):
+        value = _IN_VALUE_RE.sub("", value)
+    return name + equals + value
+
+
+def _strip_tag(m) -> str:
+    """One token of _TAG_RE with its handlers taken out and its javascript:
+    URLs made "#". A comment, or a "<!" or "<?" token, is left as it is."""
+    if m.group(1) is None:
+        return m.group(0)
+    return m.group(1) + _IN_TAG_RE.sub(_strip_attribute, m.group(2)) + m.group(3)
+
+
+def _raw_text_body(body: str) -> str:
+    """The body of a raw-text element with each "<" that could open a tag
+    or a comment written "&lt;", so no reading finds a tag in it. A comment
+    that closes inside the body is kept as written, since a style may hold
+    its rules in one, and it is text or a comment in either reading. Once no
+    comment closes after a point, none is looked for again, so the body is
+    read once. A title or textarea shows the same characters as before."""
+    out, pos, closes = [], 0, True
+    while True:
+        m = _TAG_OPENER_RE.search(body, pos)
+        if m is None:
+            out.append(body[pos:])
+            return "".join(out)
+        start = m.start()
+        out.append(body[pos:start])
+        end = None
+        if body.startswith("<!--", start):
+            rest = start + 4
+            if body.startswith(">", rest):
+                end = rest + 1
+            elif body.startswith("->", rest):
+                end = rest + 2
+            elif closes:
+                close = _COMMENT_CLOSE_RE.search(body, rest)
+                closes = close is not None
+                end = close.end() if close else None
+        if end is None:
+            out.append("&lt;")
+            pos = start + 1
+        else:
+            out.append(body[start:end])
+            pos = end
+
+
+def _strip_tags(html: str) -> str:
+    """Each token of _TAG_RE through _strip_tag, and the body of a raw-text
+    element (_RAW_TEXT_END_RES) kept as text up to its own end tag, or to
+    the end of the page when it has none (_raw_text_body). A body is passed
+    over once and the scan goes on from its end tag, so the page is read
+    once."""
+    out, pos = [], 0
+    while True:
+        m = _TAG_RE.search(html, pos)
+        if m is None:
+            out.append(html[pos:])
+            return "".join(out)
+        out.append(html[pos:m.start()])
+        out.append(_strip_tag(m))
+        pos = m.end()
+        name = (m.group(1) or "")[1:]
+        end_re = _RAW_TEXT_END_RES.get(name.lower()) if m.group(3) and name.isascii() else None
+        if end_re is not None:
+            end = end_re.search(html, pos)
+            stop = end.start() if end else len(html)
+            out.append(_raw_text_body(html[pos:stop]))
+            pos = stop
 
 
 def _strip_once(html: str) -> str:
     out = _drop_active(html)
-    out = _TAG_RE.sub(lambda m: _strip_handlers(m.group(0)), out)
+    out = _strip_tags(out)
     return _JS_URL_RE.sub(r"\1=\2#", out)
 
 
@@ -404,6 +526,13 @@ def inert_html(html: str, base: str) -> str:
     and meta tags, the supplied base, inline event handlers and javascript:
     URLs. Styles and images stay, since they are what a printed statement
     needs.
+
+    Each tag is read as a browser's tokenizer reads it. A comment runs to its
+    own "-->", a quote opens a value only right after "=", and a URL is
+    tested with its character references decoded, so "&#106avascript:" is
+    a javascript: URL here as it is in the browser. The body of a style,
+    title, textarea, xmp, noembed or noframes element is text up to its own
+    end tag, as the browser reads it, and a "<!--" there hides nothing.
 
     Taking a tag out can join the text on either side of it into a new one,
     so "<li<link>nk ...>" becomes a link tag once the inner one is gone. The

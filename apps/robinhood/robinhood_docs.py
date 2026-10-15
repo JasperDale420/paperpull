@@ -231,20 +231,33 @@ def _clear(path) -> None:
 
 # Fewer characters than this say too little to tell one account's statement
 # from another's, a page number or a logo's words, and give no text digest.
-# The digest reads every page, and a real HTML month's first page alone is
-# some 170 characters, its address, period and masked account.
+# The digest reads every page, and a real HTML month's first page alone,
+# its address, period and masked account, is some 170 characters with its
+# spaces and still more than this without them.
 MIN_TEXT_FOR_DIGEST = 120
 
 
 def _text_sha256(path) -> str:
-    """The SHA-256 of the PDF's text, its whitespace run together, or ""
-    when it holds less than MIN_TEXT_FOR_DIGEST characters of it. Two prints
-    of one HTML statement differ in their bytes and not in this."""
+    """The SHA-256 of the PDF's text with every whitespace character taken
+    out, or "" when it holds less than MIN_TEXT_FOR_DIGEST characters of it.
+    Two prints of one HTML statement differ in their bytes and not in this,
+    and neither does a pypdf that spaces the words differently."""
+    return _text_sha256s(path)[0]
+
+
+def _text_sha256s(path) -> tuple:
+    """The text digest of _text_sha256, and the one 0.51.0 and 0.52.0 kept,
+    of the text with each run of whitespace made one space, from one read
+    of the text. Either is "" under MIN_TEXT_FOR_DIGEST characters, counted
+    as that version counted them. A record of those versions whose file is
+    gone still holds the older one."""
     import hashlib
-    text = " ".join(receipt_pdf.pdf_text(Path(path)).split())
-    if len(text) < MIN_TEXT_FOR_DIGEST:
-        return ""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    words = receipt_pdf.pdf_text(Path(path)).split()
+    digests = []
+    for text in ("".join(words), " ".join(words)):
+        digests.append(hashlib.sha256(text.encode("utf-8")).hexdigest()
+                       if len(text) >= MIN_TEXT_FOR_DIGEST else "")
+    return digests[0], digests[1]
 
 
 def _sha256(path) -> str:
@@ -1193,8 +1206,20 @@ class App:
         # Both digests are kept with every statement saved, so this still
         # holds once the person has deleted a file they imported elsewhere.
         if doc.category == doc_types.STATEMENT:
-            digest, text_digest = _sha256(out_path), _text_sha256(out_path)
-            twin = (self._other_accounts_statement(doc, digest, text_digest)
+            digest = _sha256(out_path)
+            text_digest, spaced_digest = _text_sha256s(out_path)
+            # A month rendered from HTML is a new file each run, so only its
+            # text can tell it from another account's statement. One with too
+            # little text for a digest is not taken as an account page's own.
+            if doc.account and saved == site.RENDERED and not text_digest:
+                self._to_review_unrecorded(
+                    doc, out_path, target,
+                    "Rendered from HTML with too little text to tell it from another "
+                    f"account's statement, so it was not taken as the {doc.account.lower()} one. "
+                    "Moved to Manual Review, and not recorded as done.",
+                    "Too little text to check", "the rendered statement has too little text")
+                return
+            twin = (self._other_accounts_statement(doc, digest, text_digest, spaced_digest)
                     if doc.account else None)
             if twin is not None:
                 self._refuse_another_accounts(doc, out_path, target, twin)
@@ -1343,13 +1368,22 @@ class App:
         account page before the account was in its key says it by the page."""
         return rec.get("account") or site.account_for(rec.get("source_url", ""))
 
-    def _other_accounts_statement(self, doc: Document, digest: str,
-                                  text_digest: str = "") -> Optional[dict]:
+    def _other_accounts_statement(self, doc: Document, digest: str, text_digest: str = "",
+                                  spaced_digest: str = "") -> Optional[dict]:
         """The saved statement of another account, the individual one among
         them, of the same date as `doc` and with these very bytes or this
         very text, or None. A digest a record lacks is read from its file
-        while the file is there."""
-        if not digest and not text_digest:
+        while the file is there, and the text digest is read from the file
+        whenever it is there, since one saved by 0.51.0 or 0.52.0 is of the
+        older form (_text_sha256s). A record whose file is gone has its
+        stored text digest compared with both forms of this statement's,
+        `text_digest` and `spaced_digest`.
+
+        Reading the text again is one pypdf read of each same-date statement
+        of another account, for every account-page statement taken. Those
+        are few, so the cost is left as it is."""
+        texts = {t for t in (text_digest, spaced_digest) if t}
+        if not digest and not texts:
             return None
         for key, rec in (self.progress.data or {}).items():
             if (not isinstance(rec, dict) or key == doc.key
@@ -1361,19 +1395,35 @@ class App:
             theirs = rec.get("pdf_sha256") or ""
             their_text = rec.get("text_sha256") or ""
             own = (rec.get("pdf_path") or "").strip()
-            if (not theirs or not their_text) and own and Path(own).is_file():
+            if own and Path(own).is_file():
                 theirs = theirs or _sha256(own)
-                their_text = their_text or _text_sha256(own)
-            if (digest and theirs == digest) or (text_digest and their_text == text_digest):
+                their_text = _text_sha256(own) or their_text
+            if (digest and theirs == digest) or (their_text and their_text in texts):
                 return rec
         return None
 
     def _refuse_another_accounts(self, doc: Document, path: Path, target: Path,
                                  other: dict) -> None:
         """A statement of an account page that is another account's saved
-        statement goes to Manual Review. The record keeps no path, so the
-        copy there never counts as done, and the next run asks for it
-        again."""
+        statement goes to Manual Review, and is not recorded as done."""
+        whose = (self._account_of(other) or "individual").lower()
+        said = (f"The same statement as the {whose} one saved for {doc.date or 'no date'}, "
+                f"so it is that statement and not a {doc.account.lower()} one. Moved to "
+                "Manual Review, and not recorded as done.")
+        self._to_review_unrecorded(doc, path, target, said, "Another account's statement",
+                                   "the file is another account statement")
+        self.stats["wrong_document"] = self.stats.get("wrong_document", 0) + 1
+
+    def _to_review_unrecorded(self, doc: Document, path: Path, target: Path,
+                              said: str, row: str, failure: str) -> None:
+        """Move a saved statement to Manual Review with the note `said`. The
+        record keeps no path, so the copy there never counts as done, and
+        the next run asks for it again.
+
+        A statement refused on every run, a rendered month too short to
+        check among them, leaves one more copy in Manual Review each run,
+        named apart by unique_path. It is left so, since a copy kept as done
+        could be another account's statement."""
         quarantine = unique_path(self.paths.manual_review, target.name,
                                  self.config["max_path_length"])
         try:
@@ -1382,19 +1432,14 @@ class App:
             log.info("could not move %s to manual review: %s", target.name, e)
             _clear(path)
             quarantine = None
-        whose = (self._account_of(other) or "individual").lower()
-        said = (f"The same file as the {whose} statement saved for {doc.date or 'no date'}, "
-                f"so it is that statement and not a {doc.account.lower()} one. Moved to "
-                "Manual Review, and not recorded as done.")
         doc.notes = (doc.notes + "; " if doc.notes else "") + said
         doc.pdf_path = str(quarantine) if quarantine else ""
         doc.pdf_filename = quarantine.name if quarantine else ""
-        self._write_row(doc, "Another account's statement", "Needs Manual Review")
+        self._write_row(doc, row, "Needs Manual Review")
         doc.pdf_path = doc.pdf_filename = ""
         self._record(doc, State.NEEDS_MANUAL_REVIEW)
-        self.write_failure('check the saved statement', 'the file is another account statement')
+        self.write_failure('check the saved statement', failure)
         self.stats["manual_review"] += 1
-        self.stats["wrong_document"] = self.stats.get("wrong_document", 0) + 1
         print("  !! " + said)
 
     # -- records -----------------------------------------------------------
