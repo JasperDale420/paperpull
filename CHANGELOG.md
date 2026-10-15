@@ -7,6 +7,18 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Changed
+- **Wells Fargo is confirmed for credit card statements (#27).** A tester
+  ran the app from 0.52.0 on a real account and it downloaded the credit
+  card statements, the first account it has met since it was built without
+  one. So Wells Fargo moves from waiting for a tester to supported, in the
+  provider tables, the panel's list, its README and its status lines, and
+  sixty-eight providers are supported and six wait for a tester. Checking,
+  savings, mortgage and tax documents have not been run on a real account
+  yet, and the tables and the panel say so.
+
 ## [0.52.0] - 2026-10-14
 
 Six providers arrive, First Horizon Bank checking statements, Chase

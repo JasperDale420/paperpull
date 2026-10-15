@@ -1,17 +1,23 @@
 # Wells Fargo statement downloader
 
-**Not yet tested against a real account.** This app was built without
-a Wells Fargo checking, savings, credit card, mortgage or loan account, so that someone who holds one can test it without
-writing code. It runs, its guards are tested, and every guess about
-wellsfargo.com is marked in `wellsfargo_site.py`. What it needs is a survey from a
-signed-in account, which the Diagnose button produces and which contains
-no personal data. The conversation is
+**Working on a tester's credit card account.** This app was built
+without a Wells Fargo account, so that someone who holds one could test it
+without writing code. In v0.52.0 a tester ran it on a real account and it
+saved their credit card statements. Checking, savings, mortgage and loan
+statements and tax documents have not been run on a real account yet, and
+every guess about wellsfargo.com is still marked in `wellsfargo_site.py`.
+For those, what it needs is a survey from a signed-in account, which the
+Diagnose button produces and which contains no personal data. The
+conversation is
 [issue #27](https://github.com/rheeloaded/paperpull/issues/27).
 
 Downloads your Wells Fargo **statements and tax documents** as PDFs. Read-only,
 delete-safe, part of [PaperPull](../../README.md).
 
 ## Help test it, no programming needed
+
+Credit card statements already download. These steps are for a checking,
+savings, mortgage or loan account, or for a tax document.
 
 1. Install PaperPull from the [latest release](https://github.com/rheeloaded/paperpull/releases/latest)
    and open the control panel.

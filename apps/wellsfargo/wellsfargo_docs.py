@@ -1,4 +1,4 @@
-"""Wells Fargo statement and tax document downloader (local, supervised). UNVERIFIED, see wellsfargo_site.py.
+"""Wells Fargo statement and tax document downloader (local, supervised). CONFIRMED for credit card statements on a tester's account, see wellsfargo_site.py.
 
 This app was written without a Wells Fargo account so that someone who holds one
 can test it without writing code. The orchestrator below is the same one

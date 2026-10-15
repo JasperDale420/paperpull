@@ -2,11 +2,14 @@
 
 When Wells Fargo changes its site, repair this file only.
 
-STATUS: UNVERIFIED. This app was written without a Wells Fargo account,
-from what is publicly known about Wells Fargo Online, so that someone who
-holds an account can test it without writing code. Nothing below has run
-against the live signed-in site. On a first run it is deliberately
-cautious:
+STATUS: CONFIRMED for credit card statements on a tester's account (#27).
+Written without a Wells Fargo account, from what is publicly known about
+Wells Fargo Online, so that someone who holds an account could test it
+without writing code. In v0.52.0 a tester's run saved the credit card
+statements on a real account. Checking, savings, mortgage and loan
+statements and tax documents are UNVERIFIED, since no run has met them,
+and no survey has come back, so the guesses below are still marked GUESS.
+On a first run it is deliberately cautious.
 
   * --login opens a real Edge or Chrome, since wellsfargo.com runs bot
     protection that walls the Playwright build of Chromium.

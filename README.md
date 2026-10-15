@@ -56,11 +56,10 @@ signed installer and automatic updates. Or download it free from the
 [Releases page](https://github.com/rheeloaded/paperpull/releases). Nothing
 is held back from the free build. See [Support](#support).
 
-Sixty-seven providers are supported today, all built on the same pattern.
-Seven more, Wells Fargo, SBA, Verizon Mobile,
+Sixty-eight providers are supported today, all built on the same pattern.
+Six more, SBA, Verizon Mobile,
 Meijer, American Family, Stripe and FedEx, are built and waiting for someone with an account to
-test them ([#27](https://github.com/rheeloaded/paperpull/issues/27),
-[#28](https://github.com/rheeloaded/paperpull/issues/28),
+test them ([#28](https://github.com/rheeloaded/paperpull/issues/28),
 [#31](https://github.com/rheeloaded/paperpull/issues/31),
 [#42](https://github.com/rheeloaded/paperpull/issues/42),
 [#45](https://github.com/rheeloaded/paperpull/issues/45),
@@ -141,7 +140,7 @@ test them ([#27](https://github.com/rheeloaded/paperpull/issues/27),
 | [`verizon`](apps/verizon) | Verizon (Fios) | Bill statements | Real Edge (bot block); dropdown + CDP download |
 | [`verizonmobile`](apps/verizonmobile) | Verizon Mobile (wireless) | Monthly bills | **Untested, built without an account. Have one? [Help test it](apps/verizonmobile/README.md#help-test-it-no-programming-needed)** |
 | [`walmart`](apps/walmart) | Walmart | Receipts | Hardened against bot detection |
-| [`wellsfargo`](apps/wellsfargo) | Wells Fargo | Account statements, tax documents | **Untested, built without an account. Have one? [Help test it](apps/wellsfargo/README.md#help-test-it-no-programming-needed)** |
+| [`wellsfargo`](apps/wellsfargo) | Wells Fargo | Account statements, tax documents | **Confirmed by [@appchamp](https://github.com/appchamp)** on a real account's credit card statements ([#27](https://github.com/rheeloaded/paperpull/issues/27)). Checking, savings, mortgage and tax documents are untested. Have one? [Help test it](apps/wellsfargo/README.md#help-test-it-no-programming-needed) |
 | [`wealthfront`](apps/wealthfront) | Wealthfront | Statements, tax docs | |
 
 > ⚠️ **Read this first:** these tools drive real, signed-in financial accounts.
@@ -633,8 +632,8 @@ Every contribution keeps the **read-only, local, no-credentials** design, see
 
 ## Status & roadmap
 
-- ✅ All **seventy-four** apps pass their tests, the sixty-seven that are
-  supported and the seven still waiting for a tester, 24,174 of them
+- ✅ All **seventy-four** apps pass their tests, the sixty-eight that are
+  supported and the six still waiting for a tester, 24,174 of them
   across the repo. Most are in regular use by the author. The rest were built or
   confirmed by people who hold those accounts, named in the table above
   and in [Thanks](#thanks).
@@ -708,7 +707,9 @@ found a bug and diagnosed it to the line.
   Bank and Charles Schwab apps, and a long run of panel fixes.
 - [@riordan](https://github.com/riordan), the Anthem BCBS app, the first
   health insurer.
-- [@appchamp](https://github.com/appchamp), the PG&E app.
+- [@appchamp](https://github.com/appchamp), the PG&E app, and the first
+  run of the Wells Fargo app on a real account, which saved their credit
+  card statements.
 - [@tylerverry](https://github.com/tylerverry), the Vanguard app, built
   and run against five accounts back to 2020, the Nelnet app, run against
   a student loan account back to 2019, and the Interactive Brokers app,
