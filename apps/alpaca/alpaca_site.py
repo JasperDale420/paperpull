@@ -80,6 +80,10 @@ KNOWN CEILINGS (ponytail: left until a live run shows otherwise)
   * An account older than the page's window, with no start date of the
     run's own inside it, stops the list (reaches_back). Whether the page's
     Filters reach further back has not been seen.
+  * An application reissued inside the window, on an account with nothing
+    listed before the reissue, passes for the account's first application,
+    so documents older than the window would go unnoticed. No list can tell
+    the two apart, and a reissue has not been seen.
   * The table's markup beyond what the survey saw (one table, rows in one
     tbody, three cells) is assumed, and anything else stops the list.
 """
@@ -1301,9 +1305,8 @@ def _rawdocs(items: List[Item]) -> List[RawDoc]:
 def collect_download_docs(page, run: Optional[Run] = None) -> List[RawDoc]:
     """Every statement and trade confirmation the Live account's list holds,
     once its window is whole (window_whole), it reaches back far enough
-    (reaches_back) and every row the
-    page draws has been checked against it. Raises
-    ListStopped, SessionExpired, NotLive or DeadlineReached."""
+    (reaches_back) and every row the page draws has been checked against
+    it. Raises ListStopped, SessionExpired, NotLive or DeadlineReached."""
     run = run or Run()
     opened = _open(page, run)
     try:
