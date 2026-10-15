@@ -626,10 +626,6 @@ def test_a_retirement_statement_of_its_own_is_saved_beside_the_individual_one(
                                       "2010-01-31 Robinhood Retirement Monthly Statement.pdf"]
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 def _renders(monkeypatch, lines):
     """Each press saves a fresh render of an HTML month printing `lines`,
     stamped with its own time as a print is."""
@@ -694,3 +690,30 @@ def test_a_text_digest_saved_in_the_old_form_is_read_again_from_its_file(tmp_pat
     assert rec["state"] == State.NEEDS_MANUAL_REVIEW.value, rec.get("notes")
     assert "The same statement as the individual one" in rec["notes"]
     assert saved["downloaded_ok"]
+
+
+def test_a_text_digest_saved_in_the_old_form_still_matches_once_its_file_is_gone(tmp_path, monkeypatch):
+    """0.51.0 and 0.52.0 kept the digest of the text with each run of
+    whitespace made one space. Once the person has deleted that file, the
+    stored digest is compared with that form of the new statement's text."""
+    import hashlib
+    app = _app(tmp_path)
+    same = ["1 Example Plaza, Suite 100, Example City, ZZ 00000 help@robinhood.com",
+            "01/01/2010 to 01/31/2010 # # Individual Account #:00000 1 Invented Street"]
+    _renders(monkeypatch, same)
+    page = _Tab(headings={RETIREMENT: ["Retirement"]})
+    individual = _statement()
+    saved = _take(app, page, individual)
+    text = robinhood_docs.receipt_pdf.pdf_text(Path(saved["pdf_path"]))
+    old_form = hashlib.sha256(" ".join(text.split()).encode("utf-8")).hexdigest()
+    assert old_form != saved["text_sha256"]
+    app.progress.data[individual.key]["text_sha256"] = old_form
+    Path(saved["pdf_path"]).unlink()
+    rec = _take(app, page, _retirement())
+    assert rec["state"] == State.NEEDS_MANUAL_REVIEW.value and rec["pdf_path"] == "", rec.get("notes")
+    assert "The same statement as the individual one" in rec["notes"]
+    assert app.stats["wrong_document"] == 1
+
+
+if __name__ == "__main__":
+    unittest.main()
