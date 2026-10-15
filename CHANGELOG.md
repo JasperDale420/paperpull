@@ -55,6 +55,14 @@ All notable changes to PaperPull are recorded here. Versioning follows
   statements download again. Discovery logs how many accounts it found and
   never their names, and a failed download is logged by its date and title.
   Thanks to @appchamp for the report.
+- **First Horizon Bank no longer misses an account panel the page draws a
+  little late.** Once every panel is read, the page now settles twice and
+  is read after each, and both reads must show the same panels. Before, the
+  page was read once, and any panel drawn after that read was missed and the
+  list was called whole. The same two reads run while a statement is looked
+  up, so an account panel drawn late there now stops the run instead of
+  sending the statement to review. A panel drawn more than 3 seconds after
+  the panels are walked is still not seen, as the app's known ceilings say.
 
 ## [0.52.0] - 2026-10-14
 

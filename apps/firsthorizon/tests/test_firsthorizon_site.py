@@ -667,6 +667,40 @@ def test_a_panel_drawn_after_the_panels_were_read_stops_the_list():
     assert bank.presses == [("panel", 0)]
 
 
+# The walk ends with two reads of the panels, each after SETTLE_MS, so a
+# panel drawn up to 3 s after the walk ends is seen. This fake bank answers
+# at once, so for one account open on load that is 4.5 s after load, and
+# for one pressed open, 6 s.
+@pytest.mark.parametrize("open_on_load,appear_at", [
+    (True, 3000), (True, 3500), (True, 4500), (False, 4000), (False, 5000), (False, 6000)])
+def test_a_panel_drawn_late_within_the_two_reads_stops_the_list(open_on_load, appear_at):
+    bank = Bank([acct1(open=open_on_load), acct2(appear_at=appear_at)])
+    with pytest.raises(site.ListStopped) as stop:
+        site.collect_download_docs(bank, run_on(bank))
+    assert [d.account_id for d in stop.value.docs] == [ACCT1, ACCT1], "what was read is kept"
+    assert NICK2 in site.private_words()
+
+
+@pytest.mark.parametrize("open_on_load,appear_at", [(True, 4750), (False, 6250)])
+def test_a_panel_drawn_after_the_two_reads_is_not_seen(open_on_load, appear_at):
+    """The ceiling in KNOWN CEILINGS. A panel drawn after the second read is
+    not seen, and the list read before it is returned."""
+    bank = Bank([acct1(open=open_on_load), acct2(appear_at=appear_at)])
+    got = site.collect_download_docs(bank, run_on(bank))
+    assert [d.account_id for d in got] == [ACCT1, ACCT1]
+
+
+def test_the_two_reads_wait_no_longer_than_twice_the_settle():
+    """With one account open on load the walk presses nothing, and after the
+    load is bound the page is waited on for the settled titles and then for
+    exactly the two reads, no more."""
+    bank = Bank([acct1(open=True)])
+    got = site.collect_download_docs(bank, run_on(bank))
+    assert [d.account_id for d in got] == [ACCT1, ACCT1]
+    assert bank.presses == []
+    assert bank.waits == [site.SETTLE_MS] * 3
+
+
 def test_a_panel_open_on_load_takes_the_product_of_its_settled_title():
     bank = Bank([acct1(open=True, title_at=1000), acct2()])
     got = site.collect_download_docs(bank, run_on(bank))
@@ -945,6 +979,15 @@ def test_an_account_drawn_late_is_never_called_gone(tmp_path):
     assert stop.value.reason == "the statements page stopped"
     assert bank.presses == [("panel", 0)]
     assert NICK3 in site.private_words()
+
+
+@pytest.mark.parametrize("appear_at", [3500, 5000])
+def test_an_account_drawn_late_within_the_two_reads_is_never_called_gone(tmp_path, appear_at):
+    bank = Bank([acct1(), acct3(appear_at=appear_at)])
+    with pytest.raises(site.pressing.Stop) as stop:
+        take(bank, tmp_path, acct=ACCT3, doc=DOC5)
+    assert stop.value.reason == "the statements page stopped"
+    assert bank.presses == [("panel", 0)]
 
 
 @pytest.mark.parametrize("how,reason", [("two", "more than one"), ("none", "no download"),
@@ -1665,6 +1708,23 @@ def test_a_wait_during_discovery_never_runs_past_the_deadline():
     with pytest.raises(site.DeadlineReached):
         site.collect_download_docs(bank, run)
     assert sum(bank.waits) <= 400.001, bank.waits
+    assert bank.presses == []
+
+
+def test_a_deadline_that_runs_out_in_the_second_read_cuts_its_wait():
+    """One account open on load waits three SETTLE_MS in all, the last for
+    the second read. With 3.5 s left that wait is cut to the 500 ms left,
+    and the run stops at the deadline with nothing pressed."""
+    clock = Clock()
+    bank = Bank([acct1(open=True)])
+    bank.clock = clock
+    run = run_on(bank, clock)
+    run.start()
+    clock.t += site.DEADLINE_S - 3.5      # 3.5 s left
+    with pytest.raises(site.DeadlineReached):
+        site.collect_download_docs(bank, run)
+    assert bank.waits[:2] == [site.SETTLE_MS] * 2, bank.waits
+    assert bank.waits[2:] == [pytest.approx(500)], bank.waits
     assert bank.presses == []
 
 
