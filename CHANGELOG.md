@@ -53,6 +53,14 @@ All notable changes to PaperPull are recorded here. Versioning follows
   statements and tax documents.
 
 ### Fixed
+
+- **A U.S. Bank failure file says which part of the statement list was
+  missing (#106).** A Pilot gave up on its first statement before pressing
+  anything, and the file it wrote counted only general selectors, which all
+  matched. It now also counts the parts the download finds a statement's row
+  by, the statement list, its section and heading, the rows and their
+  Download buttons, the account picker and the year filter. Thanks to
+  appchamp for the report.
 - **Wells Fargo no longer signs you out looking for your statements (#27).**
   When the page it was on showed no statement, the app typed the
   statements address into the signed-in window, and Wells Fargo answered

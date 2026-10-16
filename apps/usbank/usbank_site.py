@@ -136,6 +136,21 @@ FALLBACK = {
     "next_page": ("a[aria-label*='Next' i], button[aria-label*='Next' i], "
                   ".pagination-next, [class*='next']"),
     "show_more": "button, a",
+    # The statement list's own parts, the ones the download finds a row by
+    # (SEL and find_row_control), so a failure file and the journal count
+    # each of them. A tester's Pilot gave up on its first statement with no
+    # press while every general selector above matched, and nothing said
+    # which of these the page lacked (#106). They mirror SEL, and a test
+    # holds the two together.
+    "document_view": "[data-testid='document-view']",
+    "account_dropdown": "[data-testid='account-dropdown']",
+    "year_filter": "[data-testid='year-filter']",
+    "list_of_statements": "[data-testid='list-of-statements']",
+    "statement_section": "[data-testid='list-of-statements'] .document-list",
+    "statements_heading": "[data-testid='list-of-statements'] .document-list h3",
+    "statement_row": "[data-testid='list-of-statements'] .document-list li.download-items",
+    "row_download": ("[data-testid='list-of-statements'] .document-list li.download-items "
+                     "button[aria-label*='Download' i]"),
 }
 
 
