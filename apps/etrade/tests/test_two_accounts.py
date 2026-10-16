@@ -421,6 +421,7 @@ SHOWS_FIRST = [
     ["Invented Brokerage ...1111"],
     ["Account ending in 1111"],
     ["ACCT # ****1111"],
+    ["Account Number: 6789-1111", "Invented Brokerage XXXX1111"],
 ]
 
 
@@ -670,6 +671,53 @@ def test_a_finished_record_of_its_account_keeps_its_place(app):
     assert app.progress.data[_key(BROKERAGE, "1111")] == again
 
 
+def test_a_closed_accounts_statement_naming_a_listed_one_in_a_transfer_stays(app, caplog):
+    """The review's case. The record kept before holds the statement of an
+    account the lists no longer name, closed, ending 2222. Its PDF prints
+    its own number and a transfer to the listed account ending 1111, the
+    only listed account it shows. It was moved to 1111, whose own statement
+    of that day was then never taken."""
+    _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                  prints=_statement("Account Number: XXXX-2222",
+                                    "Transfer to Individual XXXX-1111 $500.00"))
+    before = dict(app.progress.data[_legacy_key(BROKERAGE)])
+    caplog.set_level(logging.INFO)
+    app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(RETIREMENT, "Invented Joint -3333", "g3"))
+    assert app.progress.data[_legacy_key(BROKERAGE)] == before
+    assert _key(BROKERAGE, "1111") not in app.progress.data
+    taken = [d.account for d in app._select() if not app._already_done(d) and d.title == BROKERAGE]
+    assert taken == [FIRST], taken
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "1 for %s" % etrade_docs.OTHER_NUMBER in said, said
+
+
+@pytest.mark.parametrize("valid", [True, False], ids=["a review copy", "a file that does not open"])
+def test_a_record_under_its_accounts_key_naming_a_file_keeps_it(app, caplog, valid):
+    """The review's case. A Needs Manual Review copy under the account's
+    key, which _already_done counts as done while its PDF validates and
+    keys.is_done does not, was replaced by the record kept before, and its
+    file was left with no record. A record naming any file that is there
+    keeps its key."""
+    _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                  prints=_statement("Account Number: XXXX-1111"))
+    before = dict(app.progress.data[_legacy_key(BROKERAGE)])
+    review = app.paths.manual_review / "review.pdf"
+    review.write_bytes(testkit.text_pdf(_statement("Account Number: XXXX-1111")) if valid
+                       else b"%PDF-1.4 not one")
+    copy = {"category": "Statement", "date": DAY, "title": BROKERAGE, "account": FIRST,
+            "state": State.NEEDS_MANUAL_REVIEW.value if valid else State.FAILED.value,
+            "pdf_path": str(review), "notes": "invented"}
+    app.progress.data[_key(BROKERAGE, "1111")] = dict(copy)
+    app.progress.save()
+    caplog.set_level(logging.INFO)
+    _both_on_one_day(app)
+    assert app.progress.data[_key(BROKERAGE, "1111")] == copy
+    assert app.progress.data[_legacy_key(BROKERAGE)] == before
+    assert review.exists()
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "1 for %s" % etrade_docs.HOLDS_A_FILE in said, said
+
+
 def test_a_failed_attempt_under_its_accounts_key_gives_way(app):
     """As adopt_account_keys does, a finished record wins a key over one
     that is not."""
@@ -745,10 +793,22 @@ def test_an_account_number_ending_in_the_digits_is_printed(text):
     "SSN XXX-XX-1111", "Recipient TIN: XXXXX1111", "XX-XXX1111", "Account Summary 2024-2025",
     "1-800-387-1111", "(800) 387-1111", "** 2025 footnote", "Total .......... 2025",
     "Year End - 2025", "Account Number: 1111.00", "Account Number: 2025-08-31", "Interest 1111",
-    "11112025",
+    "11112025", "For the year ending 2025", "Tax period ending in 2025",
 ])
 def test_a_number_of_its_own_is_never_an_account(text):
     assert site.tails_printed(text, LABELS) == set()
+    assert site.account_numbers_printed(text) == set()
+
+
+def test_every_account_number_printed_is_found_listed_or_not():
+    text = ("Account Number: XXXX-2222 Transfer to Individual XXXX-1111 $500.00 "
+            "Linked bank ending in 9876 is no account's words, Card number ending in 4321, "
+            "SSN XXX-XX-5555, Statement period 2024-2025, Page 1 of 3")
+    assert site.account_numbers_printed(text) == {"2222", "1111", "4321"}
+    assert site.account_numbers_printed("Account Number: 6789-1111") == {"1111"}
+    assert site.account_numbers_printed("Account Number: 67891111") == {"67891111"}
+    assert site.one_account("67891111", "1111") and site.one_account("111", "1111")
+    assert not site.one_account("2222", "1111")
 
 
 def test_a_tail_is_seen_wherever_it_ends_a_number():

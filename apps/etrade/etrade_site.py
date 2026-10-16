@@ -769,12 +769,12 @@ def accounts_in(docs) -> set:
 # No E*TRADE PDF has been seen yet, so each of these is a guess, and each is
 # a shape an account number takes, never a number on its own. The last
 # digits after masking marks, "XXXX-1111", "XXXX1111", "**** 1111",
-# "####1111", "...1111", "(...1111)" or "--1111", after "ending in", after
-# an "Account Number", "Account No.", "Acct #" or "Account:" label, as the
-# end of a number written "6789-1111", or after the words of the account's
-# own label as the list shows it, "Invented Brokerage -1111". A year, an
-# amount, a date, a time or a Social Security or tax id number is none of
-# them (tails_printed).
+# "####1111", "...1111", "(...1111)" or "--1111", after an account's
+# "ending in", after an "Account Number", "Account No.", "Acct #" or
+# "Account:" label, as the end of a number written "6789-1111", or after
+# the words of the account's own label as the list shows it, "Invented
+# Brokerage -1111". A year, an amount, a date, a time or a Social Security
+# or tax id number is none of them (tails_printed).
 
 _MARKS = "Xx*#•●∗"
 _MARK = "[" + _MARKS + "]"
@@ -791,9 +791,15 @@ _TAX_ID_WORDS_RE = re.compile(
 _YEAR_RE = re.compile(r"(?:19|20)[0-9]{2}")
 
 
+# Any account number's last digits, for account_numbers_printed, in place
+# of one tail. Up to twelve, so a number printed whole still ends them.
+_ANY_DIGITS = r"(?P<digits>[0-9]{3,12})"
+
+
 def _printed_shapes(tail: str) -> List["re.Pattern"]:
     """The shapes of an account number ending in `tail` that
-    tails_printed accepts, beside the account's own label."""
+    tails_printed accepts, beside the account's own label. `tail` is the
+    digits, or _ANY_DIGITS for any account number at all."""
     t = tail + _DIGITS_END
     return [re.compile(p, re.I) for p in (
         # masking marks, "XXXX-1111", "XXXX1111", "XX-XXXX-1111"
@@ -806,8 +812,10 @@ def _printed_shapes(tail: str) -> List["re.Pattern"]:
         r"… ?%s" % t,
         # a run of dashes, "--1111"
         r"(?<![0-9\-])-{2,4}%s" % t,
-        # "ending in 1111", "ends with XXXX1111"
-        r"\bend(?:ing|s)(?: (?:in|with))? ?[:#]? ?(?:[%s.…\-]+ ?)?%s" % (_MARKS, t),
+        # "Account ending in 1111", "card number ends with 1111", the words
+        # of an account before it, since "the year ending 2024" is a year
+        r"\b(?:account|acct|card|number)\b[^0-9]{0,30}?\bend(?:ing|s) (?:in|with) ?[:#]? ?"
+        r"(?:[%s.…\-]+ ?)?%s" % (_MARKS, t),
         # a label, "Account Number: 6789-1111", "Account No. XXXX1111",
         # "Acct #1111", "Account: ****1111", the digits ending the number
         # that follows it
@@ -846,8 +854,8 @@ def _a_tax_id(text: str, m) -> bool:
 def _a_year_range(m) -> bool:
     """Whether "2024-2025" was taken for a number ending in 2025."""
     head = m.groupdict().get("head")
-    return bool(head and _YEAR_RE.fullmatch(head)
-                and _YEAR_RE.fullmatch(m.group(0)[-4:]))
+    last = m.groupdict().get("digits") or m.group(0)[-4:]
+    return bool(head and _YEAR_RE.fullmatch(head) and _YEAR_RE.fullmatch(last))
 
 
 def tails_printed(text: str, labels) -> set:
@@ -883,6 +891,28 @@ def tails_seen(text: str, tails) -> set:
     text = text or ""
     return {t for t in tails or [] if re.fullmatch(r"[0-9]+", t)
             and re.search(t + r"(?![0-9])", text)}
+
+
+def account_numbers_printed(text: str) -> set:
+    """The last digits of every account number the text prints in one of
+    the shapes above, whichever account it is, listed or not. A statement
+    of an account the lists no longer name, a closed one, printing its own
+    number and another account's in a transfer, shows only that other
+    account among the listed ones, and was moved to it (review of the
+    relabel). Nothing of the text is kept or written anywhere."""
+    text = re.sub(r"\s+", " ", text or "")
+    found = set()
+    for pattern in _printed_shapes(_ANY_DIGITS):
+        for m in pattern.finditer(text):
+            if not _a_tax_id(text, m) and not _a_year_range(m):
+                found.add(m.group("digits"))
+    return found
+
+
+def one_account(digits: str, tail: str) -> bool:
+    """Whether a number printed ending in `digits` may be the account whose
+    masked tail is `tail`, one of the two ending the other."""
+    return bool(digits and tail) and (digits.endswith(tail) or tail.endswith(digits))
 
 
 def goto_docs_capturing(page, capture: list) -> bool:

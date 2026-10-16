@@ -260,16 +260,12 @@ def forget_superseded(records: dict, listed) -> int:
     return changed
 
 
-def _done_under(records: dict, key: str) -> bool:
-    """Whether a done record sits under this key."""
-    rec = records.get(key)
-    return isinstance(rec, dict) and _is_done(rec)
-
-
 # Why relabel_by_statement leaves a record kept before #96 where it is, in
 # fixed words, which the log counts. Never a label, digits or a PDF's text.
 NOT_DONE = "not done"
 TAKEN_AGAIN = "already taken again"
+HOLDS_A_FILE = "its account's record holding a file"
+OTHER_NUMBER = "another account number printed"
 NO_FILE = "no saved file"
 UNREADABLE = "a file that does not read"
 NO_DIGITS = "no listed account's digits"
@@ -277,6 +273,26 @@ SEVERAL = "more than one account's digits"
 SHARED = "digits two accounts share"
 NOT_LISTED = "no listed statement of that account"
 NO_ONE_TAIL = "an account listed without digits of its own"
+
+
+def _held_under(records: dict, key: str) -> str:
+    """Why a record under this key may not be replaced, or "" when it may.
+    TAKEN_AGAIN when it is done (keys.is_done). HOLDS_A_FILE when it is not
+    but names a file that is there, as a Needs Manual Review copy does,
+    which _already_done counts as done while its PDF validates and which
+    keys.is_done does not. Replaced, its file would be left with no record
+    (review of the relabel). So everything _already_done counts as done
+    is held, and more."""
+    rec = records.get(key)
+    if not isinstance(rec, dict):
+        return ""
+    if _is_done(rec):
+        return TAKEN_AGAIN
+    saved = str(rec.get("pdf_path") or "")
+    try:
+        return HOLDS_A_FILE if saved and Path(saved).exists() else ""
+    except OSError:
+        return HOLDS_A_FILE
 
 
 def relabel_by_statement(progress: dict, discovery: dict, listed, min_bytes: int) -> dict:
@@ -289,15 +305,18 @@ def relabel_by_statement(progress: dict, discovery: dict, listed, min_bytes: int
     A record under a key with no account ("Unnamed") moves only when all of
     this holds. It is done (keys.is_done). Every listed document of its
     category, date and title names one account by masked digits. Not every
-    one of those accounts has its statement of that day done already under
-    its own key. Its saved PDF is there, validates and holds text. That
-    text prints exactly one listed account's digits as the end of an
-    account number (site.tails_printed), and no other listed account's
-    digits end any run of digits anywhere in it (site.tails_seen), a year
-    or an amount included. Those digits are no two accounts'
-    (Document.whole_label, twins anywhere in the lists). The lists give
+    one of those accounts has its statement of that day, or a file of it,
+    under its own key already. Its saved PDF is there, validates and holds
+    text. That text prints exactly one listed account's digits as the end
+    of an account number (site.tails_printed), and no other listed
+    account's digits end any run of digits anywhere in it
+    (site.tails_seen), a year or an amount included. Those digits are no
+    two accounts' (Document.whole_label, twins anywhere in the lists). No
+    account number it prints ends in other digits, an account the lists no
+    longer name included (site.account_numbers_printed). The lists give
     that account a document of the record's category, date and title. And
-    no done record sits under that document's key already.
+    no record under that document's key is done or names a file that is
+    there (_held_under).
 
     It then moves to that key the way adopt_account_keys moves one,
     progress and discovery alike, and takes the document's account, its
@@ -334,10 +353,10 @@ def relabel_by_statement(progress: dict, discovery: dict, listed, min_bytes: int
         if any(len(site.account_tails(d.account)) != 1 for d in docs):
             leave(NO_ONE_TAIL)
             continue
-        if all(_done_under(progress, d.key) for d in docs):
+        if all(_held_under(progress, d.key) for d in docs):
             # Each account's statement of that day is saved under its own
-            # key, so there is nothing for this record to stand for, and its
-            # file is not read again on every Discover.
+            # key, or a file of it is, so there is nothing for this record to
+            # stand for, and its file is not read again on every Discover.
             leave(TAKEN_AGAIN)
             continue
         saved = str(rec.get("pdf_path") or "")
@@ -367,13 +386,20 @@ def relabel_by_statement(progress: dict, discovery: dict, listed, min_bytes: int
         if tail in twins:
             leave(SHARED)
             continue
+        if any(not site.one_account(n, tail) for n in site.account_numbers_printed(text)):
+            # Another account number, listed or not. A closed account's
+            # statement printing its own number and a transfer to this one
+            # would be credited to this one.
+            leave(OTHER_NUMBER)
+            continue
         mine = [d for d in docs if site.account_tails(d.account) == [tail]]
         if len(mine) != 1:
             leave(NOT_LISTED)
             continue
         doc = mine[0]
-        if _done_under(progress, doc.key):
-            leave(TAKEN_AGAIN)
+        why_held = _held_under(progress, doc.key)
+        if why_held:
+            leave(why_held)
             continue
         carried = {"account": doc.account, "summary": doc.summary}
         if doc.guid:
