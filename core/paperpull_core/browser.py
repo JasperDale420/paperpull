@@ -542,15 +542,138 @@ def launch_own_browser(chromium, user_data_dir, **kwargs):
     out loud. Every app opens one that way when its config has no cdp_url,
     while its sign-in opens the person's own browser on the app's port, so
     the run and the sign-in used different browsers with nothing said, and
-    the run's window looked signed out (#90). The launch is unchanged.
-    `chromium` is Playwright's browser type, and the rest goes to its
-    launch_persistent_context as it was."""
+    the run's window looked signed out (#90). `chromium` is Playwright's
+    browser type, and the rest goes to sandboxed_persistent_context, so the
+    browser always starts inside its sandbox. One whose sandbox cannot
+    start ends the run and says why."""
     print("This app's settings name no cdp_url, so this run opens a browser of its")
     print("own, with the profile in %s," % user_data_dir)
     print("instead of attaching to the window you signed in with, and it is signed in")
     print("only if you sign in there. To use your sign-in window, copy the cdp_url")
     print("line from config.example.json into this app's config.json.")
-    return chromium.launch_persistent_context(user_data_dir, **kwargs)
+    try:
+        return sandboxed_persistent_context(chromium, user_data_dir, **kwargs)
+    except SandboxRefused as e:
+        raise SystemExit(str(e)) from None
+
+
+# -- every browser Playwright starts, inside its sandbox ------------------------
+#
+# Playwright's driver starts Chromium with --no-sandbox unless it is handed
+# chromium_sandbox=True, exactly True (1.63's coreBundle.js pushes the flag
+# whenever `options.chromiumSandbox !== true`). Every app's own browser and
+# the receipt renderer's were started that way, so a page in them ran with
+# nothing between it and this computer but the renderer itself. Every
+# launch now goes through the two functions below, which always ask for the
+# sandbox and refuse any way of asking for less, and
+# core/tests/test_every_browser_starts_in_its_sandbox.py holds every other
+# file to them, the apps' own included.
+
+SANDBOX_REFUSED = (
+    "The browser could not start its sandbox, so it was not started. This tool "
+    "never starts a browser without its sandbox. Chromium will not start its "
+    "sandbox when it runs as the root user, and on Ubuntu 23.10 and later the "
+    "Chromium that Playwright downloads is kept from the user namespaces its "
+    "sandbox needs, as it is in a container that does not allow them. Run this "
+    "as an ordinary user, or install Google Chrome or Microsoft Edge and copy "
+    "the cdp_url line from config.example.json into this app's config.json, so "
+    "the run uses the window you sign in with instead of a browser of its own.")
+
+# What Playwright's error says when Chromium could not start its sandbox.
+# It rewrites Chromium's own words (No usable sandbox!, and crbug.com/357670
+# or 638180 for a sandbox refused to root) into the first line here, and an
+# older driver passed Chromium's words through. Chrome's own words when its
+# setuid helper is there but not set up are passed through as they are,
+# measured in a Linux container under Docker's default seccomp profile.
+_SANDBOX_FAILED = ("chromium sandboxing failed", "no usable sandbox",
+                   "crbug.com/357670", "crbug.com/638180",
+                   "sandbox helper binary was found, but is not configured",
+                   "rather than run without sandboxing")
+
+
+class SandboxRefused(RuntimeError):
+    """The browser could not start its sandbox, and so was not started."""
+
+
+def turns_sandbox_off(arg) -> bool:
+    """Whether a Chromium switch would start the browser with less than its
+    whole sandbox. Any switch whose name says sandbox, which covers
+    --no-sandbox, --disable-setuid-sandbox and --disable-gpu-sandbox in any
+    case and with one dash or two, a feature switch naming one, such as
+    --disable-features=NetworkServiceSandbox, and the two that run the
+    browser's parts in one process or without their own start,
+    --single-process and --no-zygote. Any other switch's value is not
+    read, so a host named sandbox.example.com in a list of hosts is not one."""
+    name = _switch_name(arg)
+    if name in ("--disable-features", "--enable-features", "--disable-blink-features",
+                "--enable-blink-features", "--force-fieldtrials"):
+        return "sandbox" in str(arg).lower()
+    return "sandbox" in name or name in ("--single-process", "--no-zygote")
+
+
+def _switch_name(arg) -> str:
+    return "--" + str(arg).strip().lower().lstrip("-").split("=", 1)[0]
+
+
+# The only switches a caller may add to a launch here. Many switches weaken
+# the browser's isolation without naming a sandbox (--in-process-gpu,
+# --renderer-cmd-prefix, --disable-site-isolation-trials and others), so a
+# switch is let through only once it has been read and named here.
+# --host-resolver-rules is the receipt renderer's, which leaves the browser
+# no address for any host but the provider's.
+SAFE_SWITCHES = frozenset(("--host-resolver-rules", "--lang", "--window-size",
+                           "--disable-extensions", "--disable-sync",
+                           "--disable-background-networking",
+                           "--disable-component-update", "--no-first-run",
+                           "--no-default-browser-check"))
+
+
+def _sandboxed(kwargs: dict) -> dict:
+    """A launch's keywords with the sandbox asked for, or ValueError for a
+    caller that asked to turn it off or added a switch not known to be
+    safe."""
+    if "chromium_sandbox" in kwargs and kwargs["chromium_sandbox"] is not True:
+        raise ValueError("refusing to start a browser without its sandbox, "
+                         "chromium_sandbox=%r" % (kwargs["chromium_sandbox"],))
+    args = kwargs.get("args") or []
+    if isinstance(args, str):
+        args = [args]
+    off = [str(a) for a in args if turns_sandbox_off(a)]
+    if off:
+        raise ValueError("refusing to start a browser without its sandbox, %s"
+                         % ", ".join(off))
+    unknown = [str(a) for a in args if _switch_name(a) not in SAFE_SWITCHES]
+    if unknown:
+        raise ValueError("refusing to start a browser with %s, which is not a switch "
+                         "known to keep its sandbox whole" % ", ".join(unknown))
+    return dict(kwargs, chromium_sandbox=True)
+
+
+def _started(launch, *args, **kwargs):
+    """`launch` called, with a sandbox that could not start said in plain
+    words. Playwright's own words for it advise turning the sandbox off,
+    which this tool never does, so they are not passed on."""
+    try:
+        return launch(*args, **kwargs)
+    except Exception as e:
+        said = str(e).lower()
+        if any(mark in said for mark in _SANDBOX_FAILED):
+            raise SandboxRefused(SANDBOX_REFUSED) from None
+        raise
+
+
+def sandboxed_launch(chromium, **kwargs):
+    """Playwright's chromium.launch, always inside the browser's sandbox.
+    Raises ValueError for keywords that ask for less, and SandboxRefused,
+    never a browser without it, when the sandbox cannot start."""
+    return _started(chromium.launch, **_sandboxed(kwargs))
+
+
+def sandboxed_persistent_context(chromium, user_data_dir, **kwargs):
+    """Playwright's chromium.launch_persistent_context, always inside the
+    browser's sandbox, as sandboxed_launch."""
+    return _started(chromium.launch_persistent_context, user_data_dir,
+                    **_sandboxed(kwargs))
 
 
 def debug_port_holder(port: str, timeout: float = 1.5) -> Optional[str]:

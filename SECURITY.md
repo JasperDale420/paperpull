@@ -68,6 +68,16 @@ The `.gitignore` already blocks all of the following. Do not override it.
     checked with the same guard before it is followed, one step at a time,
     and an address asked for a second time follows none
     (`core/tests/test_no_request_follows_a_redirect_off_the_allowlist.py`).
+    Target's headless fallback print asks the same guard about each request
+    its browser holds before sending, each redirect hop included, leaves
+    that browser no address for any host but Target's, and prints nothing
+    once the page has left Target
+    (`core/tests/test_headless_render_keeps_to_the_provider.py`).
+- **Every browser starts inside its sandbox.** A browser an app starts
+  itself goes through the core, which always asks for Chromium's sandbox,
+  refuses any setting that would turn it off, takes no switch it has not
+  been told keeps the sandbox whole, and starts nothing when the sandbox
+  cannot start (`core/tests/test_every_browser_starts_in_its_sandbox.py`).
 - **You sign in, not the tool.** The tools attach to a browser *you* logged into
   (via Chrome DevTools Protocol). They never handle your password or 2FA.
 - **Local only.** The browser's debugging port and the GUI both listen on

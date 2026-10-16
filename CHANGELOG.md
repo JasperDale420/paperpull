@@ -92,6 +92,36 @@ All notable changes to PaperPull are recorded here. Versioning follows
   a request could make the panel hold as much as it was sent. A form that
   says it is longer is refused at once, and one sent in pieces is refused
   as soon as it passes 8 KiB, without waiting for the rest.
+- **Every browser PaperPull starts itself now runs inside its sandbox.**
+  Playwright starts Chromium with `--no-sandbox` unless it is told
+  otherwise, and two browsers were started that way, the one an app opens
+  when its settings name no `cdp_url` and the headless one Target falls
+  back to when a receipt will not print. A page in them had only the
+  renderer between it and the computer. Both now start through the core,
+  which always asks for the sandbox, refuses a setting that would turn it
+  off, and takes no switch it has not been told keeps the sandbox whole. A
+  browser whose sandbox cannot start, as for the root
+  user, in a container that does not allow it, or for the downloaded
+  Chromium on Ubuntu 23.10 and later, is not started at all, and the run
+  says why. An earlier note here said PaperPull never starts a browser
+  without its sandbox, which held only for the sign-in window. That window
+  is started directly, not through Playwright, with no such switch, and is
+  unchanged, and a test now holds it to that. A census test fails any other Playwright
+  launch in the apps, the core, the panel, the server or the tools.
+- **The headless receipt renderer keeps to the provider's hosts.** When
+  Target's ordinary print fails, the receipt's address is printed again in
+  a headless browser. Only that first address was checked, so a redirect
+  from it was followed to any host, with every cookie of the browser, and
+  what arrived was printed as the receipt. Now each request that browser
+  holds before sending, each redirect on the way included, goes out only
+  when the app's own host check accepts it, apart from the scripts, styles,
+  fonts and pictures of Target's two static hosts. What a page can send
+  without such a request, a socket, a worker's socket or a prefetch, finds
+  no address for any host but Target's, since the browser is given no
+  other. The page is checked again before and after it prints, nothing is
+  saved when it left Target, and the browser is given only the cookies of
+  Target's own hosts. Behind a proxy set for the whole computer the
+  fallback does not run, and the receipt's note says so.
 
 ## [0.53.0] - 2026-10-15
 
