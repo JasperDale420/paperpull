@@ -51,6 +51,12 @@ All notable changes to PaperPull are recorded here. Versioning follows
   www.wellsfargo.com, whose own sign-on form worked on PaperPull Server
   where the statements address came up blank. Thanks to crazyhorse90210
   for the surveys and the recording.
+- **A file naming pattern with a / in it is refused, and says why.** A /
+  would name a folder, which a file name cannot do yet, and it was dropped
+  without a word, so a pattern like `{provider}/{date}` ran the two
+  together. The settings page now says why, and a saved pattern that holds
+  one leaves files their usual names with a warning, as any pattern that
+  cannot be used does (#101).
 
 ### Security
 - **PaperPull Server's sign-in cookie stays off plain HTTP behind an HTTPS
@@ -186,6 +192,12 @@ All notable changes to PaperPull are recorded here. Versioning follows
   not open as it was, and it now opens. The rule is in one place,
   `paperpull_core.sheets`, which both tools take from the core beside
   them, PaperPull Server's copies included.
+- **Citi refuses any control that asks it for a statement.** Its guard
+  refused only Request Older or Archived Statements, so other wordings such
+  as Request a Statement passed. Asking Citi for a statement is an action
+  on the account, so a control that requests one is refused in any wording,
+  while Requested, a statement already there to download, is still allowed.
+  Citi presses no such control today, so a run does nothing new (#103).
 
 ## [0.53.0] - 2026-10-15
 
