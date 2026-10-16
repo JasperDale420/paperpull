@@ -30,7 +30,7 @@ new documents can go straight into Paperless. Both are free.
 
 ![The PaperPull control panel's Accounts page on the sample archive, each provider with its status and one button. Every name and amount is invented.](docs/panel.png)
 
-**Watch it:** a [77-second demo](https://youtu.be/TfeOMngCgLM) on the real panel with made-up accounts. **Website:** [paperpull.net](https://paperpull.net), with the [getting-started guide](https://paperpull.net/guide.html), the [provider directory](https://paperpull.net/providers.html) and the [Paperless-ngx tutorial](https://paperpull.net/paperless.html). **Download:** the [latest release](https://github.com/rheeloaded/paperpull/releases/latest), Windows 10 or 11 and macOS on Apple Silicon or Intel, Linux from source. **Self-hosting** takes the Docker image `ghcr.io/rheeloaded/paperpull-server` and [three steps](#paperpull-server).
+**Watch it:** a [77-second demo](https://youtu.be/TfeOMngCgLM) on the real panel with made-up accounts. **Website:** [paperpull.net](https://paperpull.net), with the [getting-started guide](https://paperpull.net/guide.html), the [provider directory](https://paperpull.net/providers.html), the [Paperless-ngx tutorial](https://paperpull.net/paperless.html) and the [FAQ](https://paperpull.net/faq.html) (the most asked questions are also [below](#faq)). **Download:** the [latest release](https://github.com/rheeloaded/paperpull/releases/latest), Windows 10 or 11 and macOS on Apple Silicon or Intel, Linux from source. **Self-hosting** takes the Docker image `ghcr.io/rheeloaded/paperpull-server` and [three steps](#paperpull-server).
 
 **It also turns those PDFs into spreadsheets.** Your receipts become one
 long table of every item you have ever bought, across every store and every
@@ -609,9 +609,157 @@ chmod +x setup-all.command apps/*/*.command gui/*.command
 - For the Windows installer or the macOS `.dmg`, nothing else. They carry
   their own Python.
 - For a checkout, Python 3.11+ and Playwright (installed by setup-all)
-- A Chromium-family browser for the few providers that need a real one
-  (Chrome, Edge, Brave, Vivaldi or Opera). Safari and Firefox cannot be
-  driven this way.
+- A Chromium-family browser for signing in (Chrome, Edge, Brave, Vivaldi or
+  Opera). Windows comes with Edge. From a terminal, the sign-in step can
+  download a private Chromium instead, though a few providers need a real
+  Edge or Chrome. Safari and Firefox cannot be driven this way.
+
+## FAQ
+
+The questions people ask most, answered briefly. The
+[full FAQ](https://paperpull.net/faq.html) on the website has more, on where
+documents are kept, encryption, browser profiles, PaperPull Server's
+security, the spreadsheets and moving to a new computer.
+
+### Does PaperPull see or store my passwords?
+
+No. **Open sign-in window** opens a real browser window on the provider's
+own sign-in page, and you type your password and answer the two-factor
+prompt there, the way you would on a new computer. PaperPull attaches to
+that window afterward and reads what you can see. There is no field
+anywhere in PaperPull for a provider's password, so there is nothing for it
+to store or send. PaperPull Server works the same way, through a sign-in
+window it shows in your browser, and asks only for the password to its own
+panel.
+
+### Can it move money, pay a bill or change my account?
+
+No. It only downloads. Every app that clicks presses only controls it
+recognizes, and refuses any that would buy, pay, transfer or change a
+setting. Each app can visit only its own provider's addresses, and many
+apps click nothing at all. See
+[Read-only by construction](#read-only-by-construction) and
+[SECURITY.md](SECURITY.md).
+
+### Does any of my information go to PaperPull?
+
+No. There is no PaperPull account, no PaperPull cloud and no telemetry, so
+no crash reports, no usage statistics and no update check. The program
+contacts only the providers you sign in to, plus, once and only if you
+agree, a browser download when your computer has no usable browser.
+PaperPull Server also fetches Chrome from Google, and Chrome itself talks
+to Google as any Chrome does. See
+[PRIVACY.md](PRIVACY.md) and [PRIVACY-SERVER.md](PRIVACY-SERVER.md).
+
+### Will my bank notice, or lock my account?
+
+PaperPull works in the browser you signed in to, reads only what your
+account can already see, pauses between documents the way a person would,
+and stops at every sign-in step and security check for you to handle. Even
+so, whether a provider's terms allow a tool like PaperPull is between you
+and that provider. A provider can limit or lock an account it believes an
+automated tool is using, and PaperPull cannot rule that out.
+[TERMS.md](TERMS.md) says so too.
+
+### Does it get past CAPTCHAs or two-factor prompts?
+
+No, and it never tries. When a site asks for a code, shows a robot check or
+signs you out partway, the run stops there, and everything it saved stays
+saved. Handle it in the sign-in window, then press **Continue** to pick up
+the rest. That human step is also why PaperPull does not run unattended.
+
+### What does it run on?
+
+It runs in four places. There is no phone app.
+
+- Windows 10 or 11. Windows on ARM runs it too, under the emulation
+  Windows 11 provides.
+- macOS, with one disk image for Apple Silicon and one for Intel. See
+  [Windows and macOS](#windows-and-macos).
+- Linux, from source. See [Quick start](#quick-start).
+- A NAS or home server, as [PaperPull Server](#paperpull-server) in Docker,
+  on a machine with an Intel or AMD processor.
+
+### Is it really free? How is the Store edition different?
+
+The free edition is the complete program, every provider and both
+spreadsheets, with no trial, no account and no ads. The
+[Microsoft Store edition](https://apps.microsoft.com/detail/9P5LZRR773FP) is
+the same package from the same build, for $9.99 one time. The price buys a
+Store-signed install with no warning and updates through the Store, and it
+supports the project. It unlocks nothing. See [Support](#support).
+
+### Which browser does it need?
+
+One from the Chromium family (Edge, Chrome, Brave, Vivaldi or Opera).
+Windows comes with Edge. On a Mac, install one of them, since Safari and
+Firefox cannot be driven the way PaperPull needs. Each provider gets a
+fresh profile of its own, separate from your everyday browsing. If none is
+found, the panel says so. Run from a terminal, the sign-in step offers to
+download a private copy of Chromium instead, and asks first.
+
+### Will it download the same document twice?
+
+No. PaperPull remembers every document it saved by what it is, not by
+where the file went. Move PDFs into your filing system, or let Paperless-ngx
+delete what it imports, and the next run still fetches only what is new. To
+fetch some again on purpose in the desktop app, use **Restore deleted
+files** under **More**.
+
+### Does it run on its own, on a schedule?
+
+No. You start each run, and since many banks sign you out within minutes, a
+person stays in the loop by design. The panel's Accounts page says which
+accounts are due, and **Get new for all** runs each of them, one by one. An
+assisted monthly run is on the [roadmap](#status--roadmap).
+
+### My provider is not listed. What can I do?
+
+[Request it](https://github.com/rheeloaded/paperpull/issues/new/choose). If
+you hold an account there, you are the ideal person to help, and testing a
+first version takes no programming (see
+[Testing a provider](docs/testing-a-provider.md)). If you write code,
+[Adding a provider](docs/adding-a-provider.md) shows how. See
+[Contributing a provider](#contributing-a-provider).
+
+### What happens when a provider changes its website?
+
+That provider may stop working until it is repaired. Each provider is a
+small app of its own, and everything it knows about a site lives in one
+file, so a redesign breaks only that provider and the repair is usually
+small. Make a support report from its **More** menu and
+[report it](https://github.com/rheeloaded/paperpull/issues/new?template=app-broke.yml).
+Documents you already saved stay saved.
+
+### Is a support report safe to attach to an issue?
+
+Yes, it is built for that. **Make a support report**, under a provider's
+**More** menu, saves a file whose name starts with `survey-`. It holds
+counts and states and no text from your account, and it is the file to
+attach. Never attach a password, a browser profile folder, a token or an
+unredacted statement to anything you post.
+
+### How do I know the download is genuine?
+
+The Windows installer and the Mac disk images are built by GitHub Actions
+from a tagged commit on a clean runner, never on a developer's machine, and
+the releases page shows each file's SHA-256 checksum. The Windows installer
+is code-signed, the Mac disk images are signed and notarized, and the Store
+edition is signed by the Store. Download only from the
+[releases page](https://github.com/rheeloaded/paperpull/releases), the
+Microsoft Store or [paperpull.net](https://paperpull.net). See
+[Code signing policy](#code-signing-policy).
+
+### How do I update?
+
+PaperPull never checks for a new version of itself. GitHub's **Watch**
+button, set to releases, tells you when one comes out. On Windows, run the
+new installer over the old one, and the Store edition updates through the
+Store. On a Mac, drag the new version into Applications. On PaperPull
+Server, run `docker compose pull` and then `docker compose up -d`. Your
+documents and history are left as they are, and so are the desktop app's
+sign-ins. On the server, the restart can sign you out of a provider that
+keeps its session only while the browser runs.
 
 ## Contributing a provider
 
