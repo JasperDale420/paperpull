@@ -47,7 +47,7 @@ The `.gitignore` already blocks all of the following. Do not override it.
     American Family, Apple Card, AT&T, Bilt, Chase, Chase Business, Coinbase,
     Costco, Discover, Dominion, eBay, E*TRADE, Fairfax Water, First Horizon,
     Golden 1, Interactive Brokers, Meijer, Nelnet, Newrez, PayPal, PG&E,
-    RedCard, SBA, Shelby County, SMUD, Spectrum, State Farm, T-Mobile,
+    RedCard, SBA, Shelby County, Simmons Bank, SMUD, Spectrum, State Farm, T-Mobile,
     TreasuryDirect, U.S. Bank, Vanguard, Venmo, Verizon Mobile and Wells
     Fargo) decide which of the page's controls may be pressed with
     `is_safe_control()`, a hard blocklist (`FORBIDDEN_CONTROL_RE`,
@@ -55,7 +55,7 @@ The `.gitignore` already blocks all of the following. Do not override it.
     allowlist (`SAFE_DOC_CONTROL_RE`). A control must pass **both**, so
     anything unrecognized is refused, deny by default. AAFMAA runs the same
     two patterns inline. Alpaca, Bilt, Chase Business, First Horizon,
-    Spectrum, TreasuryDirect and Venmo narrow the allowlist to the whole
+    Simmons Bank, Spectrum, TreasuryDirect and Venmo narrow the allowlist to the whole
     labels they press, and all of them but TreasuryDirect give each control
     a guard of its own built the same way. Besides those, an app may press a
     control it finds by a selector or by words written in the app, such as a
