@@ -3933,12 +3933,19 @@ def _file_key_of(raw: str, root: Path) -> str:
 
 def _indexed_files(root: Path):
     """Each file an account's index names, by its index of documents or of
-    receipts in its folder, or None when it has no index there."""
+    receipts in its folder, or None when it has no index there. Each row is
+    read as the app wrote it, the quote it puts before a value that starts
+    like a formula taken off again (paperpull_core.sheets)."""
+    _naming()          # the core beside the panel, on the path
+    try:
+        from paperpull_core.sheets import read_stored_row
+    except ImportError:
+        return None
     found = None
     for index in sorted(root.glob("* Index.csv")):
         try:
             with open(index, encoding="utf-8-sig", newline="") as fh:
-                rows = list(csv.DictReader(fh))
+                rows = [read_stored_row(r) for r in csv.DictReader(fh)]
         except (OSError, ValueError, csv.Error):
             continue
         found = found if found is not None else set()
