@@ -84,6 +84,19 @@ def test_a_bad_pattern_says_what_is_wrong_and_where(pattern, says):
         assert re.search(r"at character \d+", problem)
 
 
+@pytest.mark.parametrize("pattern", [
+    "{provider}/[ {account}]/{date:yyyy-mm-dd}[ {kind}][ ({part})]",
+    "{provider}/{date} {summary}",
+    "{date} [{provider}/]{summary}",
+])
+def test_a_slash_that_would_make_a_folder_is_refused(pattern):
+    """A / in the pattern's own text was dropped from the name without a
+    word, running "{provider}" into "{date}" (#101). It is refused, and a
+    saved pattern holding one leaves files their usual names."""
+    problem = naming.check(pattern)
+    assert problem and "folders" in problem
+
+
 def test_a_date_that_is_not_a_date_is_written_as_it_is():
     assert naming.render("{date:yyyymmdd}", {"date": "0000-00-00"}) == "0000-00-00"
     assert naming.render("{date:yyyymmdd}", {"date": "unknown"}) == "unknown"

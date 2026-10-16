@@ -226,10 +226,26 @@ def render(pattern: str, fields: dict) -> str:
 def check(pattern: str) -> Optional[str]:
     """Why a pattern cannot be used, or None. For the settings page."""
     try:
-        parse(pattern)
+        nodes = parse(pattern)
     except PatternError as e:
         return str(e)
+    # A / in the pattern's own text would name a folder, which file names
+    # cannot do yet, and it was dropped from the name without a word, so
+    # "{provider}/{date}" ran the two together (#101). It is refused, so a
+    # saved pattern holding one leaves files their usual names.
+    if any("/" in text for text in _texts(nodes)):
+        return ("a / would put files in folders, which file names cannot do "
+                "yet, so take it out of the pattern")
     return None
+
+
+def _texts(nodes):
+    """The pattern's own text, in and out of optional parts."""
+    for node in nodes:
+        if isinstance(node, _Text):
+            yield node.text
+        elif isinstance(node, _Optional):
+            yield from _texts(node.parts)
 
 
 def fields_of(record, *, date: str = "", summary: str = "", kind: str = "",
