@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+from .sheets import read_stored_row, store_value
 from .spec import INFRASTRUCTURE_FOLDERS, RECEIPT
 
 # ---------------------------------------------------------------------------
@@ -681,6 +682,14 @@ def backup_file(path: Path, backups_dir: Path) -> Optional[Path]:
 # ---------------------------------------------------------------------------
 
 class CsvFile:
+    """An app's order history, receipt index or document index. They hold
+    names other people chose and open in Excel on a double click, so every
+    value goes in through sheets.store_value, which puts a quote in front
+    of text a spreadsheet would take for a formula, and comes out through
+    sheets.read_stored, which takes that quote off again. Whatever reads
+    one of these files reads it here, or through read_stored_row as both
+    spreadsheet tools do."""
+
     def __init__(self, path: Path, columns: List[str], backups_dir: Optional[Path] = None):
         self.path = Path(path)
         self.columns = columns
@@ -697,13 +706,13 @@ class CsvFile:
             w = csv.DictWriter(f, fieldnames=self.columns, extrasaction="ignore",
                                quoting=csv.QUOTE_MINIMAL)
             for row in rows:
-                w.writerow({c: row.get(c, "") for c in self.columns})
+                w.writerow({c: store_value(row.get(c, "")) for c in self.columns})
 
     def read_all(self) -> List[dict]:
         if not self.path.exists():
             return []
         with open(self.path, "r", encoding="utf-8-sig", newline="") as f:
-            return list(csv.DictReader(f))
+            return [read_stored_row(r) for r in csv.DictReader(f)]
 
     def rewrite(self, rows: List[dict], backup: bool = True) -> None:
         """Backup then atomically rewrite the whole file. A command that
@@ -716,7 +725,7 @@ class CsvFile:
                            quoting=csv.QUOTE_MINIMAL)
         w.writeheader()
         for row in rows:
-            w.writerow({c: row.get(c, "") for c in self.columns})
+            w.writerow({c: store_value(row.get(c, "")) for c in self.columns})
         # utf-8-sig: prepend BOM manually since we write text atomically
         atomic_write_text(self.path, "﻿" + buf.getvalue())
 

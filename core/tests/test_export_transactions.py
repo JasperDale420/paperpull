@@ -918,3 +918,62 @@ def test_the_csv_quotes_text_that_could_start_a_formula_and_no_amount(formula_ro
         assert (x["Provider"], x["Account"], x["Statement"]) == ("'+Bank", "'" + ACCOUNT, "'" + STATEMENT)
         assert (x["Date"][:5], x["Statement Date"], x["Reconciled"]) == ("2026-", "2026-07-15", "yes")
         assert not x["Amount"].startswith("'") and not x["Balance"].startswith("'")
+
+
+# -- an index the app wrote itself -----------------------------------------------------
+
+INDEX_COLUMNS = ["Account Holder", "Document Date", "Document Title", "PDF Filename",
+                 "PDF Full Path"]
+
+
+def _archive(root: Path, by_the_app: bool) -> Path:
+    """One statement whose file name starts like a formula, its index
+    written as an app writes it through core storage's CsvFile, or plainly
+    as an older version wrote it. The path is relative to the index's
+    folder, as every install the control panel creates records it."""
+    folder = root / "Plus Bank"
+    folder.mkdir(parents=True)
+    (folder / STATEMENT).write_bytes(b"%PDF")
+    row = {"Account Holder": "@SUM(2,2)", "Document Date": "2026-07-15", "Document Title": "=2+2",
+           "PDF Filename": STATEMENT, "PDF Full Path": STATEMENT}
+    index = folder / "+Bank Document Index.csv"
+    if by_the_app:
+        from paperpull_core.storage import CsvFile
+        CsvFile(index, INDEX_COLUMNS).append_rows([row])
+    else:
+        with open(index, "w", newline="", encoding="utf-8-sig") as fh:
+            w = csv.DictWriter(fh, fieldnames=INDEX_COLUMNS)
+            w.writeheader()
+            w.writerow(row)
+    return index
+
+
+def test_an_index_the_app_wrote_finds_its_statement_and_gives_the_words_it_was_given(
+        tmp_path, monkeypatch):
+    """The app's index holds a file name like =3+3 Statement.pdf with a
+    quote in front, so read as it is, the statement would be looked for
+    under a name it does not have and left out of the spreadsheet without
+    a word. It is found, and both spreadsheets are the ones the same words
+    written plainly give."""
+    pytest.importorskip("pdfplumber")
+    openpyxl = pytest.importorskip("openpyxl")
+    monkeypatch.setattr(xt, "pdf_lines", lambda p: FORMULA_BANK.splitlines())
+    old, new = tmp_path / "old", tmp_path / "new"
+    _archive(old, by_the_app=False)
+    index = _archive(new, by_the_app=True)
+    assert ",'=3+3 Statement.pdf,'=3+3 Statement.pdf" in index.read_text(encoding="utf-8-sig")
+    (row,) = xt._index_rows(index)
+    assert xt.pdf_path(index, row).is_file()
+    assert [p["pdfs"] for p in xt.providers(new)] == [1]
+    made = {}
+    for root in (old, new):
+        r = xt.export(root, as_csv=True, log=lambda *_: None)
+        assert (r["statements"], r["transactions"]) == (1, 6), root.name
+        made[root.name] = Path(r["path"]).read_bytes()
+    assert made["old"] == made["new"]
+    sheets = {}
+    for root in (old, new):
+        wb = openpyxl.load_workbook(xt.export(root, log=lambda *_: None)["path"])
+        sheets[root.name] = {ws.title: [[(c.value, c.data_type, c.quotePrefix) for c in row]
+                                        for row in ws.iter_rows()] for ws in wb}
+    assert sheets["old"] == sheets["new"]

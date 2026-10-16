@@ -230,6 +230,31 @@ All notable changes to PaperPull are recorded here. Versioning follows
   on the account, so a control that requests one is refused in any wording,
   while Requested, a statement already there to download, is still allowed.
   Citi presses no such control today, so a run does nothing new (#103).
+- **The apps' own CSV files keep text that looks like a formula as text
+  too.** Every app writes its order history, receipt index and document
+  index beside the PDFs for a person to open in Excel, and they hold the
+  same words other people chose, an item's name from a seller, a store's
+  name, a document's title and the file names made from them. A value that
+  started with =, +, - or @ was a working formula when the file was opened.
+  Such a value is now written with a single quote in front, and so is a
+  piece of one after a semicolon or a line break, by the rule the
+  spreadsheets follow. That rule also sees through a NUL character in
+  front, which Excel drops as it opens a CSV, and through a double quote
+  at the start of a piece, which Excel's import split at semicolons took
+  for an empty quoted part with a working formula after it, in the
+  spreadsheets' CSVs too. Every reader takes that quote off again, the app
+  itself, Rename, Verify and both spreadsheet tools, so a file name, an
+  order number and a path still match what is on disk. A name that really
+  starts with a quote keeps it, written with one more in front. A refund's
+  amount such as -$12.34 is left as it is, here and in the spreadsheets,
+  since Excel reads it as a number and nothing more, while -$A$1 and
+  -kr12.34 are quoted. After a semicolon it is quoted too, since a
+  spreadsheet splitting at semicolons with a decimal comma would run it on
+  into the next value. A file an earlier version wrote reads as it did,
+  apart from a value that started with a quote and then something like a
+  formula, which now reads without that quote, and a row is quoted the
+  next time it is written. Measured on real archives, 180,418 values in 55
+  files, no value reads differently and none is written differently.
 
 ## [0.53.0] - 2026-10-15
 
