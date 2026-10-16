@@ -9,7 +9,14 @@
 # starts and keeps it up to date in its own volume (server/chrome.sh), so
 # Google's browser is never redistributed here and its security fixes arrive
 # without a new image.
-FROM python:3.12-slim-bookworm
+#
+# The base is named by its digest as well as its tag, so every build starts
+# from the very same files, whatever the tag points at that day. A frozen
+# base stops getting Debian's fixes, so Dependabot proposes the tag's new
+# digest each week (.github/dependabot.yml), and the Server image workflow
+# builds, starts and scans the image on that proposal before it can merge.
+# By hand, `python server/lock.py --base` writes the tag's current digest.
+FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC \
@@ -67,8 +74,12 @@ RUN printf '#!/bin/sh\nexec /browser/current/opt/google/chrome/google-chrome "$@
       > /usr/bin/google-chrome-stable \
  && chmod 755 /usr/bin/google-chrome-stable
 
+# Every package at the version server/lock.py wrote, each file checked
+# against its hash, and only built wheels, so nothing runs a package's own
+# build step. pip refuses a package the lock does not name.
 COPY server/requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
+RUN pip install --no-cache-dir --require-hashes --only-binary :all: -r /tmp/requirements.txt \
+ && rm /tmp/requirements.txt
 
 # The user everything runs as. Its ids follow PUID and PGID at start, so the
 # files it writes into a shared folder belong to the person's own NAS user.
@@ -95,7 +106,8 @@ COPY packaging/paperpull.ico /opt/paperpull/packaging/paperpull.ico
 COPY server/entrypoint.sh server/chrome.sh server/start.sh server/selftest.py \
      server/reset_password.py /opt/paperpull/server/
 COPY server/plugins /opt/paperpull/server/plugins
-RUN pip install --no-cache-dir --no-deps /opt/paperpull/core \
+# Built with the setuptools from the lock, not one fetched for the build.
+RUN pip install --no-cache-dir --no-deps --no-build-isolation /opt/paperpull/core \
  && chmod 755 /opt/paperpull/server/entrypoint.sh /opt/paperpull/server/chrome.sh \
               /opt/paperpull/server/start.sh
 

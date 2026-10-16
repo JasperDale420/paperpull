@@ -45,6 +45,7 @@ import secrets
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -55,13 +56,37 @@ from fastapi import HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 SESSION_COOKIE = "paperpull_session"
+# The session given to a browser that came by HTTPS. A browser lets no page
+# reached by plain HTTP replace a Secure cookie of the same name, so with one
+# name for both, a person who signed in once through an HTTPS proxy could
+# never sign in again by plain HTTP at that name. The __Host- prefix makes
+# the browser keep this one only as Secure, only from an HTTPS page, only
+# for the whole site and only for the very name that set it, so no other
+# name under the same domain can set or replace it.
+SECURE_SESSION_COOKIE = "__Host-paperpull_session"
+SESSION_COOKIES = (SECURE_SESSION_COOKIE, SESSION_COOKIE)
 SESSION_SECONDS = 14 * 86400
 # How often an open Browser Screen asks whether its session still holds, so
 # signing out, a new password or reset_password.py ends it within seconds.
 SCREEN_CHECK_SECONDS = 3
 MIN_PASSWORD = 10
-# scrypt's cost. About 16 MB and a few tenths of a second per guess.
-SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1}
+# scrypt's cost, the OWASP profile of 16 MiB in five lanes. The same memory
+# as the cost before it (p=1) at five times the work, measured at 0.15 s a
+# guess on a desktop and 0.14 s in the image there, and more on a NAS. A
+# password kept at another cost is hashed again at this one the next time
+# it signs in.
+SCRYPT = {"n": 2 ** 14, "r": 8, "p": 5}
+# The most memory one hash may take, nearly four times what SCRYPT needs, so
+# a cost written into server.json by hand cannot have a sign-in take the
+# NAS's memory. A cost asking for more fails the way a wrong password does.
+SCRYPT_MAXMEM = 64 * 1024 * 1024
+# Hashing runs on threads of its own, so the panel keeps answering while a
+# password is checked. At most HASHES_AT_ONCE run at once, and once
+# HASHES_WAITING more wait for a turn, the next sign-in is told to try again.
+HASHES_AT_ONCE = 2
+HASHES_WAITING = 16
+# The most a sign-in or setup form may send. Its three fields fit many times.
+FORM_LIMIT = 8192
 # After this many wrong answers from one address, each next try waits,
 # twice as long each time, up to the last figure.
 FREE_TRIES = 5
@@ -71,6 +96,9 @@ LONGEST_WAIT = 15 * 60
 _SESSIONS: dict = {}
 _FAILS: dict = {}
 _SETUP = {"code": None}
+# The hashing threads, made on first use, and how many hashes are running
+# or waiting for one of them.
+_HASHING = {"pool": None, "busy": 0}
 
 
 def enabled() -> bool:
@@ -105,7 +133,10 @@ def plugins_dir() -> Path:
 
 
 def profile_for(install_name: str, account: str = "primary") -> str:
-    """A provider account's browser profile folder on the server."""
+    """A provider account's browser profile folder on the server. A run
+    names it the same way from its config's path, in
+    paperpull_core.storage.server_profile_dir, and a test holds the two to
+    one answer."""
     name = install_name if account == "primary" else "%s - %s" % (install_name, account)
     return str(profiles_root() / name)
 
@@ -117,10 +148,15 @@ def _secrets_file() -> Path:
 
 
 def _read() -> dict:
+    """The server's settings, or nothing when they cannot be read. A file
+    that holds anything but an object counts as none, so a damaged one
+    leads to the setup page and its code rather than to an error on every
+    page."""
     try:
-        return json.loads(_secrets_file().read_text(encoding="utf-8"))
+        data = json.loads(_secrets_file().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _write(data: dict) -> None:
@@ -135,32 +171,87 @@ def _write(data: dict) -> None:
 
 def _scrypt(password: str, salt: bytes, cost: dict) -> bytes:
     return hashlib.scrypt(password.encode("utf-8"), salt=salt, n=cost["n"], r=cost["r"],
-                          p=cost["p"], dklen=32, maxmem=64 * 1024 * 1024)
+                          p=cost["p"], dklen=32, maxmem=SCRYPT_MAXMEM)
 
 
 def password_set() -> bool:
     return bool(_read().get("password"))
 
 
-def set_password(password: str) -> None:
-    """Keep the password's hash, and sign every session out, since a new
+def password_record(password: str, salt: bytes | None = None) -> dict:
+    """What server.json keeps of a password, its hash at SCRYPT's cost, with
+    a new salt unless one is given. It touches nothing else, so it can run
+    on a hashing thread."""
+    salt = secrets.token_bytes(16) if salt is None else salt
+    return {"scrypt": dict(SCRYPT), "salt": salt.hex(), "hash": _scrypt(password, salt, SCRYPT).hex()}
+
+
+def keep_password(record: dict) -> None:
+    """Keep a password's record, and sign every session out, since a new
     password is usually chosen because the old one went somewhere."""
-    salt = secrets.token_bytes(16)
     data = _read()
-    data["password"] = {"scrypt": dict(SCRYPT), "salt": salt.hex(),
-                        "hash": _scrypt(password, salt, SCRYPT).hex()}
+    data["password"] = record
     _write(data)
     _SESSIONS.clear()
     _SETUP["code"] = None
 
 
-def check_password(password: str) -> bool:
-    rec = _read().get("password") or {}
+def set_password(password: str) -> None:
+    keep_password(password_record(password))
+
+
+def matches(password: str, record) -> bool:
+    """Whether a password is the one a record was made from, at the cost the
+    record names. It touches nothing else, so it can run on a hashing thread."""
     try:
-        got = _scrypt(password, bytes.fromhex(rec["salt"]), rec["scrypt"])
-        return hmac.compare_digest(got, bytes.fromhex(rec["hash"]))
+        got = _scrypt(password, bytes.fromhex(record["salt"]), record["scrypt"])
+        return hmac.compare_digest(got, bytes.fromhex(record["hash"]))
     except (KeyError, ValueError, TypeError):
         return False
+
+
+def check_password(password: str) -> bool:
+    return matches(password, _read().get("password") or {})
+
+
+def outdated(record) -> bool:
+    """Whether a password's record was hashed at a cost other than SCRYPT."""
+    return isinstance(record, dict) and record.get("scrypt") != SCRYPT
+
+
+def keep_rehashed(old: dict, new: dict) -> bool:
+    """Keep the record of the same password hashed again at SCRYPT's cost,
+    unless the password changed while it was made. The salt stays, and the
+    salt is what a session belongs to, so nobody is signed out."""
+    data = _read()
+    if data.get("password") != old or new.get("salt") != old.get("salt"):
+        return False
+    data["password"] = new
+    _write(data)
+    return True
+
+
+def _hash_pool() -> ThreadPoolExecutor:
+    if _HASHING["pool"] is None:
+        _HASHING["pool"] = ThreadPoolExecutor(max_workers=HASHES_AT_ONCE,
+                                              thread_name_prefix="paperpull-scrypt")
+    return _HASHING["pool"]
+
+
+def hashing_full() -> bool:
+    """Whether as many hashes are running and waiting as are let wait."""
+    return _HASHING["busy"] >= HASHES_AT_ONCE + HASHES_WAITING
+
+
+async def off_the_loop(work, *args):
+    """Run a hash on a hashing thread, so the panel goes on answering other
+    requests while it runs. Counted as busy from the moment this is called,
+    before anything waits."""
+    _HASHING["busy"] += 1
+    try:
+        return await asyncio.get_running_loop().run_in_executor(_hash_pool(), work, *args)
+    finally:
+        _HASHING["busy"] -= 1
 
 
 def setup_code() -> str:
@@ -249,12 +340,67 @@ def _headers(scope) -> dict:
     return {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
 
 
+async def read_form(request) -> dict | None:
+    """The fields of a sign-in or setup form, or None for a body longer than
+    FORM_LIMIT. A Content-Length over it is refused before anything is
+    read. A body sent in chunks, or with no length, is read as it comes and
+    refused the moment it passes the limit, so no more than the limit and
+    one piece of the connection's reading is ever held."""
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > FORM_LIMIT:
+                return None
+        except ValueError:
+            return None
+    body = bytearray()
+    async for piece in request.stream():
+        body += piece
+        if len(body) > FORM_LIMIT:
+            return None
+    text = bytes(body).decode("utf-8", "replace")
+    return {k: v[0] for k, v in parse_qs(text, keep_blank_values=True).items()}
+
+
 def _cookie(headers: dict, name: str) -> str:
     for part in (headers.get("cookie") or "").split(";"):
         key, _, value = part.strip().partition("=")
         if key == name:
             return value
     return ""
+
+
+def session_token(headers: dict) -> str:
+    """The session a request carries, in either cookie. A browser that
+    signed in both ways sends both over HTTPS, so a live one is taken first."""
+    tokens = [token for token in (_cookie(headers, name) for name in SESSION_COOKIES) if token]
+    return next((token for token in tokens if session_valid(token)), tokens[0] if tokens else "")
+
+
+def _first_header(scope, name: str) -> str:
+    """The first line of a header, where _headers keeps the last."""
+    for key, value in scope.get("headers", []):
+        if key.decode("latin-1").lower() == name:
+            return value.decode("latin-1")
+    return ""
+
+
+def over_https(scope) -> bool:
+    """Whether the browser reached the panel over HTTPS, itself or through a
+    reverse proxy that says so in X-Forwarded-Proto or Forwarded. Only the
+    first entry counts, the one the proxy nearest the browser wrote. The
+    answer only ever chooses the session cookie that travels over HTTPS
+    alone, so a request that claims HTTPS falsely harms nobody but itself,
+    its browser refusing a cookie like that over plain HTTP."""
+    if scope.get("scheme") in ("https", "wss"):
+        return True
+    if _first_header(scope, "x-forwarded-proto").split(",")[0].strip().lower() == "https":
+        return True
+    for part in _first_header(scope, "forwarded").split(",")[0].split(";"):
+        key, _, value = part.strip().partition("=")
+        if key.lower() == "proto" and value.strip('"').lower() == "https":
+            return True
+    return False
 
 
 def same_origin(headers: dict) -> bool:
@@ -337,7 +483,7 @@ def not_its_name(name: str) -> str:
 
 
 def signed_in(scope) -> bool:
-    return session_valid(_cookie(_headers(scope), SESSION_COOKIE))
+    return session_valid(session_token(_headers(scope)))
 
 
 def client_of(scope) -> str:
@@ -497,18 +643,26 @@ def install(app) -> None:
         if not enabled():
             raise HTTPException(404)
 
-    async def form(request: Request) -> dict:
-        body = (await request.body())[:8192].decode("utf-8", "replace")
-        return {k: v[0] for k, v in parse_qs(body, keep_blank_values=True).items()}
-
-    def signed_in_answer(token: str):
+    def signed_in_answer(request: Request, token: str):
+        # Secure only over HTTPS, since a home network reaches the panel by
+        # plain HTTP and a browser keeps no Secure cookie sent that way.
+        # Behind an HTTPS proxy it keeps the cookie off a plain HTTP visit
+        # to the proxy's name, which would otherwise carry it in the clear.
+        secure = over_https(request.scope)
         answer = RedirectResponse("/", status_code=303)
-        answer.set_cookie(SESSION_COOKIE, token, max_age=SESSION_SECONDS, httponly=True,
-                          samesite="strict", path="/")
+        answer.set_cookie(SECURE_SESSION_COOKIE if secure else SESSION_COOKIE, token,
+                          max_age=SESSION_SECONDS, httponly=True, samesite="strict", path="/",
+                          secure=secure)
         return answer
 
     def refused(body: str, status: int = 401):
         return HTMLResponse(page(body), status_code=status, headers={"Cache-Control": "no-store"})
+
+    def too_large(body: str):
+        # The rest of the body is never read, so the connection closes
+        # rather than carry it into a next request.
+        return HTMLResponse(page(body), status_code=413,
+                            headers={"Cache-Control": "no-store", "Connection": "close"})
 
     @app.get("/login", include_in_schema=False)
     def login_page():
@@ -526,18 +680,41 @@ def install(app) -> None:
             return refused(login_body("That request did not come from this page."), 403)
         # The body is read before the wait is looked at. Read after it, many
         # logins whose headers came at once all passed the wait together,
-        # before any of them was counted wrong. From here to the count
-        # nothing waits, so each is judged after the one before it.
-        given = await form(request)
+        # before any of them was counted wrong.
+        given = await read_form(request)
+        if given is None:
+            return too_large(login_body("That sign-in sent more than a password."))
         client = request.client.host if request.client else "?"
         wait = wait_left(client)
         if wait:
             return refused(login_body("Too many wrong passwords. Try again in %d seconds." % wait), 429)
-        if not check_password(given.get("password", "")):
-            note_failure(client)
+        if hashing_full():
+            return refused(login_body("The server is busy checking other sign-ins. "
+                                      "Try again in a moment."), 503)
+        # Each try is counted wrong before its password is hashed, and the
+        # count is forgiven only once the hash says it was right. The hash
+        # runs on another thread while other logins go on, so a try counted
+        # after it would let many logins sent at once all pass the wait
+        # first. From the body being in to the count nothing waits, so each
+        # is judged after the one before it was counted.
+        record = _read().get("password") or {}
+        note_failure(client)
+        password = given.get("password", "")
+        if not await off_the_loop(matches, password, record):
             return refused(login_body("That is not the password."))
         note_success(client)
-        return signed_in_answer(new_session())
+        if outdated(record) and not hashing_full():
+            # Hashed again at today's cost while the password is at hand,
+            # with the same salt. Skipped when busy, and done next time.
+            # A settings folder that cannot be written never keeps the
+            # owner out, since the old hash still holds.
+            try:
+                keep_rehashed(record, await off_the_loop(password_record, password,
+                                                         bytes.fromhex(record["salt"])))
+            except (OSError, ValueError, RuntimeError) as e:
+                print("The password could not be kept at the new cost yet, %s. It still signs "
+                      "in, and is tried again next time." % e, flush=True)
+        return signed_in_answer(request, new_session())
 
     @app.get("/setup", include_in_schema=False)
     def setup_page():
@@ -554,8 +731,12 @@ def install(app) -> None:
             return RedirectResponse("/login", status_code=303)
         if not same_origin(dict(request.headers)):
             return refused(setup_body("That request did not come from this page."), 403)
-        # Read before the wait is looked at, as at /login.
-        given = await form(request)
+        # Read before the wait is looked at, as at /login. The code is
+        # checked and counted with nothing waiting in between, and only a
+        # right code goes on to have its password hashed.
+        given = await read_form(request)
+        if given is None:
+            return too_large(setup_body("That form sent more than a code and a password."))
         client = request.client.host if request.client else "?"
         wait = wait_left(client)
         if wait:
@@ -569,19 +750,31 @@ def install(app) -> None:
             return refused(setup_body("The password needs at least %d characters." % MIN_PASSWORD), 400)
         if password != given.get("again", ""):
             return refused(setup_body("The two passwords are not the same."), 400)
+        if hashing_full():
+            return refused(setup_body("The server is busy checking sign-ins. "
+                                      "Try again in a moment."), 503)
         note_success(client)
-        set_password(password)
+        record = await off_the_loop(password_record, password)
+        if password_set():
+            # Another setup with the code chose the password while this
+            # one's hash was made, and the first one chosen stays.
+            return RedirectResponse("/login", status_code=303)
+        keep_password(record)
         print("A password was chosen for PaperPull Server.", flush=True)
-        return signed_in_answer(new_session())
+        return signed_in_answer(request, new_session())
 
     @app.post("/logout", include_in_schema=False)
     def logout(request: Request):
         only_on_the_server()
         if not same_origin(dict(request.headers)):
             return refused(login_body("That request did not come from this page."), 403)
-        end_session(request.cookies.get(SESSION_COOKIE, ""))
+        for name in SESSION_COOKIES:
+            end_session(request.cookies.get(name, ""))
         answer = RedirectResponse("/login", status_code=303)
-        answer.delete_cookie(SESSION_COOKIE, path="/")
+        answer.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="strict")
+        if over_https(request.scope):
+            answer.delete_cookie(SECURE_SESSION_COOKIE, path="/", secure=True, httponly=True,
+                                 samesite="strict")
         return answer
 
     @app.get("/screen", include_in_schema=False)
@@ -608,7 +801,7 @@ def install(app) -> None:
         # live keyboard and mouse on every provider signed in there, so the
         # session is asked again every few seconds and the screen closes once
         # it has ended, by signing out, a new password or reset_password.py.
-        token = websocket.cookies.get(SESSION_COOKIE, "")
+        token = session_token(dict(websocket.headers))
         asked = websocket.headers.get("sec-websocket-protocol", "")
         await websocket.accept(subprotocol="binary" if "binary" in asked else None)
         try:
@@ -664,7 +857,26 @@ def output_root(install: Path, account: str) -> Path:
     # be read from it or hand its files on.
     if not isinstance(out, str):
         raise ValueError("output_dir in %s is not text" % config.name)
-    return (install / out).resolve()
+    root = (install / out).resolve()
+    # On the server the config sits in the shared folder, which others may
+    # write, and the panel keeps each run's log in this folder and reads
+    # records from it, so a folder outside the data folder is refused, a
+    # link that leads out of it too. A run refuses it the same way, in
+    # paperpull_core.storage.hold_to_the_server.
+    if enabled() and not inside_data(root):
+        raise ValueError("output_dir in %s leads outside the data folder" % config.name)
+    return root
+
+
+def inside_data(path) -> bool:
+    """Whether a folder is the data folder or inside it, judged where its
+    links lead."""
+    data = data_root().resolve()
+    try:
+        where = Path(path).resolve()
+    except (OSError, RuntimeError):
+        return False
+    return where == data or data in where.parents
 
 
 def new_files(install: Path, account: str, started: float) -> list:

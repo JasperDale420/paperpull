@@ -147,12 +147,12 @@ def puts_a_folder_on_sys_path(tree) -> bool:
 def importable_in_the_image(tree, copies) -> set:
     """Top-level names a script can import in the image. The panel loads a
     script by its path, which puts no folder on sys.path, so that is the
-    standard library, every package server/requirements.txt pins and
+    standard library, every package server/requirements.in pins and
     PaperPull's core, which the image installs. A script that puts the
     program's folder on sys.path itself, as add_account.py does, may also
     import a module the image keeps there."""
     names = set(sys.stdlib_module_names)
-    for line in (SERVER / "requirements.txt").read_text(encoding="utf-8").splitlines():
+    for line in (SERVER / "requirements.in").read_text(encoding="utf-8").splitlines():
         line = line.split("#")[0].strip()
         if line:
             names.add(re.split(r"[\[=<>~! ]", line)[0].lower().replace("-", "_"))

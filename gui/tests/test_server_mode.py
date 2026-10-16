@@ -77,7 +77,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def ask(url, method="GET", form=None, headers=None, session=None, body=None):
+def ask(url, method="GET", form=None, headers=None, session=None, body=None, timeout=20):
     """(status, headers, body) for one request, redirects not followed. form
     is sent as a form, body as JSON."""
     data, kind = None, None
@@ -91,7 +91,7 @@ def ask(url, method="GET", form=None, headers=None, session=None, body=None):
     if session:
         req.add_header("Cookie", "%s=%s" % (server_mode.SESSION_COOKIE, session))
     try:
-        with urllib.request.build_opener(NoRedirect).open(req, timeout=20) as r:
+        with urllib.request.build_opener(NoRedirect).open(req, timeout=timeout) as r:
             return r.status, r.headers, r.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         return e.code, e.headers, e.read().decode("utf-8", "replace")
@@ -200,6 +200,136 @@ def test_signing_in_and_out(base, on_server):
     status, headers, _ = ask(base + "/logout", "POST", session=session)
     assert status == 303 and headers["Location"] == "/login"
     assert ask(base + "/", session=session)[0] == 303
+
+
+def session_cookies(headers) -> dict:
+    """{name: the whole Set-Cookie line} for each session cookie an answer sets."""
+    out = {}
+    for value in headers.get_all("Set-Cookie") or []:
+        name = value.partition("=")[0]
+        if name in server_mode.SESSION_COOKIES:
+            out[name] = value
+    return out
+
+
+def is_secure(cookie: str) -> bool:
+    return "secure" in [part.strip().lower() for part in cookie.split(";")]
+
+
+def test_the_session_cookie_travels_only_over_https_when_it_came_that_way(base, on_server):
+    """On the home network the panel speaks plain HTTP, and a browser keeps
+    no Secure cookie sent that way, so there the cookie is not marked.
+    Behind a reverse proxy that adds HTTPS it is, under a name of its own,
+    so a later plain HTTP visit to the proxy's name never carries it in the
+    clear, and a plain HTTP sign-in at that name is never refused its cookie
+    because the browser holds a Secure one of the same name."""
+    server_mode.set_password(PASSWORD)
+    plain = session_cookies(ask(base + "/login", "POST", {"password": PASSWORD})[1])
+    assert list(plain) == [server_mode.SESSION_COOKIE]
+    assert not is_secure(plain[server_mode.SESSION_COOKIE])
+    for proxy in ({"X-Forwarded-Proto": "https"},
+                  {"X-Forwarded-Proto": "https, http"},
+                  {"Forwarded": 'for=192.0.2.1;proto="https", for=10.0.0.2;proto=http'}):
+        status, headers, _ = ask(base + "/login", "POST", {"password": PASSWORD}, headers=proxy)
+        cookies = session_cookies(headers)
+        assert status == 303 and list(cookies) == [server_mode.SECURE_SESSION_COOKIE], proxy
+        assert is_secure(cookies[server_mode.SECURE_SESSION_COOKIE]), proxy
+    for proxy in ({"X-Forwarded-Proto": "http"}, {"X-Forwarded-Proto": "http, https"},
+                  {"Forwarded": "for=192.0.2.1;proto=http"}):
+        status, headers, _ = ask(base + "/login", "POST", {"password": PASSWORD}, headers=proxy)
+        assert status == 303 and list(session_cookies(headers)) == [server_mode.SESSION_COOKIE]
+
+
+def test_a_session_from_either_cookie_is_signed_in_and_signing_out_ends_both(base, on_server):
+    plain = signed_in(base)
+    over_https = {"X-Forwarded-Proto": "https"}
+    secure = session_cookies(ask(base + "/login", "POST", {"password": PASSWORD},
+                                 headers=over_https)[1])[server_mode.SECURE_SESSION_COOKIE]
+    secure = secure.split(";")[0].partition("=")[2]
+    both = {"Cookie": "%s=%s; %s=%s" % (server_mode.SECURE_SESSION_COOKIE, secure,
+                                        server_mode.SESSION_COOKIE, plain)}
+    as_secure = {"Cookie": "%s=%s" % (server_mode.SECURE_SESSION_COOKIE, secure)}
+    assert ask(base + "/", headers=as_secure)[0] == 200
+    assert ask(base + "/", session=plain)[0] == 200
+    # A plain cookie whose session ended does not hide a live Secure one.
+    stale = {"Cookie": "%s=%s; %s=%s" % (server_mode.SESSION_COOKIE, "ended",
+                                         server_mode.SECURE_SESSION_COOKIE, secure)}
+    assert ask(base + "/", headers=stale)[0] == 200
+
+    status, headers, _ = ask(base + "/logout", "POST", headers=dict(both, **over_https))
+    assert status == 303
+    cleared = session_cookies(headers)
+    assert sorted(cleared) == sorted(server_mode.SESSION_COOKIES)
+    assert is_secure(cleared[server_mode.SECURE_SESSION_COOKIE])
+    assert ask(base + "/", headers=as_secure)[0] == 303
+    assert ask(base + "/", session=plain)[0] == 303
+
+
+def test_the_https_cookie_belongs_to_this_name_alone(base, on_server):
+    """The __Host- prefix has a browser keep the cookie only when it is
+    Secure, for the whole site and with no Domain, so no other name under
+    the same domain can set or replace it."""
+    assert server_mode.SECURE_SESSION_COOKIE == "__Host-paperpull_session"
+    server_mode.set_password(PASSWORD)
+    over_https = {"X-Forwarded-Proto": "https"}
+    given = session_cookies(ask(base + "/login", "POST", {"password": PASSWORD},
+                                headers=over_https)[1])[server_mode.SECURE_SESSION_COOKIE]
+    token = given.split(";")[0].partition("=")[2]
+    cleared = session_cookies(ask(base + "/logout", "POST", headers=dict(over_https, Cookie="%s=%s" % (
+        server_mode.SECURE_SESSION_COOKIE, token)))[1])[server_mode.SECURE_SESSION_COOKIE]
+    for line in (given, cleared):
+        parts = [part.strip().lower() for part in line.split(";")]
+        assert "secure" in parts and "path=/" in parts, line
+        assert not any(part.startswith("domain") for part in parts), line
+
+
+def test_signing_out_by_plain_http_leaves_the_secure_cookie_alone(base, on_server):
+    """A browser would refuse to clear it from a plain HTTP page anyway."""
+    session = signed_in(base)
+    status, headers, _ = ask(base + "/logout", "POST", session=session)
+    assert status == 303 and list(session_cookies(headers)) == [server_mode.SESSION_COOKIE]
+
+
+def test_choosing_the_password_through_an_https_proxy_marks_the_cookie(base, on_server):
+    ask(base + "/setup")
+    status, headers, _ = ask(base + "/setup", "POST",
+                             {"code": server_mode._SETUP["code"], "password": PASSWORD,
+                              "again": PASSWORD}, headers={"X-Forwarded-Proto": "https"})
+    cookies = session_cookies(headers)
+    assert status == 303 and list(cookies) == [server_mode.SECURE_SESSION_COOKIE]
+    assert is_secure(cookies[server_mode.SECURE_SESSION_COOKIE])
+
+
+def scope_with(scheme: str, *headers) -> dict:
+    return {"scheme": scheme, "headers": [(k.encode(), v.encode()) for k, v in headers]}
+
+
+def test_what_a_proxy_says_is_read_from_its_first_line_and_entry():
+    """Read straight from the scope, since the test server's uvicorn trusts
+    proxy headers from 127.0.0.1 and turns some into the scheme itself."""
+    https = server_mode.over_https
+    assert https(scope_with("https")) and https(scope_with("wss"))
+    assert not https(scope_with("http")) and not https(scope_with("ws"))
+    assert https(scope_with("http", ("x-forwarded-proto", "https")))
+    assert https(scope_with("http", ("X-Forwarded-Proto", " HTTPS , http")))
+    assert not https(scope_with("http", ("x-forwarded-proto", "http, https")))
+    assert https(scope_with("http", ("x-forwarded-proto", "https"), ("x-forwarded-proto", "http")))
+    assert not https(scope_with("http", ("x-forwarded-proto", "http"), ("x-forwarded-proto", "https")))
+    assert https(scope_with("http", ("forwarded", 'for=192.0.2.1;Proto="https";host=nas')))
+    assert not https(scope_with("http", ("forwarded", "for=192.0.2.1;proto=http, proto=https")))
+    assert not https(scope_with("http", ("forwarded", "for=192.0.2.1")))
+
+
+def test_the_session_is_found_in_either_cookie(on_server):
+    server_mode.set_password(PASSWORD)
+    live = server_mode.new_session()
+    secure, plain = server_mode.SECURE_SESSION_COOKIE, server_mode.SESSION_COOKIE
+    assert server_mode.session_token({"cookie": "%s=%s" % (secure, live)}) == live
+    assert server_mode.session_token({"cookie": "%s=%s" % (plain, live)}) == live
+    assert server_mode.session_token({"cookie": "%s=old; %s=%s" % (secure, plain, live)}) == live
+    assert server_mode.session_token({"cookie": "%s=old; %s=%s" % (plain, secure, live)}) == live
+    assert server_mode.session_token({"cookie": "other=%s" % live}) == ""
+    assert server_mode.session_token({}) == ""
 
 
 def test_wrong_passwords_make_an_address_wait(base, on_server):
@@ -441,8 +571,9 @@ def test_a_closed_screen_tab_ends_its_connection_quietly(on_server, monkeypatch)
     run(scenario())
 
 
+@pytest.mark.parametrize("cookie", server_mode.SESSION_COOKIES)
 @pytest.mark.parametrize("end", ["signing out", "a new password", "the reset tool"])
-def test_an_open_browser_screen_closes_once_its_session_ends(on_server, monkeypatch, end):
+def test_an_open_browser_screen_closes_once_its_session_ends(on_server, monkeypatch, end, cookie):
     """The gate looks at the session when the Browser Screen connects, and
     the connection then carried keyboard and mouse until one side closed.
     Signing out, a new password and reset_password.py all left a screen
@@ -478,7 +609,7 @@ def test_an_open_browser_screen_closes_once_its_session_ends(on_server, monkeypa
 
         scope = {"type": "websocket", "path": "/screen/websockify", "query_string": b"",
                  "headers": [(b"host", b"nas.local:8765"), (b"origin", b"http://nas.local:8765"),
-                             (b"cookie", ("%s=%s" % (server_mode.SESSION_COOKIE, token)).encode())]}
+                             (b"cookie", ("%s=%s" % (cookie, token)).encode())]}
         screen = asyncio.ensure_future(app(scope, receive, send))
         try:
             await asyncio.wait_for(connected.wait(), 10)
@@ -535,6 +666,347 @@ def test_wrong_passwords_sent_at_once_still_wait(base, on_server):
             s.close()
     assert statuses.count(401) <= server_mode.FREE_TRIES, statuses
     assert statuses.count(429) == tries - statuses.count(401), statuses
+
+
+def until(check, seconds=20):
+    """Wait for something another thread does, up to a limit, and say
+    whether it happened."""
+    end = time.time() + seconds
+    while time.time() < end:
+        if check():
+            return True
+        time.sleep(0.02)
+    return check()
+
+
+def held_hash(monkeypatch, answer=None):
+    """Replace the password check with one that waits for its release, and
+    return (release, calls, running, most). answer None gives the real one's
+    answer once released."""
+    release, lock = threading.Event(), threading.Lock()
+    calls, running, most = [], [0], [0]
+    real = server_mode.matches
+
+    def held(password, record):
+        with lock:
+            calls.append(password)
+            running[0] += 1
+            most[0] = max(most[0], running[0])
+        release.wait(30)
+        with lock:
+            running[0] -= 1
+        return real(password, record) if answer is None else answer
+
+    monkeypatch.setattr(server_mode, "matches", held)
+    return release, calls, running, most
+
+
+def in_threads(jobs) -> list:
+    """Start each job on a thread of its own, and return the threads."""
+    threads = [threading.Thread(target=job, daemon=True) for job in jobs]
+    for thread in threads:
+        thread.start()
+    return threads
+
+
+def test_the_panel_answers_while_a_password_is_hashed(base, on_server, monkeypatch):
+    """scrypt ran inside the sign-in route itself, so while a password was
+    hashed the panel answered nobody. It runs on a thread of its own now."""
+    server_mode.set_password(PASSWORD)
+    release, calls, _, _ = held_hash(monkeypatch)
+    answers = []
+    threads = in_threads([lambda: answers.append(ask(base + "/login", "POST", {"password": PASSWORD}))])
+    try:
+        assert until(lambda: calls), "the sign-in never reached its hash"
+        assert ask(base + "/favicon.ico", timeout=5)[0] == 200
+        assert ask(base + "/login", timeout=5)[0] == 200
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(30)
+    assert answers[0][0] == 303
+
+
+def test_logins_sent_at_once_are_counted_before_their_hash_runs(base, on_server, monkeypatch):
+    """With the hash on another thread, a login counted wrong only after its
+    hash would let every login sent at once pass the wait first. Each is
+    counted before, so while the free tries' hashes are still running,
+    every other try is already told to wait."""
+    server_mode.set_password(PASSWORD)
+    release, calls, _, _ = held_hash(monkeypatch, answer=False)
+    tries, answers = 12, []
+    threads = in_threads([lambda: answers.append(
+        ask(base + "/login", "POST", {"password": "a wrong guess"})[0])] * tries)
+    try:
+        waited = until(lambda: len(answers) >= tries - server_mode.FREE_TRIES)
+        assert waited and answers == [429] * (tries - server_mode.FREE_TRIES), answers
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(30)
+    assert sorted(answers) == [401] * server_mode.FREE_TRIES + [429] * (tries - server_mode.FREE_TRIES)
+    assert len(calls) == server_mode.FREE_TRIES
+
+
+def test_only_a_few_hashes_run_at_once(base, on_server, monkeypatch):
+    server_mode.set_password(PASSWORD)
+    release, calls, running, most = held_hash(monkeypatch, answer=False)
+    answers = []
+    threads = in_threads([lambda: answers.append(
+        ask(base + "/login", "POST", {"password": "a wrong guess"})[0])] * server_mode.FREE_TRIES)
+    try:
+        assert until(lambda: server_mode._HASHING["busy"] == server_mode.FREE_TRIES)
+        assert until(lambda: running[0] == server_mode.HASHES_AT_ONCE)
+        assert running[0] == server_mode.HASHES_AT_ONCE and len(calls) == server_mode.HASHES_AT_ONCE
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(30)
+    assert answers == [401] * server_mode.FREE_TRIES
+    assert most[0] == server_mode.HASHES_AT_ONCE and server_mode._HASHING["busy"] == 0
+
+
+def test_a_sign_in_with_too_many_hashes_waiting_is_told_to_try_again(base, on_server, monkeypatch):
+    server_mode.set_password(PASSWORD)
+    monkeypatch.setitem(server_mode._HASHING, "busy",
+                        server_mode.HASHES_AT_ONCE + server_mode.HASHES_WAITING)
+    status, _, page = ask(base + "/login", "POST", {"password": PASSWORD})
+    assert status == 503 and "Try again in a moment" in page
+    assert server_mode._FAILS == {}, "a try that was never hashed is not counted"
+
+
+def test_the_cost_is_owasps_and_fits_the_memory_a_hash_may_take():
+    """n=2**14, r=8, p=5 is the OWASP profile of 16 MiB, the same memory as
+    the cost before it. OpenSSL asks 128 * r * (n + p + 2) bytes for one hash."""
+    def need(cost):
+        return 128 * cost["r"] * (cost["n"] + cost["p"] + 2)
+
+    cost = server_mode.SCRYPT
+    assert cost == {"n": 2 ** 14, "r": 8, "p": 5}
+    assert need(cost) == need({"n": 2 ** 14, "r": 8, "p": 1}) + 128 * 8 * 4
+    assert 3 * need(cost) <= server_mode.SCRYPT_MAXMEM < need({"n": 2 ** 16, "r": 8, "p": 1})
+    record = server_mode.password_record(PASSWORD)
+    assert record["scrypt"] == cost and server_mode.matches(PASSWORD, record)
+    assert server_mode.matches(PASSWORD, old_record(PASSWORD))
+
+
+def test_a_cost_asking_for_more_memory_fails_like_a_wrong_password():
+    greedy = {"scrypt": {"n": 2 ** 20, "r": 8, "p": 1}, "salt": "00" * 16, "hash": "00" * 32}
+    started = time.time()
+    assert server_mode.matches(PASSWORD, greedy) is False
+    assert time.time() - started < 5
+
+
+def old_record(password: str) -> dict:
+    """A password kept the way 0.53.0 and before kept it."""
+    cost, salt = {"n": 2 ** 14, "r": 8, "p": 1}, os.urandom(16)
+    return {"scrypt": cost, "salt": salt.hex(), "hash": server_mode._scrypt(password, salt, cost).hex()}
+
+
+def test_a_password_kept_at_the_old_cost_is_hashed_again_when_it_signs_in(base, on_server):
+    old = old_record(PASSWORD)
+    server_mode.keep_password(old)
+    earlier = server_mode.new_session()
+    assert server_mode.check_password(PASSWORD)
+
+    assert ask(base + "/login", "POST", {"password": "not it at all"})[0] == 401
+    assert server_mode._read()["password"] == old, "a wrong password changes nothing"
+
+    status, headers, _ = ask(base + "/login", "POST", {"password": PASSWORD})
+    assert status == 303
+    kept = server_mode._read()["password"]
+    assert kept["scrypt"] == server_mode.SCRYPT and kept["salt"] == old["salt"]
+    assert kept["hash"] != old["hash"]
+    assert server_mode.check_password(PASSWORD) and not server_mode.check_password(PASSWORD + "!")
+    # The same password and salt, so nobody was signed out.
+    assert server_mode.session_valid(earlier)
+    assert ask(base + "/", session=session_from(headers))[0] == 200
+    # Already at today's cost, a sign-in leaves it as it is.
+    assert ask(base + "/login", "POST", {"password": PASSWORD})[0] == 303
+    assert server_mode._read()["password"] == kept
+
+
+def test_a_settings_folder_that_cannot_be_written_never_keeps_the_owner_out(
+        base, on_server, monkeypatch):
+    old = old_record(PASSWORD)
+    server_mode.keep_password(old)
+
+    def cannot(data):
+        raise PermissionError("the settings volume is read-only")
+
+    monkeypatch.setattr(server_mode, "_write", cannot)
+    status, headers, _ = ask(base + "/login", "POST", {"password": PASSWORD})
+    assert status == 303 and session_from(headers)
+    assert server_mode._read()["password"] == old
+
+
+@pytest.mark.parametrize("damaged", ["[1, 2]", '"text"', "7", "null"])
+def test_damaged_settings_lead_to_the_setup_page_not_an_error(base, on_server, tmp_path, damaged):
+    (tmp_path / "config").mkdir(exist_ok=True)
+    (tmp_path / "config" / "server.json").write_text(damaged, encoding="utf-8")
+    assert not server_mode.password_set()
+    status, headers, _ = ask(base + "/")
+    assert status == 303 and headers["Location"] == "/setup"
+
+
+def test_a_link_left_at_the_run_logs_old_temporary_name_is_not_written_through(tmp_path):
+    """The run log was written to panel-runs.json.tmp, a fixed name, so on
+    the server anyone with the share could leave a link there and have the
+    panel's next write land in the file it points to. A hard link stands in
+    for one, since it needs no special right on Windows."""
+    root = tmp_path / "Shop Receipts"
+    root.mkdir()
+    victim = tmp_path / "server.json"
+    victim.write_text('{"password": {"kept": true}}', encoding="utf-8")
+    os.link(victim, root / (app_module.RUN_LOG + ".tmp"))
+    os.link(victim, root / app_module.RUN_LOG)
+
+    app_module._note_run(root, {"action": "pilot", "exit_code": 0})
+
+    assert victim.read_text(encoding="utf-8") == '{"password": {"kept": true}}'
+    kept = json.loads((root / app_module.RUN_LOG).read_text(encoding="utf-8"))
+    assert kept == [{"action": "pilot", "exit_code": 0}]
+    assert sorted(p.name for p in root.iterdir()) == sorted(
+        [app_module.RUN_LOG, app_module.RUN_LOG + ".tmp"])
+
+
+def test_a_password_changed_while_its_new_hash_was_made_stays_changed(on_server):
+    old = old_record(PASSWORD)
+    server_mode.keep_password(old)
+    again = server_mode.password_record(PASSWORD, bytes.fromhex(old["salt"]))
+    server_mode.set_password(PASSWORD + " changed")
+    assert server_mode.keep_rehashed(old, again) is False
+    assert server_mode.check_password(PASSWORD + " changed")
+    assert server_mode.keep_rehashed(server_mode._read()["password"], again) is False, \
+        "a hash of another salt never replaces the record"
+
+
+def test_two_setups_at_once_keep_the_first_password_chosen(base, on_server, monkeypatch):
+    """The setup's hash runs on another thread too. Two setups with the
+    code, both waiting on their hash, cannot both choose the password, and
+    the one finished first stays chosen."""
+    ask(base + "/setup")
+    code = server_mode._SETUP["code"]
+    gates = {PASSWORD: threading.Event(), PASSWORD + " two": threading.Event()}
+    entered, answers = [], {}
+    real = server_mode.password_record
+
+    def held(password, salt=None):
+        entered.append(password)
+        gates[password].wait(30)
+        return real(password, salt)
+
+    monkeypatch.setattr(server_mode, "password_record", held)
+
+    def choose(password):
+        answers[password] = ask(base + "/setup", "POST",
+                                {"code": code, "password": password, "again": password})
+
+    first, second = in_threads([lambda: choose(PASSWORD), lambda: choose(PASSWORD + " two")])
+    try:
+        assert until(lambda: len(entered) == 2)
+        gates[PASSWORD].set()
+        first.join(30)
+    finally:
+        for gate in gates.values():
+            gate.set()
+        second.join(30)
+    assert answers[PASSWORD][0] == 303 and answers[PASSWORD][1]["Location"] == "/"
+    assert answers[PASSWORD + " two"][0] == 303
+    assert answers[PASSWORD + " two"][1]["Location"] == "/login"
+    assert not session_cookies(answers[PASSWORD + " two"][1])
+    assert server_mode.check_password(PASSWORD) and not server_mode.check_password(PASSWORD + " two")
+
+
+# -- a sign-in's body has a limit --------------------------------------------------------
+
+def raw_post(base, path: str, head_lines: list, pieces=(), finish=True, timeout=10):
+    """Send a POST by hand, its body in pieces as given, and return (status,
+    whether the server closed the connection). With finish False the body is
+    never ended, so an answer proves the server stopped reading on its own."""
+    port = int(base.rsplit(":", 1)[1])
+    head = ("POST %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nOrigin: %s\r\n"
+            "Content-Type: application/x-www-form-urlencoded\r\n" % (path, port, base))
+    head += "".join(line + "\r\n" for line in head_lines) + "\r\n"
+    with socket.create_connection(("127.0.0.1", port), timeout=timeout) as s:
+        s.sendall(head.encode())
+        for piece in pieces:
+            s.sendall(piece)
+        if finish and any(line.lower().startswith("transfer-encoding") for line in head_lines):
+            s.sendall(b"0\r\n\r\n")
+        answer = b""
+        while b"\r\n\r\n" not in answer:
+            got = s.recv(65536)
+            if not got:
+                break
+            answer += got
+        head_part = answer.split(b"\r\n\r\n", 1)[0].lower()
+        length = 0
+        for line in head_part.split(b"\r\n"):
+            if line.startswith(b"content-length:"):
+                length = int(line.split(b":", 1)[1])
+        rest = answer.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in answer else b""
+        while len(rest) < length:
+            got = s.recv(65536)
+            if not got:
+                break
+            rest += got
+        try:
+            closed = s.recv(1) == b""
+        except (socket.timeout, OSError):
+            closed = False
+    return int(answer.split(b" ", 2)[1]), closed
+
+
+def chunk(data: bytes) -> bytes:
+    return b"%x\r\n%s\r\n" % (len(data), data)
+
+
+def test_a_sign_in_that_says_it_is_too_long_is_refused_before_it_is_read(base, on_server):
+    """The whole body used to be read before a slice of it was kept. A
+    length over the limit is refused now without reading a byte of it."""
+    server_mode.set_password(PASSWORD)
+    status, closed = raw_post(base, "/login", ["Content-Length: %d" % (server_mode.FORM_LIMIT + 1)],
+                              finish=False)
+    assert status == 413 and closed
+    assert server_mode._FAILS == {}
+
+
+def test_the_setup_form_has_the_limit_too(base, on_server):
+    ask(base + "/setup")
+    status, closed = raw_post(base, "/setup", ["Content-Length: 1000000"], finish=False)
+    assert status == 413 and closed and not server_mode.password_set()
+
+
+def test_a_body_sent_in_pieces_is_refused_once_it_passes_the_limit(base, on_server):
+    """With no length given, the body is read as it comes and refused the
+    moment it passes the limit, without waiting for its end."""
+    server_mode.set_password(PASSWORD)
+    pieces = [chunk(b"password=" + b"x" * 4000), chunk(b"x" * 4000), chunk(b"x" * 1000)]
+    status, closed = raw_post(base, "/login", ["Transfer-Encoding: chunked"], pieces, finish=False)
+    assert status == 413 and closed and server_mode._FAILS == {}
+
+
+def test_a_body_sent_in_pieces_within_the_limit_signs_in(base, on_server):
+    server_mode.set_password(PASSWORD)
+    form = urllib.parse.urlencode({"password": PASSWORD}).encode()
+    pieces = [chunk(form[:5]), chunk(form[5:])]
+    assert raw_post(base, "/login", ["Transfer-Encoding: chunked"], pieces)[0] == 303
+
+
+def test_a_body_of_exactly_the_limit_is_read(base, on_server):
+    server_mode.set_password(PASSWORD)
+    form = urllib.parse.urlencode({"password": PASSWORD}).encode() + b"&pad="
+    form += b"x" * (server_mode.FORM_LIMIT - len(form))
+    assert raw_post(base, "/login", ["Content-Length: %d" % len(form)], [form])[0] == 303
+    over = form + b"x"
+    assert raw_post(base, "/login", ["Content-Length: %d" % len(over)], [over])[0] == 413
+
+
+def test_a_sign_in_with_no_body_is_a_wrong_password(base, on_server):
+    server_mode.set_password(PASSWORD)
+    assert raw_post(base, "/login", ["Content-Length: 0"])[0] == 401
+    assert raw_post(base, "/login", [])[0] == 401
 
 
 def test_the_screen_bridge_carries_bytes_both_ways():

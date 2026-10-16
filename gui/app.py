@@ -1142,10 +1142,17 @@ def _note_run(root: Path, entry: dict) -> None:
     newest RUN_LOG_KEEP. Best effort. A folder that cannot be written keeps
     no log, and a run is never failed for it."""
     path = root / RUN_LOG
-    tmp = root / (RUN_LOG + ".tmp")
+    text = json.dumps(([entry] + _read_run_log(root))[:RUN_LOG_KEEP], indent=1)
     try:
-        tmp.write_text(json.dumps(([entry] + _read_run_log(root))[:RUN_LOG_KEEP], indent=1),
-                       encoding="utf-8")
+        # A new file of its own, never one already there. On the server the
+        # folder is in the shared folder, where a link left at a fixed name
+        # would have this write land wherever it points. The swap below
+        # replaces a link at the log's own name rather than follow it.
+        tmp = root / ("%s.%s.tmp" % (RUN_LOG, os.urandom(6).hex()))
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                     0o666)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
     except OSError:
         return
     # On Windows a reader holding the log, OneDrive's sync, a virus scanner
@@ -1666,7 +1673,10 @@ def create_install(root: Path, slug: str, owner: str = "") -> str:
 def _set_profile(config: Path, profile: str) -> None:
     """Where an install's signed-in browser profile lives. On PaperPull
     Server that is the profiles volume, since the install itself is in the
-    shared folder, which anyone the share is open to can read."""
+    shared folder, which anyone the share is open to can read. A run there
+    takes the profile from the volume whatever the file says
+    (paperpull_core.storage.server_profile_dir), so this keeps the file
+    saying what is true."""
     try:
         data = json.loads(config.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
@@ -2210,6 +2220,18 @@ def _migrate_module():
     return _MIGRATE_MOD or None
 
 
+def _history_keep():
+    """Which folders a history export or import may read and write. On
+    PaperPull Server only those inside the data folder, wherever a config in
+    the shared folder points, and on the desktop every one, as before."""
+    return server_mode.inside_data if server_mode.enabled() else None
+
+
+def _history_outside(where: Path) -> bool:
+    keep = _history_keep()
+    return keep is not None and not keep(where)
+
+
 def _migrate_or_fail():
     mod = _migrate_module()
     if mod is None:
@@ -2222,7 +2244,7 @@ def api_history_export():
     """The history file, handed to the browser. Written in memory, so no
     copy of it is left on this computer or in the server's shared folder."""
     mod = _migrate_or_fail()
-    data, _ = mod.build(apps_root())
+    data, _ = mod.build(apps_root(), keep=_history_keep())
     if data is None:
         raise HTTPException(404, "there is no download history here to export yet")
     name = "PaperPull history %s.ppz" % date.today().isoformat()
@@ -2330,6 +2352,8 @@ def _history_place(mod, entry, places, providers, root: Path, apply: bool):
                 _apply_settings(mod, install / "config.json", install, entry["settings"])
             cfg = _read_json(install / "config.json") or {}
             where = mod.output_dir_of(install, cfg, tmpl["provider"])
+        if _history_outside(where):
+            return None, "its folder is outside the data folder"
         have = mod.history_at(where)
         if have is None:
             return None, "the history already in %s could not be read" % where.name
@@ -2357,6 +2381,8 @@ def _history_place(mod, entry, places, providers, root: Path, apply: bool):
     rel = (acct.output_dir_for(install, cfg, account) if acct
            else str(Path("..") / ("%s - %s" % (install.name, account))))
     where = mod.output_dir_of(install, {"output_dir": rel}, tmpl["provider"])
+    if _history_outside(where):
+        return None, "its folder is outside the data folder"
     have = mod.history_at(where)
     if have is None:
         return None, "the history already in %s could not be read" % where.name
@@ -2365,6 +2391,8 @@ def _history_place(mod, entry, places, providers, root: Path, apply: bool):
         dest = _make_account(install, account, owner)
         _apply_settings(mod, dest, install, entry["settings"])
         made = mod.output_dir_of(install, _read_json(dest) or {}, tmpl["provider"])
+        if _history_outside(made):
+            return None, "its folder is outside the data folder"
         if made != where:
             where, have = made, mod.history_at(made) or {}
     place = {"folder": where.name, "install": install.name, "account": account,
@@ -2380,7 +2408,7 @@ def _history_walk(mod, manifest: dict, root: Path, apply: bool) -> list:
     person it names, done when apply is true. The plan and the import are
     this same walk, so they cannot disagree."""
     providers = list_providers()
-    places = mod.scan(root) if root.is_dir() else []
+    places = mod.scan(root, _history_keep()) if root.is_dir() else []
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     rows = []
     for entry in manifest["apps"]:
@@ -3455,11 +3483,19 @@ def _naming_records(d: Path) -> list:
     """The first person's records, for the preview and the fill rates.
     Read from the output folder the config names, since that is where a
     run keeps them, and it is not always the install."""
-    cfg = _read_json(d / "config.json") or {}
-    # The same default load_config gives an absent output_dir.
-    out = Path(cfg.get("output_dir") or (Path.home() / "Downloads" / _provider_name(d)))
-    if not out.is_absolute():
-        out = d / out
+    if server_mode.enabled():
+        # On the server the config is in the shared folder, so only a folder
+        # inside the data folder is read, the way a run's own folder is found.
+        try:
+            out = server_mode.output_root(d, "primary")
+        except ValueError:
+            return []
+    else:
+        cfg = _read_json(d / "config.json") or {}
+        # The same default load_config gives an absent output_dir.
+        out = Path(cfg.get("output_dir") or (Path.home() / "Downloads" / _provider_name(d)))
+        if not out.is_absolute():
+            out = d / out
     data = _read_json(out / "progress.json")
     if isinstance(data, dict):
         data = list(data.values())

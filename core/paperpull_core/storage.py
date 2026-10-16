@@ -73,6 +73,8 @@ def load_config(path: Optional[Path] = None) -> dict:
         raise SystemExit(
             str(path) + " is not valid JSON: " + str(e) + "\n"
             "Open it and fix the syntax - a trailing comma is the usual cause.")
+    if os.environ.get("PAPERPULL_SERVER") == "1":
+        hold_to_the_server(cfg, path)
     cfg.setdefault("output_dir", str(Path.home() / "Downloads" / sp.provider))
     cfg.setdefault("min_pdf_bytes", 3000)
     cfg.setdefault("max_path_length", 240)
@@ -95,6 +97,96 @@ def load_config(path: Optional[Path] = None) -> dict:
     # config before it names anything, so no app has to remember to.
     set_filename_patterns(cfg)
     return cfg
+
+
+# -- PaperPull Server ----------------------------------------------------------
+#
+# On PaperPull Server an install's config.json lives in /data, often a shared
+# folder that other people on the network can write to. Three of its
+# settings decide where a run reaches outside the install. profile_dir is
+# where a signed-in browser profile is kept, cdp_url is the browser a run
+# drives, and output_dir is where documents and records are written. So on
+# the server none of the three is taken from the file on trust. output_dir
+# is judged where the run starts, and links made inside that folder later
+# are not. The desktop reads all three exactly as it always has.
+
+# A cdp_url the server connects to, matched whole. A URL parser and a
+# browser can read one text as two different hosts, a backslash or an @ in
+# it for instance, so nothing past a scheme, a loopback name, a port and a
+# plain path is taken.
+_LOOPBACK_CDP = re.compile(
+    r"(?:https?|wss?)://(?:127\.0\.0\.1|localhost)(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~/-]*)?",
+    re.IGNORECASE | re.ASCII)
+
+
+def hold_to_the_server(cfg: dict, path: Path) -> None:
+    """Hold a config read on PaperPull Server to the server's own places,
+    from what the file itself says, before any default is filled in. The
+    profile is always the one the panel gives the account, a cdp_url has
+    to name a browser inside the container, and output_dir has to lead
+    inside the data folder. SystemExit, before anything is opened or
+    written, for a cdp_url or an output_dir that does not."""
+    name = Path(path).name
+    profile = server_profile_dir(path)
+    given = cfg.get("profile_dir")
+    if given is not None and not (isinstance(given, str)
+                                  and os.path.normpath(given) == os.path.normpath(profile)):
+        print("%s names \"%s\" as profile_dir, but on PaperPull Server an account's "
+              "signed-in browser profile is always kept on the profiles volume, "
+              "so %s is used." % (name, given, profile), flush=True)
+    cfg["profile_dir"] = profile
+
+    cdp = cfg.get("cdp_url")
+    if cdp and not (isinstance(cdp, str) and _LOOPBACK_CDP.fullmatch(cdp)):
+        raise SystemExit(
+            "%s names \"%s\" as cdp_url. PaperPull Server drives only a browser inside its "
+            "own container, at 127.0.0.1 or localhost, so this run stopped before "
+            "connecting to anything. Someone who can write to the shared folder may have "
+            "changed it. Set it back to http://127.0.0.1 and the port in this provider's "
+            "config.example.json." % (name, cdp))
+
+    out = cfg.get("output_dir")
+    if out is None:
+        raise SystemExit("%s names no output_dir, and on PaperPull Server a run saves only "
+                         "inside the data folder, so this run stopped before saving "
+                         "anything. Set output_dir to \".\" for this provider's own folder."
+                         % name)
+    if not isinstance(out, str):
+        raise SystemExit("output_dir in %s is not text, so this run stopped before "
+                         "saving anything." % name)
+    data = os.path.realpath(os.environ.get("APPS_ROOT") or "/data")
+    where = os.path.realpath(out)
+    try:
+        inside = os.path.commonpath([os.path.normcase(where), os.path.normcase(data)]) \
+            == os.path.normcase(data)
+    except ValueError:
+        inside = False
+    if not inside:
+        raise SystemExit(
+            "%s sends this run's documents to %s, which is outside %s, the data folder, "
+            "once its links are followed. On PaperPull Server a run's folder has to be "
+            "inside it, so this run stopped before saving anything. Set output_dir to a "
+            "folder inside %s, such as \".\" for this provider's own folder."
+            % (name, where, data, data))
+
+
+def server_profile_dir(config_path) -> str:
+    """The signed-in browser profile of the account a config is for, on the
+    profiles volume, named exactly as the panel names it (profile_for in
+    gui/server_mode.py). That is the install's folder name for config.json,
+    and "<install> - <account>" for config.<account>.json."""
+    path = Path(os.path.abspath(config_path))
+    install, name = path.parent.name, path.name
+    if name == "config.json":
+        folder = install
+    elif name.startswith("config.") and name.endswith(".json") and len(name) > len("config..json"):
+        folder = "%s - %s" % (install, name[len("config."):-len(".json")])
+    else:
+        raise SystemExit(
+            "On PaperPull Server an account's settings are read only from config.json or "
+            "config.<account>.json in its provider's folder, and %s is neither, so this "
+            "run stopped." % name)
+    return str(Path(os.environ.get("PAPERPULL_PROFILES") or "/profiles") / folder)
 
 
 _FILENAME_OWNER = ""
