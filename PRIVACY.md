@@ -18,10 +18,11 @@ a machine at home, has a page of its own, [PRIVACY-SERVER.md](PRIVACY-SERVER.md)
   password or a verification code anywhere, because it never has them. You
   type those into the provider's own page.
 - **A browser download, once, if you agree.** If no usable browser is found
-  on your computer, the sign-in step offers to download one from Playwright's
-  release server. It asks on screen first and does nothing if you decline.
-  If Edge, Chrome, Brave, Vivaldi or Opera is already installed, it uses that
-  and never offers the download.
+  on your computer and you sign in from a terminal, the sign-in step offers to
+  download a private copy of Chromium from Playwright's release server. It
+  asks first and does nothing if you decline. The control panel cannot ask,
+  so there it only says no browser was found. If Edge, Chrome, Brave, Vivaldi
+  or Opera is already installed, it uses that and never offers the download.
 
 Nothing else. There is no update check, no crash reporting, no usage
 statistics, no analytics, and no account with this project. The program has
