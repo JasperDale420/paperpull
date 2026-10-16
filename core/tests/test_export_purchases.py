@@ -328,7 +328,9 @@ LEADS = [
     ("＝1+1", "'＝1+1", True),
     ("Widget;=1+1", "Widget;'=1+1", False),
     ("Widget\n@SUM(1,1)", "Widget\n'@SUM(1,1)", False),
-    ("Refund; -12.34", "Refund; -12.34", False),
+    # A plain negative number after a ; runs on into the next value where the
+    # list separator is ; and the decimal sign a comma, so it is quoted there.
+    ("Refund; -12.34", "Refund;' -12.34", False),
     ("#N/A", "#N/A", False),
 ]
 

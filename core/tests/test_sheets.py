@@ -10,7 +10,9 @@ tested in test_csv.py and every app's own write, read and Rename in
 test_every_app_keeps_its_csv_text_as_text.py. Every value here is made up."""
 import ast
 import csv
+import functools
 import importlib.util
+import io
 import itertools
 import os
 import random
@@ -43,7 +45,10 @@ FORMULAS = [
 ]
 TEXT = ["", "Kettle", "a=b", "1-1", "12.34", "1,234.56", "'=1+1", "(12.34)",
         "PAYMENT - THANK YOU", "AplPay EXAMPLE STORE", "Size M; 20% off", "a;b",
-        "ＡＢＣ"]
+        "ＡＢＣ",
+        # A whole value starting with " is quoted by the csv module, and both
+        # a comma reader and one splitting at ; read it as the text it is.
+        '"=1+1']
 PLAIN_NEGATIVE = ["-12.34", "-1,234.56", "-42", "-0.5", "-1,000,000", " -12.34",
                   # A refund as the apps write one. Excel opened each as a
                   # number, -£12.34 as text, none as a formula.
@@ -58,10 +63,28 @@ PIECES = [
     ("=1+1;=2+2", "'=1+1;'=2+2"),
     ("\n=1+1", "'\n'=1+1"),
     ("\r=1+1", "'\r'=1+1"),
-    ("Refund; -12.34", "Refund; -12.34"),
+    ("Refund; -12.34", "Refund;' -12.34"),
+    ("q;-1", "q;'-1"),
     ("Size M; 20% off; final sale", "Size M; 20% off; final sale"),
     ("a;;b;", "a;;b;"),
+    # A piece starting with " is held as "" inside the quoted value, which a
+    # reader splitting at ; takes for an empty quoted part before the rest.
+    ('x;"=1+1;y', 'x;\'"=1+1;y'),
+    ('x\n"@SUM(1,1)', 'x\n\'"@SUM(1,1)'),
+    ('x; "-1+1', 'x;\' "-1+1'),
+    ("Widget;'=1+1", "Widget;''=1+1"),
+    ('12" deluxe; "special" edition', '12" deluxe; "special" edition'),
 ]
+# Excel drops a NUL from a CSV it opens, and =1+1 behind one opened as a
+# working formula. openpyxl takes no NUL in a cell, so these are CSV only.
+BEHIND_A_NUL = [("\x00=1+1", "'\x00=1+1"), ("\x00@SUM(1,1)", "'\x00@SUM(1,1)"),
+                ("x;\x00-1+1", "x;'\x00-1+1"), ("\x00-12.34", "\x00-12.34")]
+
+
+@pytest.mark.parametrize("text, cell", BEHIND_A_NUL)
+def test_a_nul_in_front_hides_nothing(text, cell):
+    assert csv_value(text) == cell
+    assert starts_a_formula(text) is cell.startswith("'")
 
 
 @pytest.mark.parametrize("text", FORMULAS)
@@ -237,23 +260,104 @@ _EXCEL_PLAIN = re.compile(r"-[$£€]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0
 _BREAK = re.compile(r";|\r\n|\r|\n")
 
 
-def _live(piece: str) -> bool:
-    """Whether a spreadsheet would work a cell out, seen from its side. It
-    may drop what a cell starts with that is blank, and then a sign starts
-    a formula unless the rest is a plain negative number."""
-    lead = piece.lstrip()
+def _live(cell: str) -> bool:
+    """Whether a spreadsheet would work a cell out, seen from its side.
+    Excel drops a NUL from a CSV it opens, a spreadsheet may drop blank
+    space in front, and then a sign starts a formula unless the rest is a
+    plain negative number."""
+    lead = cell.replace("\x00", "").lstrip()
     return (bool(lead) and unicodedata.normalize("NFKC", lead[0])[:1] in "=+-@"
             and not _EXCEL_PLAIN.fullmatch(lead))
 
 
+def _split_at_semicolons(piece: str) -> list:
+    """What a reader splitting a CSV at ; makes of a piece after a ; or a
+    line break, with and without blank space in front. The csv module
+    writes each " of a quoted value doubled."""
+    return _as_a_semicolon_reader_reads(piece.replace('"', '""'))
+
+
+def _as_a_semicolon_reader_reads(token: str) -> list:
+    """The cells a reader splitting at ; may make of a token as the file
+    holds it, with and without blank space in front. A cell that starts
+    with " is a quoted part, "" a quote inside it, with the rest after it."""
+    token = token.replace("\x00", "")
+    cells = []
+    for t in (token, token.lstrip()):
+        if not t.startswith('"'):
+            cells.append(t)
+            continue
+        i, quoted = 1, []
+        while i < len(t):
+            if t[i] == '"':
+                if t[i + 1:i + 2] == '"':
+                    quoted.append('"')
+                    i += 2
+                    continue
+                i += 1
+                break
+            quoted.append(t[i])
+            i += 1
+        cells.append("".join(quoted) + t[i:])
+    return cells
+
+
 def live_anywhere(text: str) -> bool:
-    """The whole value, or any piece of it a spreadsheet splitting at ; or a
-    line break would make a cell or a row of its own."""
-    return _live(text) or any(_live(p) for p in _BREAK.split(text)[1:])
+    """The whole value as Excel opens a comma CSV, or any piece of it a
+    reader splitting at ; or a line break makes a cell of its own. A model
+    of the spreadsheet, not of the rule."""
+    return _live(text) or any(_live(c) for p in _BREAK.split(text)[1:]
+                              for c in _split_at_semicolons(p))
 
 
-# What can sit in a value, each kind of thing the rule looks at.
-ALPHABET = ["'", "=", "+", "-", "@", " ", "\t", "\r", "\n", ";", "1", "a", "＝", "$"]
+def live_in_a_row(cells) -> bool:
+    """A row as the csv module writes it, read whole by a spreadsheet in a
+    country whose list separator is ; and whose decimal sign is a comma. It
+    splits the line at ; and line breaks, so the last piece of one value
+    runs on through the comma that ends it into the next value, and -1
+    beside 5+1 is read as -1,5+1."""
+    buf = io.StringIO()
+    csv.writer(buf).writerow(cells)
+    return any(_live(c) for token in _BREAK.split(buf.getvalue())
+               for c in _as_a_semicolon_reader_reads(token))
+
+
+# Values of other people's choosing to set side by side in a row. The first
+# cell of every file the apps and the tools write is the person's own name
+# or the provider's, so a row here starts with one.
+NEIGHBORS = ["-1", "q;-1", "q; -1", "q;-$12.34", "-1;q", "5+1", "5+1;q", "5", "2026-09-12",
+             "-$12.34", "Refund; -12.34", "x;", ";", "=1+1", "q;=1+1", 'q;"-1', "q;'-1",
+             "q;\x00-1", "' -1", "@x", "Widget", ""]
+
+
+@pytest.mark.parametrize("write", [store_value, csv_value], ids=["store_value", "csv_value"])
+def test_no_value_runs_on_into_the_next_as_a_formula(write):
+    assert live_in_a_row(["Dana Example", "q;-1", "5+1;q"]), "the model misses what it is for"
+    for left in NEIGHBORS:
+        for right in NEIGHBORS:
+            row = ["Dana Example", write(left), write(right)]
+            assert not live_in_a_row(row), (left, right)
+
+
+# Measured in Excel 365 on 2026-10-16, each written as it is, the way the
+# rule of the first commit of this change let it through. A NUL in front
+# opened as a working formula. A piece starting with " after a ; opened as
+# one in Excel's own import split at ;.
+EXCEL_RAN = ["\x00=1+1", "\x00-1+1", "\x00@SUM(1,1)", "\x00+1+1",
+             'x;"=1+1;y', 'x;"@SUM(1,1);y', 'x;"-1+1;y', 'x\n"=1+1;y', 'x\r\n"=1+1;y']
+
+
+@pytest.mark.parametrize("text", EXCEL_RAN)
+def test_the_model_knows_what_excel_ran_and_the_rule_keeps_it_text(text):
+    assert live_anywhere(text)
+    assert not live_anywhere(store_value(text)) and not live_anywhere(csv_value(text))
+    assert read_stored(store_value(text)) == text
+
+
+# What can sit in a value, each kind of thing the rule or a spreadsheet
+# looks at.
+ALPHABET = ["'", '"', "\x00", "=", "+", "-", "@", " ", "\t", "\r", "\n", ";", "1", "a",
+            "＝", "$"]
 
 
 def every_short_value():
@@ -263,7 +367,7 @@ def every_short_value():
 
 
 def longer_values(count=20000):
-    pieces = ALPHABET + ["\r\n", "''", "-$12.34", "-12.34", "=HYPERLINK(\"x\")", ",", '"',
+    pieces = ALPHABET + ["\r\n", "''", '""', "-$12.34", "-12.34", "=HYPERLINK(\"x\")", ",",
                          "é", "£", "kr", "SUM(1,1)", "Statement"]
     rnd = random.Random(20261016)
     for _ in range(count):
@@ -281,18 +385,21 @@ def test_every_value_reads_back_exactly_as_it_was_written():
 def test_nothing_written_is_ever_worked_out_by_a_spreadsheet():
     for value in itertools.chain(every_short_value(), longer_values()):
         assert not live_anywhere(store_value(value)), repr(value)
+        assert not live_anywhere(csv_value(value)), repr(value)
 
 
-def test_a_value_with_no_quote_in_front_is_written_as_the_exporters_write_it():
-    """One rule. A value only differs from the exporters' CSV where it
-    starts with a quote, whole or after a ; or a line break, which the
-    exporters need not tell apart since nothing reads their file back."""
+def test_a_value_with_no_quote_in_it_is_written_as_the_exporters_write_it():
+    """One rule. A value only differs from the exporters' CSV where a quote
+    of either kind starts it, which the exporters need not tell apart since
+    nothing reads their file back."""
     for value in itertools.chain(every_short_value(), longer_values()):
-        if not any(p.startswith("'") for p in [value] + _BREAK.split(value)[1:]):
+        if "'" not in value and '"' not in value:
             assert store_value(value) == csv_value(value), repr(value)
 
 
-# A value, and what the file holds for it.
+# A value, and what the file holds for it. These are the files' format,
+# which may grow and never shrink (sheets, THE APPS' OWN CSV FILES), since a
+# file written by one version is read by the next.
 STORED = [
     ("=1+1", "'=1+1"),
     ('=HYPERLINK("https://example.invalid/?"&A1,"open")',
@@ -311,17 +418,27 @@ STORED = [
     ("＝1+1", "'＝1+1"),
     ("-$A$1", "'-$A$1"),
     ("-kr12.34", "'-kr12.34"),
+    # A NUL Excel drops, and a piece starting with a " that a reader
+    # splitting at ; takes for an empty quoted part.
+    ("\x00=1+1", "'\x00=1+1"),
+    ("x;\x00=1+1", "x;'\x00=1+1"),
+    ('x;"=1+1;y', 'x;\'"=1+1;y'),
+    ('x\r\n"@SUM(1,1)', 'x\r\n\'"@SUM(1,1)'),
+    ('x; "=1+1', 'x;\' "=1+1'),
+    ('"=1+1', '\'"=1+1'),
+    ('x;"\'=1+1', 'x;\'"\'=1+1'),
     # Written as they are.
     ("'Tis the season ornament", "'Tis the season ornament"),
     ("O'Brien", "O'Brien"),
     ("'", "'"),
     ("''", "''"),
     ("Rock 'n' roll; 'live'", "Rock 'n' roll; 'live'"),
+    ('12" deluxe; "special" edition', '12" deluxe; "special" edition'),
     ("-$12.34", "-$12.34"),
     ("-$1,234.56", "-$1,234.56"),
     ("-€12.34", "-€12.34"),
     ("-12.34", "-12.34"),
-    ("Refund; -$12.34", "Refund; -$12.34"),
+    ("Refund; -$12.34", "Refund;' -$12.34"),
     ("C:\\Users\\Dana\\Shop;=1+1\\a.pdf", "C:\\Users\\Dana\\Shop;'=1+1\\a.pdf"),
     ("", ""),
 ]
@@ -353,9 +470,9 @@ def test_the_one_old_shape_that_reads_differently_is_a_quote_before_a_formula():
     2026-10-16, and no value starting with a quote at all."""
     assert read_stored("'=1+1") == "=1+1"
     assert read_stored("Widget;'=1+1") == "Widget;=1+1"
+    assert read_stored("'\"=1+1") == '"=1+1'
     for value in itertools.chain(every_short_value(), longer_values()):
-        pieces = [value] + _BREAK.split(value)[1:]
-        if not any(p.startswith("'") and starts_a_formula(p.lstrip("'")) for p in pieces):
+        if not any(p.startswith("'") for p in [value] + _BREAK.split(value)[1:]):
             assert read_stored(value) == value, repr(value)
 
 
@@ -395,16 +512,32 @@ def sources():
     return sorted(out)
 
 
+@functools.lru_cache(maxsize=None)
+def _parsed(repo: Path) -> tuple:
+    """Each source file and its tree, read once for every test here."""
+    return tuple((p, ast.parse(p.read_text(encoding="utf-8-sig"))) for p in sources())
+
+
+def _kind(n):
+    """'reads' or 'writes' for a csv reader or writer made at this node, a
+    pandas-style read_csv and to_csv counted too, else None."""
+    if not isinstance(n, ast.Attribute):
+        return None
+    if n.attr == "read_csv":
+        return "reads"
+    if n.attr == "to_csv":
+        return "writes"
+    if isinstance(n.value, ast.Name) and n.value.id == "csv":
+        if n.attr in ("reader", "DictReader"):
+            return "reads"
+        if n.attr in ("writer", "DictWriter"):
+            return "writes"
+    return None
+
+
 def _makes(node) -> set:
     """Whether a function makes a csv reader or a csv writer."""
-    kinds = set()
-    for n in ast.walk(node):
-        if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "csv":
-            if n.attr in ("reader", "DictReader"):
-                kinds.add("reads")
-            elif n.attr in ("writer", "DictWriter"):
-                kinds.add("writes")
-    return kinds
+    return {k for k in map(_kind, ast.walk(node)) if k}
 
 
 def _calls(node) -> set:
@@ -421,8 +554,7 @@ def csv_functions() -> dict:
     """'<path>::<function>' to what it does with a csv, for every function
     in the repository that makes a csv reader or writer."""
     out = {}
-    for path in sources():
-        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+    for path, tree in _parsed(REPO):
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _makes(node):
                 name = "%s::%s" % (path.relative_to(REPO).as_posix(), node.name)
@@ -430,9 +562,37 @@ def csv_functions() -> dict:
     return out
 
 
-# How each kind of use has to go through the rule.
-THROUGH = {"reads": {"read_stored", "read_stored_row"},
-           "writes": {"store_value", "csv_value"}}
+def csv_out_of_sight() -> list:
+    """Every way of reaching csv the census above would not see. A reader or
+    writer made outside any function, and csv imported under another name
+    or a name taken from it. Code splitting the files' text itself is not
+    seen by any of this, and on 2026-10-16 a search of the repository for
+    the three files' names and paths found none."""
+    out = []
+    for path, tree in _parsed(REPO):
+        rel = path.relative_to(REPO).as_posix()
+        inside = {id(n) for f in ast.walk(tree)
+                  if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) for n in ast.walk(f)}
+        for n in ast.walk(tree):
+            if _kind(n) and id(n) not in inside:
+                out.append("%s:%d makes a csv %s outside a function" % (rel, n.lineno, _kind(n)))
+            if isinstance(n, ast.Import) and any(a.name == "csv" and a.asname for a in n.names):
+                out.append("%s:%d imports csv under another name" % (rel, n.lineno))
+            if isinstance(n, ast.ImportFrom) and n.module == "csv":
+                out.append("%s:%d takes a name from csv" % (rel, n.lineno))
+    return out
+
+
+def test_no_csv_reader_or_writer_is_hidden_from_the_census():
+    assert csv_out_of_sight() == []
+
+
+# How each kind of use has to go through the rule. A writer of an app's own
+# file has to use store_value, since csv_value's quote does not always read
+# back, read_stored("'=1+1") of a real '=1+1 among them. The two tools write
+# files nobody reads back, through csv_value.
+THROUGH = {"reads": {"read_stored", "read_stored_row"}, "writes": {"store_value"}}
+EXPORTS = {"tools/export_purchases.py::write_csv", "tools/export_transactions.py::_write_csv"}
 # A function that makes a csv reader or writer for something other than an
 # app's own record, with the reason. Anything else has to go through the rule.
 NOT_A_RECORD = {
@@ -454,6 +614,8 @@ MUST_FIND = {
     "core/paperpull_core/storage.py::rewrite": {"writes"},
     "tools/export_purchases.py::load_purchases": {"reads"},
     "tools/export_transactions.py::_index_rows": {"reads"},
+    "tools/export_purchases.py::write_csv": {"writes"},
+    "tools/export_transactions.py::_write_csv": {"writes"},
 }
 
 
@@ -465,12 +627,18 @@ def test_the_census_finds_every_reader_and_writer_of_an_apps_csv():
     assert all(why.strip() for why in NOT_A_RECORD.values())
 
 
-@pytest.mark.parametrize("name", sorted(set(csv_functions()) - set(NOT_A_RECORD)))
+@pytest.mark.parametrize("name", sorted(set(csv_functions()) - set(NOT_A_RECORD) - EXPORTS))
 def test_every_csv_reader_and_writer_goes_through_the_rule(name):
     kinds, calls = csv_functions()[name]
     for kind in kinds:
         assert THROUGH[kind] & calls, "%s %s a CSV without paperpull_core.sheets' %s" % (
             name, kind, " or ".join(sorted(THROUGH[kind])))
+
+
+@pytest.mark.parametrize("name", sorted(EXPORTS))
+def test_each_tools_own_csv_goes_through_csv_value(name):
+    kinds, calls = csv_functions()[name]
+    assert kinds == {"writes"} and "csv_value" in calls, name
 
 
 def _load_tool(name: str):

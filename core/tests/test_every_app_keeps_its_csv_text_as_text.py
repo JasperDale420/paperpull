@@ -48,10 +48,13 @@ APPS, IDS = census.APPS, census.IDS
 
 # Harmless arithmetic, shaped like a formula, after a semicolon too.
 SUMMARY = "=1+1; @SUM(1,1) Statement"
-# One title shaped like a formula, and one that really starts with a quote.
-TITLES = ("+2+2 Statement - September 12, 2026", "'=3+3 Statement - September 12, 2026")
+# One title shaped like a formula behind a NUL, which Excel drops, with a
+# piece starting with " after a semicolon, and one that really starts with
+# a quote.
+TITLES = ('\x00+2+2 Statement; "=4+4 - September 12, 2026',
+          "'=3+3 Statement - September 12, 2026")
 # Order numbers, each starting like a formula.
-NUMBERS = ("-1+1 A1111", "@SUM B2222")
+NUMBERS = ("\x00-1+1 A1111", '@SUM B2222; "+5')
 FORMULA_FIRST = "{summary} {date:yyyy-mm-dd}[ {account}][ {number}]"
 DATE_FIRST = "{date:yyyy-mm-dd} {summary}[ {account}][ {number}]"
 

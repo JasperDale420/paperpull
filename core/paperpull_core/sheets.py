@@ -51,7 +51,9 @@ The xlsx value itself is never changed.
 A value with spaces in front is quoted too when the first thing after them
 starts a formula, for a spreadsheet set to trim a cell before reading it,
 as LibreOffice can be. A full-width sign counts as the sign it stands for,
-＝ as =, which OWASP names for Japanese settings.
+＝ as =, which OWASP names for Japanese settings. A NUL character counts
+for nothing, since Excel drops it from a CSV it opens, and =1+1 behind one
+opened as a working formula.
 
 A CSV can also be split where its writer did not split it. Excel in a
 country whose list separator is ; reads a comma CSV opened from its file
@@ -59,8 +61,13 @@ by that separator, so every ; inside a value starts a new cell, and a line
 break inside a quoted value starts a new row. A quote at the start of the
 whole value does nothing for what follows one of those, so a piece after a
 ; or a line break that starts like a formula gets a quote of its own.
-Neither of these was measured here, since this Excel's separator is a
-comma and its language English.
+A double click in a ; country was not measured here, since this Excel's
+separator is a comma. Excel's own import set to split at ; did split that
+way, and it read ""=1+1 at the start of a piece, which is how the csv
+module writes "=1+1 inside a quoted value, as an empty quoted part with
+=1+1 after it, a working formula. So a piece is also quoted when it starts
+with a sign once blank space and quotes of either kind in front of it are
+set aside.
 
 A plain negative number written as text, -12.34 or -1,234.56, is left
 alone, and so is one with a $, £ or € between the minus and the digits,
@@ -68,6 +75,13 @@ the way the apps write a refund, -$12.34. Excel reads it as that number,
 or as plain text, and nothing more, the way it reads 12.34 beside it, and
 a quote would only show in the cell. Anything else after the minus, -1+1,
 -$A$1 or -kr12.34 for three, is quoted.
+
+A piece after a ; or a line break that is a plain negative number is
+quoted all the same. Where the list separator is ; the decimal sign is a
+comma, and the last piece of a value the csv module leaves unquoted runs
+on through the comma that ends it into the next value, so -1 beside 5+1
+is read as -1,5+1, a working formula there. That was found by modelling
+such a reader, not measured, and no real value had such a piece.
 
 THE APPS' OWN CSV FILES
 
@@ -84,12 +98,21 @@ quote.
     read_stored(t)    for every value read from one, read_stored_row(r)
                       for a whole row from csv.DictReader
 
-store_value quotes text that starts like a formula once any quotes
-already in front of it are set aside, and each piece after a ; or a line
-break by the same test. read_stored takes one quote off a piece, and then
-off the whole value, only where that test passes. So '=1+1 as a real name
-is written ''=1+1 and read back as '=1+1, =1+1 is written '=1+1 and read
-back as =1+1, and every value reads back exactly as it was written.
+store_value quotes the whole value and each piece after a ; or a line
+break by the test a piece gets above, which sets aside the quotes already
+in front. read_stored takes one quote off a piece, and then off the whole
+value, only where that test passes, and a quote in front never changes
+its answer. So '=1+1 as a real name is written ''=1+1 and read
+back as '=1+1, =1+1 is written '=1+1 and read back as =1+1, and every
+value reads back exactly as it was written.
+
+That test is part of the files' format. read_stored takes a quote off only
+where today's test would put one, so a test that quotes less than an
+earlier one leaves the earlier version's quotes showing for good, and a
+file name carrying one no longer matches its file. So the test may grow
+and never shrink. Growing it changes how an older file reads only where a
+value starts with a quote and then what the test newly covers. The STORED
+examples in core/tests/test_sheets.py hold the format.
 
 A file written before this rule reads as it did, value for value, unless
 a value in it starts with a quote and then text like a formula, or holds
@@ -122,7 +145,9 @@ def _as_sign(ch: str) -> str:
 
 
 def starts_a_formula(text: str) -> bool:
-    """Whether a spreadsheet could take this text for a formula."""
+    """Whether a spreadsheet could take this text for a formula. Excel drops
+    a NUL character from a CSV it opens, so one in front hides nothing."""
+    text = text.replace("\x00", "") if text else text
     if not text:
         return False
     lead = text.lstrip()
@@ -131,18 +156,50 @@ def starts_a_formula(text: str) -> bool:
     return not _PLAIN_NEGATIVE.fullmatch(lead)
 
 
+# What a spreadsheet splitting a CSV at ; may pass over at the start of a
+# piece before the text it reads, blank space and quotes of either kind.
+_PASSED_OVER = re.compile(r"[\s'\"]*")
+
+
+def _gets_a_quote(text: str) -> bool:
+    """Whether a piece of a CSV value after a ; or a line break gets a quote
+    in front, and in the apps' own files the whole value too. That is when
+    it starts like a formula once any single quotes in front are set aside,
+    or starts with a sign once blank space and quotes of either kind in
+    front are. The csv module writes a " in a value doubled, so a piece
+    starting "=1+1 is held as ""=1+1, which a spreadsheet splitting at ;
+    reads as an empty quoted part with =1+1 after it. A quote in front
+    changes neither answer, which is how read_stored tells the quote put in
+    here from one the text came with."""
+    bare = text.replace("\x00", "")
+    return (starts_a_formula(bare.lstrip("'"))
+            or starts_a_formula(bare[_PASSED_OVER.match(bare).end():]))
+
+
+def _piece_gets_a_quote(piece: str) -> bool:
+    """Whether a piece after a ; or a line break gets a quote in front. As
+    _gets_a_quote, and a plain negative number gets one too. Where the list
+    separator is ; the decimal sign is a comma, and the last piece of a value
+    the csv module leaves unquoted runs on through the comma that ends it
+    into the next value, so -1 there and 5+1 beside it are read as -1,5+1, a
+    working formula."""
+    bare = piece.replace("\x00", "")
+    lead = bare[_PASSED_OVER.match(bare).end():]
+    return _gets_a_quote(piece) or _as_sign(lead[:1]) in _SIGNS
+
+
 def csv_value(value):
     """What a CSV cell is given for value. None is an empty cell and a
     number is written as it is. Text that could start a formula gets a
     single quote in front, and so does each piece of it after a ; or a line
-    break that could."""
+    break that could, quotes and blank space in front of it set aside."""
     if value is None:
         return ""
     if not isinstance(value, str):
         return value
     parts = _BREAKS.split(value)
     for i in range(2, len(parts), 2):
-        if starts_a_formula(parts[i]):
+        if _piece_gets_a_quote(parts[i]):
             parts[i] = "'" + parts[i]
     text = "".join(parts)
     return "'" + text if starts_a_formula(value) else text
@@ -163,26 +220,18 @@ def keep_text(cell) -> None:
 # The apps' own CSV files. Unlike the two tools' output, these are read back,
 # so every quote put in on the way in comes off again on the way out.
 
-def _gets_a_quote(text: str) -> bool:
-    """Whether stored text gets a quote in front. That is when it starts
-    like a formula once any quotes already in front are set aside, so a
-    real name that starts with a quote and then = is told apart from one
-    given a quote here."""
-    return starts_a_formula(text.lstrip("'"))
-
-
 def store_value(value) -> str:
     """What one of the apps' own CSV files is given for value. None is an
     empty cell, and anything else is written as its text. Text that starts
     like a formula, once any quotes in front of it are set aside, gets one
     more quote in front, and so does each piece after a ; or a line break
-    that does. read_stored gives back exactly what came in."""
+    that does (_gets_a_quote). read_stored gives back exactly what came in."""
     if value is None:
         return ""
     text = value if isinstance(value, str) else str(value)
     parts = _BREAKS.split(text)
     for i in range(2, len(parts), 2):
-        if _gets_a_quote(parts[i]):
+        if _piece_gets_a_quote(parts[i]):
             parts[i] = "'" + parts[i]
     out = "".join(parts)
     return "'" + out if _gets_a_quote(text) else out
@@ -197,7 +246,7 @@ def read_stored(text):
         return text
     parts = _BREAKS.split(text)
     for i in range(2, len(parts), 2):
-        if parts[i].startswith("'") and _gets_a_quote(parts[i]):
+        if parts[i].startswith("'") and _piece_gets_a_quote(parts[i]):
             parts[i] = parts[i][1:]
     out = "".join(parts)
     return out[1:] if out.startswith("'") and _gets_a_quote(out) else out
