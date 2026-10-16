@@ -883,7 +883,8 @@ found a bug and diagnosed it to the line.
   SMUD, Golden 1, E*TRADE, State Farm and Newrez, seven providers' worth of
   surveys and pilots in a weekend, and the PG&E pagination bug.
 - [@dertbv](https://github.com/dertbv), three exporter and Navy Federal
-  bugs, each diagnosed so exactly there was nothing to add.
+  bugs, each diagnosed so exactly there was nothing to add, and the fix
+  for Navy Federal Visa statements' closing date in 0.53.0 (#32).
 - [@liamrotheram](https://github.com/liamrotheram) and
   [@OberstK](https://github.com/OberstK), Amazon outside the United States.
 - [@jpfieber](https://github.com/jpfieber), who asked for eBay and became
