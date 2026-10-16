@@ -40,9 +40,7 @@ if (_CORE / "paperpull_core").is_dir() and str(_CORE) not in sys.path:
 try:
     from paperpull_core.sheets import csv_value, keep_text  # noqa: E402
 except ImportError as e:
-    raise ImportError("export_purchases.py needs PaperPull's core, the core folder beside tools. "
-                      "Build the spreadsheet from the panel's Spreadsheets page, or run "
-                      "tools/export_purchases.py where it sits in PaperPull's own folder.") from e
+    raise ImportError("export_purchases.py needs PaperPull's core folder beside its tools folder") from e
 
 HISTORY_SUFFIX = " Order History.csv"
 # The apps write money in one canonical form, an optional minus, the store's

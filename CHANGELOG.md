@@ -20,14 +20,17 @@ All notable changes to PaperPull are recorded here. Versioning follows
   take the cells it names along. Every text cell in both workbooks, on
   every sheet, is now written as text, and one that starts like a formula
   also carries Excel's quote prefix, so editing it keeps it text too. In
-  both CSVs such a value gets a single quote in front. Amounts, quantities
-  and counts are still numbers, a refund's negative amount among them, and
-  a plain negative number written as text, such as -12.34, is left as it
-  is, since a spreadsheet reads it as that number and nothing more. A
-  receipt or statement file whose name started with = also left a
-  workbook Excel would not open, and it now opens. The rule is in one
-  place, `paperpull_core.sheets`, which both tools take from the core
-  beside them, PaperPull Server's copies included.
+  both CSVs such a value gets a single quote in front, and so does a piece
+  of a value after a semicolon or a line break, where Excel set to split a
+  CSV at semicolons starts a new cell. A full-width sign counts as the sign
+  it stands for. Amounts, quantities and counts are still numbers, a
+  refund's negative amount among them, and a plain negative number written
+  as text, such as -12.34, is left as it is, since a spreadsheet reads it
+  as that number and nothing more. A receipt or statement file whose name
+  started with = also left a workbook Excel found a problem in and would
+  not open as it was, and it now opens. The rule is in one place,
+  `paperpull_core.sheets`, which both tools take from the core beside
+  them, PaperPull Server's copies included.
 
 ## [0.53.0] - 2026-10-15
 

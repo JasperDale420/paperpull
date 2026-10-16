@@ -4,6 +4,8 @@ spreadsheet for a person goes through it. The write paths of the two tools
 are tested in test_export_purchases.py and test_export_transactions.py.
 Every value here is made up."""
 import ast
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -18,22 +20,51 @@ FORMULAS = [
     "\t=1+1", "\r=1+1", "\n=1+1", "\tplain words after a tab",
     " =1+1", "   @SUM(1,1)", " =1+1",
     "-", "+", "=", "@", "-.5", "-1e3", "-1,2", "-12.34x", "--12", "+12.34",
+    # Full-width and small signs, which OWASP names for Japanese settings,
+    # and a minus before digits that are not ASCII ones.
+    "＝1+1", "＋1+1", "－1+1", "＠SUM(1,1)", "﹦1+1", "﹢1+1",
+    "－12", "-١٢٣",
 ]
 TEXT = ["", "Kettle", "a=b", "1-1", "12.34", "1,234.56", "'=1+1", "(12.34)",
-        "PAYMENT - THANK YOU", "AplPay EXAMPLE STORE"]
+        "PAYMENT - THANK YOU", "AplPay EXAMPLE STORE", "Size M; 20% off", "a;b",
+        "ＡＢＣ"]
 PLAIN_NEGATIVE = ["-12.34", "-1,234.56", "-42", "-0.5", "-1,000,000", " -12.34"]
+# A value with a ; or a line break inside, and the CSV cell it becomes.
+PIECES = [
+    ("Widget;=1+1", "Widget;'=1+1"),
+    ("Widget; @SUM(1,1)", "Widget;' @SUM(1,1)"),
+    ("Widget\n=1+1", "Widget\n'=1+1"),
+    ("Widget\r\n+1+1", "Widget\r\n'+1+1"),
+    ("Widget\r-1+1", "Widget\r'-1+1"),
+    ("=1+1;=2+2", "'=1+1;'=2+2"),
+    ("\n=1+1", "'\n'=1+1"),
+    ("\r=1+1", "'\r'=1+1"),
+    ("Refund; -12.34", "Refund; -12.34"),
+    ("Size M; 20% off; final sale", "Size M; 20% off; final sale"),
+    ("a;;b;", "a;;b;"),
+]
 
 
 @pytest.mark.parametrize("text", FORMULAS)
 def test_text_that_could_start_a_formula_is_caught(text):
     assert starts_a_formula(text)
-    assert csv_value(text) == "'" + text
+    if any(b in text for b in ";\r\n"):
+        assert csv_value(text).startswith("'")       # and more, in PIECES
+    else:
+        assert csv_value(text) == "'" + text
 
 
 @pytest.mark.parametrize("text", TEXT + PLAIN_NEGATIVE)
 def test_other_text_and_a_plain_negative_number_are_left_alone(text):
     assert not starts_a_formula(text)
     assert csv_value(text) == text
+
+
+@pytest.mark.parametrize("text, cell", PIECES)
+def test_a_piece_after_a_semicolon_or_a_line_break_gets_its_own_quote(text, cell):
+    """Excel in a country whose list separator is ; starts a new cell at
+    each ; and a new row at a line break inside a quoted value."""
+    assert csv_value(text) == cell
 
 
 def test_a_number_is_written_as_a_number_and_none_as_an_empty_cell():
@@ -97,15 +128,24 @@ def _kinds(tree) -> set:
     return kinds
 
 
-def _calls_from_the_rule(tree) -> set:
-    """The names imported from paperpull_core.sheets that the tool calls."""
+def _imported_from_the_rule(tree) -> set:
     names = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "paperpull_core.sheets":
             names |= {a.name for a in node.names}
-    called = {n.func.id for n in ast.walk(tree)
-              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
-    return names & called
+    return names
+
+
+def _called(node) -> set:
+    return {n.func.id for n in ast.walk(node)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+
+
+def _writing_functions(tree) -> list:
+    """Each function that makes a CSV writer or an openpyxl Workbook, the
+    functions it holds included, with what it writes."""
+    return [(node, _kinds(node)) for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _kinds(node)]
 
 
 def writers() -> dict:
@@ -121,14 +161,46 @@ def test_the_census_finds_both_spreadsheet_tools_and_what_each_writes():
     found = {name: _kinds(tree) for name, tree in writers().items()}
     assert found["export_purchases.py"] == {"csv", "xlsx"}
     assert found["export_transactions.py"] == {"csv", "xlsx"}
+    names = {name: sorted(f.name for f, _ in _writing_functions(tree))
+             for name, tree in writers().items()}
+    assert names["export_purchases.py"] == ["write_csv", "write_xlsx"]
+    assert names["export_transactions.py"] == ["_write_csv", "_write_xlsx"]
 
 
 @pytest.mark.parametrize("name", sorted(set(writers()) - set(NOT_FOR_PEOPLE)))
-def test_every_tool_writing_a_spreadsheet_for_a_person_goes_through_the_rule(name):
+def test_every_function_writing_a_spreadsheet_for_a_person_goes_through_the_rule(name):
     tree = writers()[name]
-    missing = {NEEDS[k] for k in _kinds(tree)} - _calls_from_the_rule(tree)
-    assert not missing, "%s writes a spreadsheet without paperpull_core.sheets' %s" % (
-        name, ", ".join(sorted(missing)))
+    rule = _imported_from_the_rule(tree)
+    functions = _writing_functions(tree)
+    assert functions, "%s writes a spreadsheet outside any function" % name
+    for func, kinds in functions:
+        missing = {NEEDS[k] for k in kinds} - (rule & _called(func))
+        assert not missing, "%s's %s writes a spreadsheet without paperpull_core.sheets' %s" % (
+            name, func.name, ", ".join(sorted(missing)))
+
+
+@pytest.mark.parametrize("tool", ["export_purchases.py", "export_transactions.py"])
+def test_each_tool_takes_the_core_beside_it_with_no_core_installed(tool, tmp_path):
+    """-S leaves out every installed package, so the only core either tool
+    can import is the one in core/ beside tools/, which is where a checkout,
+    the packaged builds and the server image all keep it. The tool runs as
+    a script, as the transactions export runs, and is loaded by its path,
+    as the panel loads the purchases export, which puts no folder on
+    sys.path."""
+    path = TOOLS / tool
+    ran = subprocess.run([sys.executable, "-I", "-S", str(path), "--help"], cwd=tmp_path,
+                         capture_output=True, text=True, timeout=120)
+    assert ran.returncode == 0 and "usage" in ran.stdout, ran.stderr
+    load = ("import importlib.util, sys\n"
+            "spec = importlib.util.spec_from_file_location('tool', sys.argv[1])\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(mod)\n"
+            "print(sys.modules['paperpull_core.sheets'].__file__)\n")
+    loaded = subprocess.run([sys.executable, "-I", "-S", "-c", load, str(path)], cwd=tmp_path,
+                            capture_output=True, text=True, timeout=120)
+    assert loaded.returncode == 0, loaded.stderr
+    assert Path(loaded.stdout.strip()).resolve() == \
+        (TOOLS.parent / "core" / "paperpull_core" / "sheets.py").resolve()
 
 
 def test_a_tool_set_aside_still_writes_one_and_says_why():

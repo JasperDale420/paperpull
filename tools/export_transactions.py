@@ -58,9 +58,7 @@ if (_CORE / "paperpull_core").is_dir() and str(_CORE) not in sys.path:
 try:
     from paperpull_core.sheets import csv_value, keep_text  # noqa: E402
 except ImportError as e:
-    raise ImportError("export_transactions.py needs PaperPull's core, the core folder beside tools. "
-                      "Build the workbook from the panel's Spreadsheets page, or run "
-                      "tools/export_transactions.py where it sits in PaperPull's own folder.") from e
+    raise ImportError("export_transactions.py needs PaperPull's core folder beside its tools folder") from e
 
 INDEX_SUFFIX = " Document Index.csv"
 CACHE_NAME = ".transactions-cache.json"

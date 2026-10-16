@@ -317,30 +317,43 @@ def test_the_csv_quotes_text_that_could_start_a_formula_and_no_amount(formula_ro
     assert refund["Date"] == "'-1+1" and refund["Item"] == "Refunded kettle"
 
 
-def test_text_led_by_a_space_tab_or_line_break_is_kept_from_a_formula_too(tmp_path):
+# Text handed straight to the writers, the CSV cell each becomes, and
+# whether its xlsx cell carries the quote prefix.
+LEADS = [
+    (" =1+1", "' =1+1", True),
+    ("\t=1+1", "'\t=1+1", True),
+    ("\r=1+1", "'\r'=1+1", True),
+    ("\n=1+1", "'\n'=1+1", True),
+    ("\tplain words", "'\tplain words", True),
+    ("＝1+1", "'＝1+1", True),
+    ("Widget;=1+1", "Widget;'=1+1", False),
+    ("Widget\n@SUM(1,1)", "Widget\n'@SUM(1,1)", False),
+    ("Refund; -12.34", "Refund; -12.34", False),
+    ("#N/A", "#N/A", False),
+]
+
+
+def test_text_with_a_lead_a_wide_sign_or_a_break_inside_is_kept_from_a_formula(tmp_path):
     """The histories' values are trimmed as they load, so this goes to the
     writers directly with text that still has its lead."""
     openpyxl = pytest.importorskip("openpyxl")
-    leads = [" =1+1", "\t=1+1", "\r=1+1", "\n=1+1", "\tplain words", "#N/A"]
     purchases = []
-    for i, text in enumerate(leads):
+    for i, (text, _cell, _prefix) in enumerate(LEADS):
         p = {c: "" for c, _ in xp.COLUMNS}
-        p.update({"Provider": "Shop", "Date": "2026-01-0%d" % (i + 1), "Order Number": "S-%d" % i,
+        p.update({"Provider": "Shop", "Date": "2026-01-%02d" % (i + 1), "Order Number": "S-%d" % i,
                   "Item": text, "Notes": text, "Line Total": -1.5, "Quantity": 1})
         purchases.append(p)
     orders = xp.orders_from(purchases)
     xp.write_xlsx(tmp_path / "p.xlsx", purchases, orders, xp.summary_from(orders))
     ws = openpyxl.load_workbook(tmp_path / "p.xlsx")["Purchases"]
-    # XML reads a carriage return back as a line feed, so that one is
-    # looked for as the line feed it comes back as.
-    want = {t.replace("\r", "\n") for t in leads}
-    items = [c for c in _column(ws, "Item")]
-    assert {c.value for c in items} == want and len(items) == len(leads)
-    assert all(c.data_type == "s" for c in items)
-    assert all(c.quotePrefix is (c.value != "#N/A") for c in items)
+    items = _column(ws, "Item")
+    assert len(items) == len(LEADS)
+    for (text, _cell, prefix), c in zip(LEADS, items):
+        # XML reads a carriage return back as a line feed.
+        assert (c.value, c.data_type, c.quotePrefix) == (text.replace("\r", "\n"), "s", prefix), repr(text)
     assert all((c.value, c.data_type) == (-1.5, "n") for c in _column(ws, "Line Total"))
     xp.write_csv(tmp_path / "p.csv", purchases)
     with open(tmp_path / "p.csv", encoding="utf-8-sig", newline="") as fh:
         back = list(csv.DictReader(fh))
-    assert sorted(x["Item"] for x in back) == sorted(["'" + t for t in leads[:-1]] + ["#N/A"])
+    assert [x["Item"] for x in back] == [cell for _text, cell, _prefix in LEADS]
     assert all(x["Item"] == x["Notes"] and x["Line Total"] == "-1.5" for x in back)

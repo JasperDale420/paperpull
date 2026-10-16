@@ -44,7 +44,17 @@ The xlsx value itself is never changed.
 
 A value with spaces in front is quoted too when the first thing after them
 starts a formula, for a spreadsheet set to trim a cell before reading it,
-as LibreOffice can be.
+as LibreOffice can be. A full-width sign counts as the sign it stands for,
+＝ as =, which OWASP names for Japanese settings.
+
+A CSV can also be split where its writer did not split it. Excel in a
+country whose list separator is ; reads a comma CSV opened from its file
+by that separator, so every ; inside a value starts a new cell, and a line
+break inside a quoted value starts a new row. A quote at the start of the
+whole value does nothing for what follows one of those, so a piece after a
+; or a line break that starts like a formula gets a quote of its own.
+Neither of these was measured here, since this Excel's separator is a
+comma and its language English.
 
 A plain negative number written as text, -12.34 or -1,234.56, is left
 alone. Excel reads it as that number and nothing more, the way it reads
@@ -54,15 +64,23 @@ after the minus, -1+1 for one, is quoted.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 # What a cell may start with that a spreadsheet takes as a formula, from
 # OWASP's guidance on CSV injection. Tab, carriage return and line feed are
 # there for a spreadsheet that drops them before reading the rest.
 FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r", "\n")
 _SIGNS = ("=", "+", "-", "@")
-# A minus and a plain number, the one start among them left alone. Digits,
-# commas in threes and a decimal point name no cell and call nothing.
-_PLAIN_NEGATIVE = re.compile(r"-(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?")
+# A minus and a plain number, the one start among them left alone. ASCII
+# digits, commas in threes and a decimal point name no cell and call nothing.
+_PLAIN_NEGATIVE = re.compile(r"-(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?", re.ASCII)
+# Where a spreadsheet that splits a CSV at ; begins a new cell or a new row.
+_BREAKS = re.compile(r"(;|\r\n|\r|\n)")
+
+
+def _as_sign(ch: str) -> str:
+    """The character a spreadsheet may read ch as, ＝ as = and ﹢ as +."""
+    return unicodedata.normalize("NFKC", ch)[:1]
 
 
 def starts_a_formula(text: str) -> bool:
@@ -70,20 +88,26 @@ def starts_a_formula(text: str) -> bool:
     if not text:
         return False
     lead = text.lstrip()
-    if text[0] not in FORMULA_STARTS and lead[:1] not in _SIGNS:
+    if _as_sign(text[0]) not in FORMULA_STARTS and _as_sign(lead[:1]) not in _SIGNS:
         return False
     return not _PLAIN_NEGATIVE.fullmatch(lead)
 
 
 def csv_value(value):
-    """What a CSV cell is given for value. None is an empty cell, a number
-    is written as it is, and text that could start a formula gets a single
-    quote in front."""
+    """What a CSV cell is given for value. None is an empty cell and a
+    number is written as it is. Text that could start a formula gets a
+    single quote in front, and so does each piece of it after a ; or a line
+    break that could."""
     if value is None:
         return ""
-    if isinstance(value, str) and starts_a_formula(value):
-        return "'" + value
-    return value
+    if not isinstance(value, str):
+        return value
+    parts = _BREAKS.split(value)
+    for i in range(2, len(parts), 2):
+        if starts_a_formula(parts[i]):
+            parts[i] = "'" + parts[i]
+    text = "".join(parts)
+    return "'" + text if starts_a_formula(value) else text
 
 
 def keep_text(cell) -> None:
