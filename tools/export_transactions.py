@@ -848,6 +848,20 @@ def pdf_path(index: Path, row: dict) -> Path:
     return index.parent / p
 
 
+def statement_name(index: Path, pdf: Path) -> str:
+    """A statement as the spreadsheet names it. Its file is read by the full
+    path its index row gives (pdf_path), and a person reads it by its name,
+    with the folders a naming pattern filed it in inside the folder of its
+    kind, "Chase/2026/2026-01-31 Chase Statement.pdf" (#101), since a
+    pattern's folders can hold two files of one name. A file in the folder
+    of its kind is its name alone, as it always was."""
+    try:
+        parts = pdf.relative_to(index.parent).parts
+    except ValueError:
+        return pdf.name
+    return "/".join(parts[1:]) if len(parts) > 2 else pdf.name
+
+
 def providers(root: Path) -> List[dict]:
     """Statement archives with at least one PDF on disk."""
     out: "OrderedDict[str, dict]" = OrderedDict()
@@ -952,7 +966,7 @@ def export(root: Path, out: Optional[Path] = None, provider: Optional[str] = Non
             if row.get("Account Holder"):
                 account = f"{row['Account Holder']}, {account}" if account else row["Account Holder"]
             stmt_date = row.get("Document Date") or parsed.get("period_end") or ""
-            name = p.name
+            name = statement_name(index, p)
             reconciled = parsed["status"].startswith("reconciled")
             for t in parsed["transactions"]:
                 txn_rows.append({"Provider": prov, "Account": account, "Date": t["date"],

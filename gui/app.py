@@ -3560,27 +3560,54 @@ def _config_files(d: Path) -> list:
     return out
 
 
-def _naming_records(d: Path) -> list:
-    """The first person's records, for the preview and the fill rates.
-    Read from the output folder the config names, since that is where a
-    run keeps them, and it is not always the install."""
+def _naming_output(d: Path) -> Optional[Path]:
+    """The first person's output folder, where a run keeps its records and
+    files, and None where it cannot be read. Read from the config, since
+    it is not always the install."""
     if server_mode.enabled():
         # On the server the config is in the shared folder, so only a folder
         # inside the data folder is read, the way a run's own folder is found.
         try:
-            out = server_mode.output_root(d, "primary")
+            return server_mode.output_root(d, "primary")
         except ValueError:
-            return []
-    else:
-        cfg = _read_json(d / "config.json") or {}
-        # The same default load_config gives an absent output_dir.
-        out = Path(cfg.get("output_dir") or (Path.home() / "Downloads" / _provider_name(d)))
-        if not out.is_absolute():
-            out = d / out
+            return None
+    cfg = _read_json(d / "config.json") or {}
+    # The same default load_config gives an absent output_dir.
+    out = Path(cfg.get("output_dir") or (Path.home() / "Downloads" / _provider_name(d)))
+    return out if out.is_absolute() else d / out
+
+
+def _naming_records(d: Path) -> list:
+    """The first person's records, for the preview and the fill rates."""
+    out = _naming_output(d)
+    if out is None:
+        return []
     data = _read_json(out / "progress.json")
     if isinstance(data, dict):
         data = list(data.values())
     return [r for r in (data or []) if isinstance(r, dict)]
+
+
+def _named_where(record: dict, out: Optional[Path]) -> str:
+    """A saved file as the preview shows it, its name, and the folders a
+    naming pattern filed it in before it (#101), "Chase/2026/2026-01-31
+    Chase Statement.pdf", inside the folder its kind is filed in. Read
+    from the record's own path without touching the disk, and the name
+    alone for a path that is not in a folder of the output folder."""
+    name = str(record.get("pdf_filename") or "")
+    raw = record.get("pdf_path")
+    if out is None or not isinstance(raw, str) or not raw.strip():
+        return name
+    path = Path(raw.strip())
+    if not path.is_absolute():
+        path = out / path
+    try:
+        parts = path.relative_to(out).parts
+    except ValueError:
+        return name
+    if len(parts) < 3 or parts[-1] != name or ".." in parts:
+        return name
+    return "/".join(parts[1:])
 
 
 def _newest_saved(records, n=3):
@@ -3658,10 +3685,15 @@ async def api_naming_preview(request: Request):
     kind = _naming_kind(d)
     cfg = _read_json(d / "config.json") or {}
     provider = _provider_name(d)
+    out = _naming_output(d)
     names = []
     for r in _newest_saved(_naming_records(d)):
-        current = str(r.get("pdf_filename") or "")
-        new = current
+        # With the folders a pattern filed it in, as the new name shows the
+        # folders it would be filed in.
+        current = _named_where(r, out)
+        # The default names no folder, so a file a pattern put in folders
+        # goes back to the folder of its kind, under the name it has.
+        new = current if pattern else str(r.get("pdf_filename") or "")
         if pattern and not problem:
             try:
                 new = naming.preview(
