@@ -73,6 +73,15 @@ def _counts(browser, tmp_path, html):
     return {s["name"]: s.get("matched") for s in report["selectors"]}
 
 
+def test_the_journal_watches_the_parts_a_row_is_found_by():
+    """The journal watches only the first twelve selectors, and the parts
+    of the list are the ones that say why a row was not found."""
+    from paperpull_core.journal import Journal
+    watched = [name for name, _sel in Journal(None, site.FALLBACK)._pairs]
+    for name in PARTS:
+        assert name in watched, (name, watched)
+
+
 def test_a_failure_file_counts_each_part_of_the_list(browser, tmp_path):
     counts = _counts(browser, tmp_path, LIST % BUTTON)
     for name in PARTS:
