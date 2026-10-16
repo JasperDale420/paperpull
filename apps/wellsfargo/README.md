@@ -76,18 +76,20 @@ paperpull wellsfargo pilot            REM once the site layer is confirmed
 
 - **Real Edge or Chrome.** wellsfargo.com runs bot protection that walls the Playwright build of Chromium, so `login.bat` launches the browser already on the machine with a separate profile.
 - **You sign in** in that window. The tool reuses the signed-in tab.
-- **Statements & Documents.** Discovery tries the `/edocs/` routes in turn and takes the first that is not a sign-in page and looks like a documents list. Every control whose name says it fetches a statement or a tax form ("View", "Download", "Statement PDF", "1099-INT") is read, and the date comes from the control's name or the row it sits in.
+- **Statements & Documents.** The app reaches the page by pressing its own Statements & Documents link and never types a Wells Fargo address into the signed-in window, since an address typed there ended a tester's session (#27). A window that is not on your signed-in accounts stops the run and asks you to open the page yourself. On the page it opens the Statements and Disclosures section when that says it is closed. Every control whose name says it fetches a statement or a tax form ("Statement 09/30/26 (123K, PDF)", "View", "Download", "1099-INT") is read, and the date comes from the control's name or the row it sits in.
+- **Several accounts.** With more than one account in the section's account picker, each account is chosen in turn and its statements are listed under it, and the file name ends with the account's nickname and last four digits. With one account nothing about the names changes. With more than one, a statement an earlier version saved with no account downloads once more under its account's name, beside the earlier copy. Two accounts ending in the same four digits stop the list, since the app tells accounts apart by them.
 - **Downloads.** A row that links straight to a PDF is fetched from inside
   the page with the session's own cookies. Otherwise the row's control is
   clicked, once it has passed the guard, and whatever the site does, a
-  download event, a PDF response or a new tab, is caught and saved to
-  `Statements\` or `Tax Documents\`.
+  download event, a PDF response, a new tab or this tab moving to the PDF,
+  is caught and saved to `Statements\` or `Tax Documents\`. A download
+  chooses its document's account in the picker first.
 - **Read-only.** `FORBIDDEN_CONTROL_RE` blocks anything that transfers, pays, sends money by Zelle, wires, deposits, applies, opens or closes an account, locks a card, changes a limit or an address, or edits the account. A control must also look like a document action before it can be clicked.
 
 ## Scope
 
 - Whatever the Statements & Documents page lists. Wells Fargo keeps up to seven years of statements online.
-- Wells Fargo shows statements one account at a time behind an account picker. The first survey shows what that picker looks like, and the second round drives it, so a first Pilot may only see one account.
+- Wells Fargo shows statements one account at a time behind an account picker, measured on a tester's checking account (#27), and the app goes through every account in it. It reads the period the page shows first, so whether older statements need a period chosen is still to be seen.
 - Checking, savings, credit card, mortgage and loan accounts all share the same page, so one app should cover any of them once the site layer is confirmed.
 - Delete-safe and multi-account like every PaperPull app
   (`paperpull wellsfargo add-account NAME`).

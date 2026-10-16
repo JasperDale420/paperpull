@@ -9,6 +9,25 @@ All notable changes to PaperPull are recorded here. Versioning follows
 
 ## [Unreleased]
 
+### Fixed
+- **Wells Fargo no longer signs you out looking for your statements (#27).**
+  When the page it was on showed no statement, the app typed the
+  statements address into the signed-in window, and Wells Fargo answered
+  by ending the session. It now reaches Statements & Documents only by the
+  page's own link, and a window that is not on your signed-in accounts
+  stops the run and asks you to open the page yourself. On the page it
+  opens the Statements and Disclosures section, where a checking account's
+  statements are, and goes through every account in the account picker,
+  so each account's statements are listed and the file names say which
+  account when there is more than one. With one account the names and
+  records stay as they were. With more than one, a statement an earlier
+  version saved with no account downloads once more, under its account's
+  name, and the earlier copy stays where it is. The sign-in window now
+  opens on
+  www.wellsfargo.com, whose own sign-on form worked on PaperPull Server
+  where the statements address came up blank. Thanks to crazyhorse90210
+  for the surveys and the recording.
+
 ### Security
 - **PaperPull Server's sign-in cookie stays off plain HTTP behind an HTTPS
   proxy.** The cookie that keeps you signed in was never marked to travel
