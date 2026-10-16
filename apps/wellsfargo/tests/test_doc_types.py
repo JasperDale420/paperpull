@@ -94,6 +94,16 @@ def test_only_the_providers_own_hosts():
     assert all(site.is_safe_url(u) for u in site.BILLING_CANDIDATES)
 
 
+def test_the_sign_in_opens_on_the_public_home_page():
+    """The statements address came up blank in PaperPull Server's Chrome
+    rather than sending the person on to sign on, and the home page's own
+    sign-on form worked (#27). The sign-in opens there, on the provider's
+    own host, and Discover still goes to the statements address itself."""
+    assert site.URLS["login"] == "https://www.wellsfargo.com/"
+    assert site.is_safe_url(site.URLS["login"])
+    assert site.URLS["documents"] == site.BILLING_URL
+
+
 def test_the_status_is_stated_where_a_tester_will_read_it():
     """A tester's run on v0.52.0 saved the credit card statements on a real
     account (#27). Checking, savings, mortgage and tax documents have not

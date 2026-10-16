@@ -103,7 +103,11 @@ BILLING_CANDIDATES = [
 BILLING_URL = BILLING_CANDIDATES[0]
 URLS = {
     "home": f"{BASE}/accounts/start",
-    "login": BILLING_URL,
+    # The sign-in opens on the public home page, which has the sign-on form.
+    # The statements address, a page only a signed-in session can show, came
+    # up blank in PaperPull Server's Chrome instead of sending the person on
+    # to sign on, while signing in from the home page worked (#27).
+    "login": "https://www.wellsfargo.com/",
     "documents": BILLING_URL,
     "statements": BILLING_URL,
 }
