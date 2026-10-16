@@ -411,9 +411,11 @@ def _first_part(url: str) -> str:
 def shows_sign_in(state: dict) -> bool:
     """The page draws Bilt's sign-in (SIGN_IN_SENTENCES, SIGN_IN_CONTROL) and
     shows no balance summary button, as a signed-out visit to the wallet
-    did. The words beside a shown balance summary are the wallet's own
-    content and are not read as signed out."""
-    return bool(state.get("signin")) and not _shown(state.get("summary"))
+    did. The words beside a shown balance summary button are the wallet's
+    own content and are not read as signed out. The label on anything but a
+    button does not count."""
+    buttons = [x for x in _shown(state.get("summary")) if x.get("tag") == "BUTTON"]
+    return bool(state.get("signin")) and not buttons
 
 
 def looks_signed_out(page) -> bool:

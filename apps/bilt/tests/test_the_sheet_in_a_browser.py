@@ -174,3 +174,11 @@ def test_the_sign_in_words_on_the_wallet_beside_its_card_are_not_signed_out(wall
     assert [c["last4"] for c in state["cards"]] == ["4821"]
     out, _state = signed_out_by(wallet, page_of())
     assert out is False
+
+
+def test_a_balance_summary_label_on_no_button_does_not_hide_the_sign_in(wallet):
+    """Only a shown balance summary button is the wallet's own card. The
+    label on anything else leaves the sign-in read as signed out."""
+    html = SIGNED_OUT.replace("<main>", '<main><div aria-label="View balance summary">x</div>')
+    out, state = signed_out_by(wallet, html)
+    assert [x["tag"] for x in state["summary"]] == ["DIV"] and out is True

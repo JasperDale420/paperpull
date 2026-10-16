@@ -735,6 +735,14 @@ def test_a_wallet_with_neither_its_card_nor_the_sign_in_stops_at_one_card():
     assert not site.looks_signed_out(w)
 
 
+def test_a_balance_summary_label_on_no_button_does_not_hide_the_sign_in():
+    w = signed_out_wallet()
+    w.state_override.update(summary=[{"shown": True, "tag": "DIV"}])
+    assert site.looks_signed_out(w)
+    with pytest.raises(site.SessionExpired):
+        site.collect_download_docs(w, run_on(w))
+
+
 def test_the_sign_in_words_beside_the_balance_summary_are_not_signed_out():
     """The words are read as the sign-in only where the card's balance
     summary button is not shown."""
