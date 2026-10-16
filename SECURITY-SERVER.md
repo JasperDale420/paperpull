@@ -148,7 +148,7 @@ access to the share accordingly. A person who can write there can still
 change how your documents are classified and named, even though they can no
 longer run code.
 
-Three settings in `config.json` decide where a run reaches outside a
+Some settings in `config.json` decide where a run reaches outside a
 provider's folder, so the server does not take them from the file on trust.
 
 - **`profile_dir`** is always the account's folder in the `profiles`
@@ -165,15 +165,27 @@ provider's folder, so the server does not take them from the file on trust.
   by a link to somewhere else is refused. A run whose `output_dir` leads
   outside stops before it saves anything, and the panel keeps no run log,
   reads no records and imports or exports no history there.
+- **UKG's `base_url`**, the employer's UKG site that its sign-in browser
+  opens and every run reaches, has to be an https address on UKG's own
+  domains, `ultipro.com` or `saashr.com`, with nothing after the name,
+  such as `https://yourcompany.ultipro.com`. UKG's check of each page it
+  requests allows whatever site this names, so a run or a sign-in whose
+  `base_url` names any other site stops before it opens a page, and a
+  changed setting cannot put somebody else's page in the Browser Screen in
+  place of UKG's. A UKG site an employer runs under a name of its own, as
+  some Workforce Central sites are, is refused on the server too.
+  Amazon's `marketplace` already had to be one of Amazon's own stores,
+  on the desktop as well.
 
-Each refusal says which setting and why. The desktop app reads all three as
-written, since its folder is yours alone.
+Each refusal says which setting and why, and the one for `base_url` does
+not repeat the address, since it can name your employer. The desktop app
+reads all of them as written, since its folder is yours alone.
 
 This does not make the share safe to open to everyone. Links inside a
 provider's folder, its subfolders and files, are followed as a run writes
-there, and a provider's other settings, such as the address of an
-employer's UKG site, are read as written. So keep write access to the data
-folder to yourself.
+there, and a provider's other settings, such as which documents it fetches
+and how they are named, are read as written. So keep write access to the
+data folder to yourself.
 
 If you previously edited a provider's scripts on the server, or kept a
 custom Python environment inside a provider's folder, those changes stop
