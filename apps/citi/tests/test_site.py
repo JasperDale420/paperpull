@@ -157,8 +157,16 @@ def test_moving_money_and_card_controls_are_never_safe():
         assert not site.is_safe_control(name), name
 
 
+def test_asking_citi_for_a_statement_is_never_safe():
+    """Requesting a statement is an account action, in any wording (#103)."""
+    for name in ["Request Statements", "Request a Statement", "Request statement copies",
+                 "Requesting statements", "Requests"]:
+        assert not site.is_safe_control(name), name
+
+
 def test_reading_a_statement_is_safe():
-    for name in ["Download", "View statement", "Statements", "Download PDF", "View All Statements"]:
+    for name in ["Download", "View statement", "Statements", "Download PDF", "View All Statements",
+                 "View Requested Statements", "Requested Statements", "Download Sep 2026"]:
         assert site.is_safe_control(name), name
 
 
