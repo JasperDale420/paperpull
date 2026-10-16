@@ -120,7 +120,10 @@ FORBIDDEN_CONTROL_RE = re.compile(
     r"beneficiar|nickname|order\s+checks|stop\s+payment|"
     r"redeem|\bpoints\b|thankyou|credit\s+line|balance\s+transfer|cash\s+advance|"
     r"authorized\s+user|add\s+user|flex\s+(loan|pay)|\bplan\s+it\b|"
-    r"request\s+(older|archived)|spend\s+summary)", re.I)
+    # Asking Citi for a statement is an account action, so "Request" as a
+    # verb is refused in any wording, while "Requested", a statement already
+    # made available to download, is not (#103).
+    r"\brequest(?:s|ing)?\b|spend\s+summary)", re.I)
 
 SAFE_DOC_CONTROL_RE = re.compile(
     r"(download|view|open|print|\bpdf\b|statement|document|\bletter\b|notice|"
