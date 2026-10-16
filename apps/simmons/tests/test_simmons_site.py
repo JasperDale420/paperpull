@@ -922,8 +922,10 @@ def test_a_run_saves_every_document_under_its_own_name(tmp_path, monkeypatch, ca
     with redirect_stdout(buf):
         app.cmd_run("all")
         app.write_run_summary()
-    names = sorted(str(p.relative_to(tmp_path / "out")) for p in (tmp_path / "out").rglob("*.pdf")
-                   if ".simmons-downloads" not in str(p))
+    # In POSIX form, so the folder and the file read alike on Windows too.
+    names = sorted(p.relative_to(tmp_path / "out").as_posix()
+                   for p in (tmp_path / "out").rglob("*.pdf")
+                   if ".simmons-downloads" not in p.parts)
     assert names == [
         "Notices/2031-02-07 Simmons Bank Notice - Notice of Address Change (Previous Address).pdf",
         "Notices/2031-08-20 Simmons Bank Notice - Prime Rate Notice.pdf",
