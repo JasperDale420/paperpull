@@ -986,17 +986,28 @@ def home_of(place: dict) -> Path:
     return Path(config).parent if config else Path(place["path"])
 
 
-def write_history(where: Path, records: dict, stamp: str) -> None:
+def write_history(where: Path, records: dict, stamp: str, write=None) -> None:
     """A place's progress.json, written in one step, with the one it
-    replaces kept in its Backups first. Raises OSError."""
+    replaces kept in its Backups first. Raises OSError. write, when given,
+    writes each of the two files whole in place of the plain writes here
+    (the control panel on PaperPull Server passes one that never writes
+    through a link left in the shared folder)."""
     path = Path(where) / "progress.json"
     Path(where).mkdir(parents=True, exist_ok=True)
+    text = json.dumps(records, indent=2, ensure_ascii=False)
     if path.is_file():
         backups = Path(where) / "Backups"
         backups.mkdir(parents=True, exist_ok=True)
-        (backups / ("progress.%s.before-import.bak" % stamp)).write_bytes(path.read_bytes())
+        kept = backups / ("progress.%s.before-import.bak" % stamp)
+        if write is not None:
+            write(kept, path.read_bytes())
+        else:
+            kept.write_bytes(path.read_bytes())
+    if write is not None:
+        write(path, text)
+        return
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(records, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
 
 

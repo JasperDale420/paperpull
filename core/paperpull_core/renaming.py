@@ -56,6 +56,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
+from . import shared_folder
 from .models import State
 from .storage import (build_pdf_filename, fitted_name, free_to_write, sanitize_component,
                       title_case, unique_path)
@@ -1689,7 +1690,8 @@ def _write_review_list(where: Path, app, review: list) -> None:
                     "file": path.name, "summary": _text(r.get("Purchase Summary")),
                     "items": [i for i in items if i]})
     part = where.with_name(where.name + ".part")
-    part.write_text(json.dumps({"receipts": out}), encoding="utf-8")
+    with shared_folder.open_to_write(part, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"receipts": out}))
     os.replace(part, where)
 
 

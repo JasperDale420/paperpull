@@ -440,6 +440,38 @@ def test_on_the_server_no_history_is_read_or_written_outside_the_data_folder(
     assert sorted(p.name for p in outside.iterdir()) == ["progress.json"]
 
 
+def test_on_the_server_an_import_never_writes_a_history_through_a_link(
+        panel, tmp_path, monkeypatch):
+    """The history was written to progress.json.tmp, a fixed name, then
+    moved into place, so on the server a link left at that name in the
+    shared folder had the import write the records wherever it led."""
+    old = old_computer(tmp_path)
+    monkeypatch.setenv("PAPERPULL_SERVER", "1")
+    root = tmp_path / "data"
+    monkeypatch.setenv("APPS_ROOT", str(root))
+    bring(export_from(old, monkeypatch))
+    canary = tmp_path / "server.json"
+    canary.write_text('{"password": "kept"}', encoding="utf-8")
+    bank = root / "Bank Statements"
+    import os
+    os.link(canary, bank / "progress.json.tmp")
+
+    _write(old / "Bank Statements" / "progress.json", _done(6))
+    got = bring(export_from(old, monkeypatch))
+    assert [r.get("new") for r in got["rows"] if r["provider"] == "Bank"] == [3]
+    assert canary.read_text(encoding="utf-8") == '{"password": "kept"}'
+    assert len(json.loads((bank / "progress.json").read_text(encoding="utf-8"))) == 6
+
+
+def export_from(old: Path, monkeypatch) -> bytes:
+    """An export of the old computer, made as the desktop makes it."""
+    with monkeypatch.context() as m:
+        m.delenv("PAPERPULL_SERVER", raising=False)
+        m.delenv("APPS_ROOT", raising=False)
+        _use(old)
+        return export()
+
+
 def test_the_export_leaves_no_copy_behind(panel, tmp_path):
     """On the server the root is a shared folder, so the file is made in
     memory and handed to the browser, never written beside the documents."""

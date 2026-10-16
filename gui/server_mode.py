@@ -42,6 +42,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import time
@@ -877,6 +878,75 @@ def inside_data(path) -> bool:
     except (OSError, RuntimeError):
         return False
     return where == data or data in where.parents
+
+
+# -- writing in the shared folder ------------------------------------------------------
+#
+# The data folder is often a share other people can write, and some shares let
+# them leave a link there, a file or folder name that leads elsewhere, while
+# the container's user also owns /config and /profiles. So on the server the
+# panel writes a file there only into a folder inside the data folder once its
+# links are followed, as a new file moved into place, which replaces a link at
+# the name rather than follow it, and never reads a file through a link to
+# write what it read back into the share. A run is held the same way by
+# paperpull_core.shared_folder.
+
+def hold_in_data(folder) -> None:
+    """On the server, OSError unless a folder, once its links are followed,
+    is inside the data folder. Called before a folder is made or written
+    into, since a folder made through a link is made outside."""
+    if enabled() and not inside_data(folder):
+        raise OSError("%s leads outside the data folder through a link" % folder)
+
+
+def linked(path) -> bool:
+    """Whether a name is a link, a junction or a second name of another
+    file, a hard link. A name with nothing there is none of them."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    junction = getattr(os.path, "isjunction", None)
+    if junction and junction(path):
+        return True
+    return stat.S_ISREG(st.st_mode) and st.st_nlink > 1
+
+
+def own_file(path) -> bool:
+    """Whether the panel may read a file in the shared folder and write it
+    back. Always off the server. On it, only a file that is no link and no
+    second name of another, in a folder inside the data folder, since what
+    was read through a link would be written back into the share."""
+    if not enabled():
+        return True
+    return inside_data(Path(path).parent) and not linked(path)
+
+
+def write_in_data(path, data) -> None:
+    """Write text or bytes to a file in the shared folder on the server, in
+    a folder held inside the data folder, as a new file of its own moved
+    into the file's place."""
+    path = Path(path)
+    hold_in_data(path.parent)
+    tmp = path.with_name("%s.%s.tmp" % (path.name, os.urandom(6).hex()))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                 | getattr(os, "O_BINARY", 0), 0o666)
+    try:
+        if isinstance(data, str):
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+        else:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def new_files(install: Path, account: str, started: float) -> list:

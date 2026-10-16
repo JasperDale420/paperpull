@@ -72,10 +72,29 @@ All notable changes to PaperPull are recorded here. Versioning follows
   where before it saved into the container's home folder, which is lost
   when the container is made again. The panel keeps no run log, reads no
   records and moves no history outside the data folder either, and its
-  run log replaces a link left at its name rather than follow it. Links
-  inside a provider's folder are otherwise still followed, so write
-  access to the share is still best kept to yourself. The desktop app
-  reads all three as before.
+  run log replaces a link left at its name rather than follow it. The
+  desktop app reads all three as before.
+- **A link left in the shared data folder can no longer carry a write
+  outside it.** Some shares let the people who use them leave a link, a
+  file or folder name that leads somewhere else, and PaperPull Server's
+  container user also owns the server's password file and every signed-in
+  browser profile. A folder such as Logs, Diagnostics or Backups left as a
+  link, or a link left at the name of a file a run or the panel writes,
+  had that write land wherever the link led, and a file read through one
+  could have been copied into the share. On the server a run now stops
+  before it writes anything when a folder it writes into holds a link that
+  leads outside the data folder, looking through a folder that is a link
+  elsewhere in the data folder too and passing over a virtual environment
+  or a browser profile, which no run writes into. It checks each folder
+  again as it makes it, and never reads or writes its records, index,
+  staged downloads, review list or backups through a link left at their
+  names. The browser's downloads are never pointed at a folder that leads
+  out. The panel never writes a config, a code file, the Stop button's file
+  or a history through a link, never reads a file through one to copy what
+  it read into the share, holds Removed inside the data folder and no
+  longer copies a core into an install's venv, which the server never runs.
+  The browser's own saves and each app's log are checked only where a run
+  starts. The desktop app reads and writes as before.
 - **PaperPull Server's password hash is stronger, and checking it no
   longer holds up the panel.** The password was hashed with scrypt at
   n=2^14, r=8, p=1, below every profile OWASP recommends, and the hash ran

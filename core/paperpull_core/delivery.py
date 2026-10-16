@@ -68,7 +68,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import capture
+from . import capture, shared_folder
 from .identity import Identity, REFUSED, UNCHECKED, Verdict, distinguish
 
 log = logging.getLogger("paperpull.delivery")
@@ -347,6 +347,9 @@ def _stage(out_path: Path) -> Path:
     """A path beside the destination, so the move at the end is a rename
     on one volume rather than a copy that can half happen."""
     out_path = Path(out_path)
+    # Held each time on PaperPull Server, since the folder can have been
+    # left as a link in the shared folder after the run started.
+    shared_folder.hold(out_path.parent)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     return out_path.parent / (out_path.name + ".delivering")
 
@@ -495,7 +498,7 @@ def place(data: bytes, out_path, *, expect: Optional[Identity] = None,
         note("verify", outcome=NOTHING, mechanism=ASK)
         return Delivery(NOTHING, ASK, armed=(ASK,))
     try:
-        staged.write_bytes(data)
+        shared_folder.write_bytes(staged, data)
     except OSError as e:
         log.info("could not stage the answer the app already had: %s", e)
         return Delivery(NOTHING, ASK, armed=(ASK,))
@@ -578,7 +581,7 @@ def _acquire(page, request, staged: Path, is_safe_url, dl_dir, settle_ms,
             body = None
         if body:
             try:
-                staged.write_bytes(body)
+                shared_folder.write_bytes(staged, body)
                 note("download", mechanism=ASK, got=True)
                 return ASK, armed, rejected
             except OSError as e:
@@ -652,7 +655,7 @@ def _read_race(page, watch, staged: Path, is_safe_url, request, rejected):
             # Already in hand. No second request, which matters where the
             # address was signed for one use.
             try:
-                staged.write_bytes(watch.body)
+                shared_folder.write_bytes(staged, watch.body)
                 yield RESPONSE
                 return
             except OSError as e:

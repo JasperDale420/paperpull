@@ -22,7 +22,7 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from . import redirects
+from . import redirects, shared_folder
 from .receipt_pdf import ZIP_MAGIC
 from .redact import redact
 
@@ -108,6 +108,15 @@ def set_download_dir(page, dirpath) -> bool:
     such an install before this. The setting lasts while the app is
     attached, and the browser's own folder is back once it has gone.
     """
+    if shared_folder.on_server() and shared_folder.leads_out(dirpath):
+        # A download folder in the shared folder that is a link, or sits
+        # behind one, would have the browser write outside the data
+        # folder, and the browser's own writes cannot be held any other way.
+        log.warning("set_download_dir refused, %s leads outside the data folder "
+                    "through a link", dirpath)
+        print("The browser's downloads were not pointed at %s, since it leads outside "
+              "the data folder through a link." % dirpath)
+        return False
     try:
         folder = Path(dirpath).resolve()
         folder.mkdir(parents=True, exist_ok=True)
@@ -621,7 +630,7 @@ def take_new_tab(page, new_pages, out_path: Path, is_safe_url) -> bool:
                 continue
             data = base64.b64decode(b64)
             if data[:5] == b"%PDF-":
-                out_path.write_bytes(data)
+                shared_folder.write_bytes(out_path, data)
                 return True
         except Exception as e:
             log.info("tab capture failed: %s", e)
@@ -668,7 +677,7 @@ def take_same_tab(page, start_url: str, out_path: Path, trace, is_safe_url) -> b
     except Exception:
         pass
     if body[:5] == b"%PDF-":
-        out_path.write_bytes(body)
+        shared_folder.write_bytes(out_path, body)
         return True
     return False
 
@@ -764,7 +773,7 @@ def ask_again(page, answers: list, out_path: Path, is_safe_url, *, zip_ok: bool 
                  (str(e).splitlines() or [type(e).__name__])[0][:90])
         return False
     if is_document(data, zip_ok):
-        out_path.write_bytes(data)
+        shared_folder.write_bytes(out_path, data)
         return True
     log.info("asked again, %s gave no document", redact(url)[:80])
     return False
