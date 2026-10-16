@@ -286,6 +286,25 @@ def _test_id_of(el, timeout: int = 0) -> str:
 
 
 _PDF_LINK_SEL = ", ".join(_by_test_id("=", name) for name in ("goToPdfLinkLg", "goToPdfLinkSm"))
+# A page in another language names its links in its own words, "Kontobewegungen
+# & Abrechnungen" and "PDF-Abrechnungen" on a German account, and their
+# addresses are the same in every language, each with a query of its own
+# (#107). They are looked for by address only where the English words find
+# nothing, so an English page is reached as it always was.
+_ACTIVITY_HREF = "a[href='/activity'], a[href^='/activity?']"
+_STATEMENTS_HREF = "a[href^='/activity/statements']"
+
+
+def _shown_link(page, css: str):
+    """The first link of `css` that shows, or None."""
+    loc = page.locator(css)
+    try:
+        for i in range(min(loc.count(), 6)):
+            if loc.nth(i).is_visible():
+                return loc.nth(i)
+    except Exception:
+        pass
+    return None
 _DOWNLOAD_BUTTONS = _by_test_id("*=", "download-button")
 
 
@@ -302,20 +321,28 @@ def goto_documents(page) -> bool:
             if "/activity" not in url:
                 link = page.get_by_role("link", name=re.compile(
                     r"statements?\s*&\s*activity", re.I))
-                if link.count() and link.first.is_visible():
-                    pressing.click(page, link.first, css=pressing.LINKS,
+                link = link.first if link.count() and link.first.is_visible() else None
+                if link is None:
+                    # The PDF statements themselves, which a dashboard in
+                    # another language links to, or else the activity page.
+                    link = _shown_link(page, _STATEMENTS_HREF) or _shown_link(page, _ACTIVITY_HREF)
+                if link is not None:
+                    pressing.click(page, link, css=pressing.LINKS,
                                    what="the Statements and Activity link",
                                    words=_words(), step="open the statements page")
                     page.wait_for_timeout(5000)
-            pdf = page.locator(_PDF_LINK_SEL)
-            if pdf.count() == 0:
-                pdf = page.get_by_role("link", name=re.compile(
-                    r"go to pdf statements", re.I))
-            if pdf.count() and pdf.first.is_visible():
-                pressing.click(page, pdf.first, css="%s, %s" % (_PDF_LINK_SEL, pressing.LINKS),
-                               what="the Go to PDF Statements link",
-                               words=_words(), step="open the statements page")
-                page.wait_for_timeout(6000)
+            if "/activity/statements" not in (page.url or ""):
+                pdf = page.locator(_PDF_LINK_SEL)
+                if pdf.count() == 0:
+                    pdf = page.get_by_role("link", name=re.compile(
+                        r"go to pdf statements", re.I))
+                pdf = pdf.first if pdf.count() and pdf.first.is_visible() else \
+                    _shown_link(page, _STATEMENTS_HREF)
+                if pdf is not None:
+                    pressing.click(page, pdf, css="%s, %s" % (_PDF_LINK_SEL, pressing.LINKS),
+                                   what="the Go to PDF Statements link",
+                                   words=_words(), step="open the statements page")
+                    page.wait_for_timeout(6000)
         try:
             page.wait_for_selector(_DOWNLOAD_BUTTONS, timeout=12000)
         except Exception:
@@ -327,25 +354,42 @@ def goto_documents(page) -> bool:
         return page.locator(_DOWNLOAD_BUTTONS).count() > 0
 
 
+# The collapsible sections, each by the part it opens, which is the same in
+# every language ("Vergangene Abrechnungen" heads the older statements on a
+# German account, #107), and by its English words. Only the older
+# statements' part has been seen by its name.
+_SECTIONS = (
+    ("Older Statements", "[aria-controls='content-older-statements']", r"older\s+statements"),
+    ("Year End Summary", None, r"year.?end\s+summary"),
+)
+
+
 def expand_sections(page) -> None:
     """Open the collapsible 'Older Statements' and 'Year End Summary' sections
     so their download buttons become clickable. 'Older Statements' is expanded
     by default; 'Year End Summary' is collapsed - only click a header whose
-    aria-expanded is 'false' (clicking an open one would collapse it)."""
-    for label, name in ((r"older\s+statements", "Older Statements"),
-                        (r"year.?end\s+summary", "Year End Summary")):
+    aria-expanded is 'false' (clicking an open one would collapse it). A
+    section's heading is found by the part it opens first, then by its words,
+    and only the first that shows is pressed or left as it is."""
+    for name, css, label in _SECTIONS:
         try:
-            hdr = page.get_by_role("button", name=re.compile(label, re.I))
-            for i in range(min(hdr.count(), 3)):
-                el = hdr.nth(i)
-                if not el.is_visible():
-                    continue
-                if (el.get_attribute("aria-expanded") or "").lower() == "false":
-                    pressing.click(page, el, css=pressing.BUTTONS,
-                                   what="the heading of the %s section" % name,
-                                   words=_words(), step="open a section")
-                    page.wait_for_timeout(1500)
-                break
+            found = [page.locator(css)] if css else []
+            found.append(page.get_by_role("button", name=re.compile(label, re.I)))
+            el = None
+            for hdr in found:
+                for i in range(min(hdr.count(), 3)):
+                    if hdr.nth(i).is_visible():
+                        el = hdr.nth(i)
+                        break
+                if el is not None:
+                    break
+            if el is None:
+                continue
+            if (el.get_attribute("aria-expanded") or "").lower() == "false":
+                pressing.click(page, el, css=pressing.BUTTONS,
+                               what="the heading of the %s section" % name,
+                               words=_words(), step="open a section")
+                page.wait_for_timeout(1500)
         except Exception:
             continue
 

@@ -16,7 +16,12 @@ All notable changes to PaperPull are recorded here. Versioning follows
   Download button's test id as data-test-id, and the app read data-testid
   alone, so Discover reported no statements on a page listing all of them.
   Every test id is now read under both names, the dialog's Download among
-  them. Thanks to Weyoun for finding it and the fix.
+  them. Where a page's links and headings are in another language, the
+  links are found by where they point and the older statements' section by
+  the part it opens, so a run that starts on the dashboard reaches the PDF
+  statements and the older ones are listed and saved. An English page is
+  reached the way it always was. Thanks to Weyoun for finding it all and
+  the fix.
 
 ## [0.53.0] - 2026-10-15
 
