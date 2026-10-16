@@ -96,9 +96,11 @@ class Req:
 
 class Resp:
     def __init__(self, url, data=None, status=200, ctype="application/json", page=None,
-                 readable=True, raw=None):
+                 readable=True, raw=None, location=None):
         self.url, self.status = url, status
         self.headers = {"content-type": ctype}
+        if location is not None:
+            self.headers["location"] = location
         self._body = raw if raw is not None else json.dumps(data).encode()
         self.readable = readable
         self.request = Req(url)
@@ -227,6 +229,7 @@ class Page:
         self.waits = []
         self.extra = ["Accept", "Enroll", "OK", "", "Sign out", "Bill pay"]
         self.list_status = 200
+        self.list_location = None     # where a redirect list answer says to go
         self.list_readable = True
         self.on_press = None          # what a press brings, by default the PDF
         self.pdf_override = {}
@@ -268,7 +271,7 @@ class Page:
     def responses(self):
         answer = self.answer if self.answer is not None else {"documents": self.docs}
         out = [Resp(list_url(self.start), answer, status=self.list_status, page=self,
-                    readable=self.list_readable),
+                    readable=self.list_readable, location=self.list_location),
                Resp("%s/a/consumer/api/users/%s/accounts" % (BASE, USER), self.accounts, page=self),
                # What the page also asks, which this app never reads.
                Resp("%s/a/consumer/api/users/%s/documents/settings/per-account" % (BASE, USER),
@@ -536,12 +539,33 @@ def test_an_empty_list_is_a_whole_list_of_nothing():
     assert site.collect_download_docs(page, site.Run()) == []
 
 
-@pytest.mark.parametrize("status", [401, 403, 302])
-def test_a_signed_out_list_answer_ends_the_session(status):
+@pytest.mark.parametrize("status, location", [
+    (401, None), (403, None), (302, "/login"), (301, BASE + "/login?next=documents"),
+    (303, "/"), (307, "https://sso.example.test/signin"), (308, "/dashboard")],
+    ids=["401", "403", "302 to sign-in", "301 to sign-in", "303 off the API",
+         "307 to another host", "308 to the dashboard"])
+def test_a_signed_out_list_answer_ends_the_session(status, location):
     page = Page()
-    page.list_status = status
+    page.list_status, page.list_location = status, location
     with pytest.raises(site.SessionExpired):
         listing_of(page)
+
+
+@pytest.mark.parametrize("status, location", [
+    (304, None), (302, None), (307, "/a/consumer/api/v0/users/%s/documents/all?startDate=%s"
+                                % (USER, START)), (300, None)],
+    ids=["304 from a cache", "redirect that says nowhere", "redirect inside the documents API",
+         "300"])
+def test_a_list_answer_that_is_no_sign_out_stops_the_list_and_never_says_signed_out(status,
+                                                                                    location):
+    """A 304 a cache revalidation brings is no sign-out. It carries no list
+    to read, so the list stops, and the run says so rather than tell the
+    account holder to sign in again."""
+    page = Page()
+    page.list_status, page.list_location = status, location
+    with pytest.raises(site.ListStopped, match="carries nothing this can read"):
+        listing_of(page)
+    assert page.presses == [] and page.context.request.asked == []
 
 
 def test_an_html_list_answer_ends_the_session():
