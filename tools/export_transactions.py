@@ -854,12 +854,23 @@ def statement_name(index: Path, pdf: Path) -> str:
     with the folders a naming pattern filed it in inside the folder of its
     kind, "Chase/2026/2026-01-31 Chase Statement.pdf" (#101), since a
     pattern's folders can hold two files of one name. A file in the folder
-    of its kind is its name alone, as it always was."""
+    of its kind is its name alone, as it always was. A statement moved to
+    the account's documents folder (#102) is named from inside that folder
+    the same way, each documents folder its documents went to being
+    written down beside the index, in documents-folders.json."""
+    roots = [index.parent]
     try:
-        parts = pdf.relative_to(index.parent).parts
-    except ValueError:
-        return pdf.name
-    return "/".join(parts[1:]) if len(parts) > 2 else pdf.name
+        listed = json.loads((index.parent / "documents-folders.json").read_text("utf-8"))
+        roots += [Path(p) for p in listed if isinstance(p, str) and Path(p).is_absolute()]
+    except (OSError, ValueError, TypeError):
+        pass
+    for root in sorted(roots, key=lambda p: len(str(p)), reverse=True):
+        try:
+            parts = pdf.relative_to(root).parts
+        except ValueError:
+            continue
+        return "/".join(parts[1:]) if len(parts) > 2 else pdf.name
+    return pdf.name
 
 
 def providers(root: Path) -> List[dict]:

@@ -44,6 +44,9 @@ _KEPT_WITH_RECORDS = {folder.attr for folder in INFRASTRUCTURE_FOLDERS}
 # _folder_key of that folder (#102). Paths reads it, so every app gets it
 # from the Paths it builds from its config's output_dir.
 _DOCUMENTS = {}
+# Each documents folder an account's documents were moved to, a JSON list
+# of full paths in its output folder (Paths.documents_roots).
+DOCUMENTS_FOLDERS = "documents-folders.json"
 
 
 def _folder_key(path) -> str:
@@ -133,9 +136,9 @@ def set_documents_dir(cfg: dict, path) -> str:
     its output_dir, and return it, "" for the output folder itself (#102).
 
     It has to be an absolute path, a folder of its own. One that is not
-    text or not absolute, or that is a browser profile, is inside one or
-    holds one, is reported once and documents go to the output folder as
-    they always did, since a typo in a setting must never send documents
+    text or not absolute, that is a browser profile, is inside one or holds
+    one, or that holds the output folder, is reported once and documents
+    stay in the output folder as they always did, since a typo in a setting must never send documents
     somewhere nobody meant, and must never be the reason a run stops. On
     PaperPull Server hold_to_the_server has already held it inside the data
     folder. The config in memory is given the folder as it is used."""
@@ -152,9 +155,13 @@ def set_documents_dir(cfg: dict, path) -> str:
     else:
         docs = os.path.normpath(raw.strip())
         profile = str(cfg.get("profile_dir") or "")
+        out = str(cfg["output_dir"])
         if profile and (_inside(docs, profile) or _inside(profile, docs)):
             why = ("it is the browser profile, inside it or around it, and documents are "
                    "never kept with a signed-in profile")
+        elif _inside(out, docs) and not _inside(docs, out):
+            why = ("it holds the output folder, whose records and Manual Review would then "
+                   "sit in it")
     if why:
         print("The documents folder in %s is not used, since %s, so documents go to the "
               "output folder as before." % (name, why), flush=True)
@@ -263,6 +270,9 @@ def hold_to_the_server(cfg: dict, path: Path) -> None:
     # The documents folder (#102) is held the same way, never anywhere a
     # config in the shared folder says.
     docs = cfg.get("documents_dir")
+    if isinstance(docs, str):
+        # Judged as the run will use it (set_documents_dir).
+        docs = cfg["documents_dir"] = docs.strip()
     if docs is None or docs == "":
         return
     if not (isinstance(docs, str) and Path(docs).is_absolute()):
@@ -423,16 +433,20 @@ class Paths:
     Folders and routing come from the AppSpec, so a provider declares *what*
     it files and where, and never reimplements *how*.
 
-    The folders a document is routed to, Statements, Tax Documents, Receipts
-    and the rest, go in the account's documents folder when its config sets
-    documents_dir (#102), a folder somebody may have another program watch.
-    Everything else stays in the output folder, Manual Review, Logs,
-    Diagnostics and Backups, the index and the order history, progress.json
-    and discovery.json, so nothing half checked and no record ever reaches
-    a watched folder. With no documents_dir every path is what it always
-    was. The documents folder is the one load_config read for this output
-    folder (documents_dir_for), so every app gets it from the Paths it has
-    always built, or `documents_dir` says it.
+    An account's documents folder (#102), documents_dir in its config, is
+    where its documents go once they are saved and checked, a folder
+    somebody may have another program watch. A download is written and
+    checked in the output folder as it always was, in the folder of its
+    kind there, and one that fails its check is put aside in Manual Review
+    beside it, on the same drive. Only a document saved and checked is
+    moved to the same folder of its kind in the documents folder, by the
+    app's own Rename (renaming.run_for), which the control panel runs after
+    each download run for what that run saved, and for what was saved
+    before when the person asks. So nothing half checked and no record ever
+    reaches a watched folder. The documents folder is the one load_config
+    read for this output folder (documents_dir_for), so every app gets it
+    from the Paths it has always built, or `documents_dir` says it. Every
+    path here is what it always was, documents_dir or not.
     """
 
     def __init__(self, output_dir, app_spec=None, documents_dir=None):
@@ -441,9 +455,10 @@ class Paths:
         if documents_dir is None:
             documents_dir = documents_dir_for(output_dir)
         self.documents = Path(documents_dir) if documents_dir else self.root
+        # Each documents folder this account's documents were moved to.
+        self.documents_folders_json = self.root / DOCUMENTS_FOLDERS
         for folder in self._spec.folders:
-            home = self.root if folder.attr in _KEPT_WITH_RECORDS else self.documents
-            setattr(self, folder.attr, home / folder.name)
+            setattr(self, folder.attr, self.root / folder.name)
         for csv_spec in self._spec.csv_files:
             name = csv_spec.filename.format(provider=self._spec.provider)
             setattr(self, csv_spec.attr, self.root / name)
@@ -523,23 +538,77 @@ class Paths:
         by name, as Anthem does its ID cards and letters, and Manual Review,
         where a file that failed its check is put aside.
 
-        With a documents folder set, the folders in the output folder where
-        documents went before are filing folders too (earlier_folders), so
-        Rename, Review Names and every check of a file the app holds still
-        find a file saved there. Setting the folder moves nothing."""
-        current = [getattr(self, folder.attr) for folder in self._spec.folders
-                   if folder.attr not in _RECORD_FOLDERS]
-        return current + list(self.earlier_folders())
+        The folders of each kind in the account's documents folder, and in
+        every documents folder its documents were moved to before
+        (documents_roots), are filing folders too (#102), so Rename, Review
+        Names and every check of a file the app holds find a document
+        wherever it was moved, and after the setting changes or is cleared
+        as well. With no documents folder ever used, this is what it always
+        was."""
+        held = [getattr(self, folder.attr) for folder in self._spec.folders
+                if folder.attr not in _RECORD_FOLDERS]
+        seen = {_folder_key(f) for f in held}
+        for root in [self.documents] + self.documents_roots():
+            for folder in self._routed():
+                path = Path(root) / folder.name
+                if _folder_key(path) not in seen:
+                    seen.add(_folder_key(path))
+                    held.append(path)
+        return held
 
-    def earlier_folders(self) -> Dict[Path, Path]:
-        """Each folder a document is routed to as the output folder kept it
-        before documents_dir was set, with where that folder is now, and
-        nothing when documents go to the output folder. Moving documents
-        saved before into the documents folder reads it (renaming.run_for)."""
+    def _routed(self):
+        """The folders a document is routed to, every folder but those kept
+        beside the records."""
+        return [f for f in self._spec.folders if f.attr not in _KEPT_WITH_RECORDS]
+
+    def documents_roots(self) -> List[Path]:
+        """Each documents folder this account's documents were moved to, as
+        the Move wrote them down in documents-folders.json, a full path
+        each, and on PaperPull Server only one inside the data folder."""
+        try:
+            with shared_folder.open_to_read(self.documents_folders_json, "r",
+                                            encoding="utf-8") as f:
+                listed = json.loads(f.read())
+        except (OSError, ValueError, SystemExit):
+            return []
+        roots = []
+        for item in listed if isinstance(listed, list) else ():
+            if not (isinstance(item, str) and Path(item).is_absolute()):
+                continue
+            if shared_folder.on_server() and not _in_data(
+                    os.path.realpath(item), shared_folder.data_folder()):
+                continue
+            roots.append(Path(item))
+        return roots
+
+    def documents_moves(self) -> Dict[Path, Path]:
+        """Each folder of a kind a document may be in that is not where it
+        belongs now, with the folder it belongs in, the same folder of its
+        kind in the documents folder. That is the folders in the output
+        folder and in each documents folder used before. With no documents
+        folder set, it is each documents folder used before and the output
+        folder, so a Move brings documents back. Empty when every document
+        is where it belongs."""
+        here = self.documents
+        moves = {}
+        for root in [self.root] + self.documents_roots():
+            if _folder_key(root) == _folder_key(here):
+                continue
+            for folder in self._routed():
+                moves[Path(root) / folder.name] = here / folder.name
+        return moves
+
+    def remember_documents(self) -> None:
+        """Write down the documents folder in documents-folders.json, once
+        documents are moved into it, so they are still found after the
+        setting changes or is cleared."""
         if _folder_key(self.documents) == _folder_key(self.root):
-            return {}
-        return {self.root / folder.name: getattr(self, folder.attr)
-                for folder in self._spec.folders if folder.attr not in _KEPT_WITH_RECORDS}
+            return
+        known = [str(p) for p in self.documents_roots()]
+        if any(_folder_key(p) == _folder_key(self.documents) for p in known):
+            return
+        atomic_write_text(self.documents_folders_json,
+                          json.dumps(known + [str(self.documents)], indent=1))
 
 
 # ---------------------------------------------------------------------------

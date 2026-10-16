@@ -270,8 +270,10 @@ __CSS__
     <section class="card pad stack" aria-labelledby="g-docs" id="g-docscard">
       <h2 id="g-docs">Documents folder</h2>
       <p class="hint">Where one person's statements, tax documents and receipts go, in folders of their kind,
-        such as a folder Paperless watches. The provider's records, Manual Review and logs stay in its own
-        folder, so that folder only ever gets documents that passed their checks. Saving moves nothing.</p>
+        such as a folder Paperless watches. Each download is checked in the provider's own folder first,
+        and when a run ends, what it saved moves there. The provider's records, Manual Review and logs never
+        move, so that folder only ever gets documents that passed their checks. Saving moves nothing already
+        saved.</p>
       <label class="field" for="dcpick">Provider and person<select id="dcpick"></select></label>
       <p class="mono small" id="dcnow" style="word-break:break-all"></p>
       <label class="field" for="dcinput">A folder of their own, as its full path</label>

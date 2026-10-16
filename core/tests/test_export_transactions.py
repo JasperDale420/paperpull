@@ -5,6 +5,7 @@ balance column with debit and credit columns, a signed-amount card
 statement with its summary printed up front, and a two-account statement
 with a balance pair per account."""
 import csv
+import json
 import importlib.util
 from pathlib import Path
 
@@ -241,6 +242,23 @@ def test_two_statements_of_one_name_in_a_patterns_folders_are_told_apart(tmp_pat
                      "2026-06-15 A Bank Statement.pdf"}
     index = bank / "A Bank Document Index.csv"
     assert xt.statement_name(index, tmp_path / "elsewhere" / "x.pdf") == "x.pdf"
+
+
+def test_a_statement_in_the_documents_folder_is_named_with_its_folders(tmp_path):
+    """Moved to the account's documents folder (#102), which is written down
+    beside the index, a statement is named from inside that folder."""
+    bank, docs = tmp_path / "A Bank", tmp_path / "Watched"
+    bank.mkdir()
+    index = bank / "A Bank Document Index.csv"
+    pdf = docs / "Statements" / "Checking 1111" / "2026-07-15 Statement.pdf"
+    assert xt.statement_name(index, pdf) == "2026-07-15 Statement.pdf"
+    (bank / "documents-folders.json").write_text(json.dumps([str(docs)]), encoding="utf-8")
+    assert xt.statement_name(index, pdf) == "Checking 1111/2026-07-15 Statement.pdf"
+    assert xt.statement_name(index, docs / "Statements" / "flat.pdf") == "flat.pdf"
+    nested = bank / "Documents" / "Statements" / "Savings 2222" / "x.pdf"
+    (bank / "documents-folders.json").write_text(json.dumps([str(bank / "Documents")]),
+                                                 encoding="utf-8")
+    assert xt.statement_name(index, nested) == "Savings 2222/x.pdf"
 
 
 def test_with_no_statement_on_disk_nothing_is_written(tmp_path):

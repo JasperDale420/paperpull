@@ -51,9 +51,11 @@ THE RULES
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
+import shutil
 import sys
 import time
 from dataclasses import dataclass, field
@@ -740,6 +742,52 @@ def _retried_rename(source: Path, target: Path) -> None:
             if attempt == _TRIES - 1:
                 raise
             time.sleep(_RETRY_PAUSE)
+        except OSError as e:
+            if not _another_drive(e):
+                raise
+            _moved_across(source, target)
+            return
+
+
+def _another_drive(e: OSError) -> bool:
+    """Whether a rename was refused because its two names are on two drives
+    or shares, as a documents folder on a NAS is from the output folder."""
+    return e.errno == errno.EXDEV or getattr(e, "winerror", None) == 17
+
+
+def _moved_across(source: Path, target: Path) -> None:
+    """Move a file to another drive or share, where a rename cannot go
+    (#102). It is copied beside its new name under a temporary one, given
+    its name only while nothing has it, and taken away from where it was
+    only once it is whole there. A failure leaves it where it was and
+    nothing under its new name, and when it cannot be taken away from where
+    it was, the copy goes again, so there are never two."""
+    part = target.with_name(".%s.moving" % target.name)
+    n = 0
+    while os.path.lexists(part):
+        n += 1
+        part = target.with_name(".%s.moving%d" % (target.name, n))
+    try:
+        with shared_folder.open_to_write(part, "wb") as out, open(source, "rb") as src:
+            shutil.copyfileobj(src, out)
+        shutil.copystat(source, part)
+        if os.path.lexists(target):
+            raise FileExistsError(17, "a file has that name", str(target))
+        part.rename(target)
+    except BaseException:
+        try:
+            part.unlink()
+        except OSError:
+            pass
+        raise
+    try:
+        source.unlink()
+    except BaseException:
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _file_key(path: Path):
@@ -1158,10 +1206,13 @@ def told_apart_by(record) -> str:
     return str(record.get("document_id") or "")[-6:]
 
 
-# Set to 1 by the control panel's Move for the Rename it starts, which then
-# moves the documents an account saved before it had a documents folder
-# into that folder, each under the name it has, and renames nothing (#102).
-# Every app's Rename is this core's, so every app moves them alike.
+# Set by the control panel for the Rename it starts to move documents into
+# an account's documents folder, each under the name it has, renaming
+# nothing (#102). "1" is the Move a person asks for, every document saved
+# and checked that is not in the documents folder. "new" is what the panel
+# starts once a download run has ended, the documents that run listed in
+# new-this-run.txt alone. Every app's Rename is this core's, so every app
+# moves them alike.
 MOVE_DOCUMENTS_ENV = "PAPERPULL_MOVE_DOCUMENTS"
 
 # The fields that say which document a file holds, the ones a pattern's
@@ -1281,24 +1332,31 @@ def run_for(app, apply_changes: bool = False, say=print,
         home, name = homes.placed(Path((row.get("PDF Full Path") or "").strip()), name)
         return filing_folder(home, name, limit)
 
-    # Moving the documents saved before into the documents folder (#102),
-    # asked for by the panel's Move. Each file keeps its name and the
-    # folders it is in, and goes from the folder of its kind in the output
-    # folder to the same folder in the documents folder, by every rule a
-    # rename keeps.
-    documents = os.environ.get(MOVE_DOCUMENTS_ENV, "").strip() == "1"
+    # Moving documents into the documents folder (#102). Each file keeps its
+    # name and the folders it is in, and goes from the folder of its kind
+    # where it is to the same folder in the documents folder, by every rule
+    # a rename keeps. Only a document saved and checked moves, never one put
+    # aside in Manual Review, and with "new", only what the last download
+    # run saved and listed in new-this-run.txt, as the panel asks once a
+    # download run has ended.
+    mode = os.environ.get(MOVE_DOCUMENTS_ENV, "").strip()
+    documents = mode in ("1", "new")
     earlier = {}
+    only = None
     if documents:
-        for old, new in (getattr(app.paths, "earlier_folders", dict)() or {}).items():
+        for old, new in (getattr(app.paths, "documents_moves", dict)() or {}).items():
             try:
                 earlier[Path(old).resolve()] = Path(new)
             except (OSError, RuntimeError, ValueError):
                 continue
         if not earlier:
-            say("This account keeps its documents in its output folder, so there are none "
-                "to move. Set a documents folder for it first.")
+            say("Every document of this account is in its documents folder already, so "
+                "there are none to move.")
             return Result()
-        say("Moving the documents saved before into %s." % app.paths.documents)
+        if mode == "new":
+            only = _listed_this_run(app)
+        say("Moving %s into %s." % ("the documents this run saved" if mode == "new"
+                                    else "the documents saved before", app.paths.documents))
 
     def moved_to(home) -> Optional[Path]:
         try:
@@ -1308,10 +1366,17 @@ def run_for(app, apply_changes: bool = False, say=print,
 
     def kept_name(row):
         """A row's file under the name it has, with the folders it is in
-        inside the folder of its kind, for a move that changes neither."""
+        inside the folder of its kind, for a move that changes neither, or
+        "", which leaves it where it is, for one not saved and checked."""
         raw = (row.get("PDF Full Path") or "").strip()
         home = homes.home(Path(raw)) if raw else None
-        if home is None:
+        if home is None or not raw.lower().endswith(".pdf"):
+            return ""
+        if only is not None and _same_file(raw) not in only:
+            return ""
+        record = current.record_for(row, saved=True) or {}
+        if not (record.get("downloaded_ok") is True
+                or record.get("state") in (State.COMPLETED.value, State.PDF_VERIFIED.value)):
             return ""
         try:
             inside = Path(raw).resolve().relative_to(Path(home).resolve())
@@ -1320,6 +1385,12 @@ def run_for(app, apply_changes: bool = False, say=print,
         return FileName(Path(raw).name, "/".join(inside.parts[:-1]))
 
     name_for = kept_name if documents else build_name
+    # Target keeps each invoice of an order split into several in the
+    # record's list of invoices, and only one of them has an index row. Each
+    # of the others is planned as a row of its own for a move, never written
+    # into the index, so every invoice of the order goes and the run state
+    # follows each (update_progress).
+    planned_rows = primary_rows + (_invoices_alone(app, primary_rows) if documents else [])
 
     def distinguisher(row):
         # What the download told this file apart by when its name was
@@ -1355,7 +1426,7 @@ def run_for(app, apply_changes: bool = False, say=print,
             return ""
         return token
 
-    changes = plan(primary_rows, name_for, folders=folders, flat=flat,
+    changes = plan(planned_rows, name_for, folders=folders, flat=flat,
                    distinguisher=distinguisher, max_path_length=limit,
                    moved_to=moved_to if documents else None)
     describe(changes, say=say, limit=0 if apply_changes else 20, documents=documents)
@@ -1408,6 +1479,13 @@ def run_for(app, apply_changes: bool = False, say=print,
     finally:
         tidy(result, folders)
     if result.renamed and documents:
+        # Written down, so they are found there after the setting changes.
+        try:
+            app.paths.remember_documents()
+        except OSError as e:
+            say("%s could not be written (%s). The documents moved are found where they "
+                "are as long as the documents folder stays set."
+                % (storage_name(app.paths), type(e).__name__))
         say("")
         say("Moved %d file(s) to %s. The index and the run state now point at them."
             % (result.renamed, app.paths.documents))
@@ -1420,6 +1498,50 @@ def run_for(app, apply_changes: bool = False, say=print,
             % (result.failed - len(result.stranded)))
     _say_stranded(result, say)
     return result
+
+
+def storage_name(paths) -> str:
+    return Path(getattr(paths, "documents_folders_json", "documents-folders.json")).name
+
+
+def _listed_this_run(app) -> set:
+    """Each file the last download run saved and checked, as it listed them
+    in new-this-run.txt in the output folder (every app writes it), read as
+    _same_file reads a path."""
+    listed = Path(app.paths.root) / "new-this-run.txt"
+    try:
+        with shared_folder.open_to_read(listed, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except (OSError, SystemExit):
+        return set()
+    return {_same_file(line.strip()) for line in lines
+            if line.strip() and not line.startswith("#")}
+
+
+def _invoices_alone(app, rows) -> List[dict]:
+    """A row for each invoice a record's list of invoices names that no
+    index row names, as Target keeps the other invoices of an order split
+    into several, each carrying the order's number, so a move takes every
+    invoice of the order. Only an invoice kept, a file the order's list
+    says passed its check."""
+    named = {_same_file((r.get("PDF Full Path") or "").strip()) for r in rows
+             if (r.get("PDF Full Path") or "").strip()}
+    extra = []
+    data = getattr(getattr(app, "progress", None), "data", None) or {}
+    for key, rec in data.items():
+        if not isinstance(rec, dict) or not isinstance(rec.get("invoices"), list):
+            continue
+        number = str(rec.get("order_number") or str(key).partition(":")[2]).strip()
+        for entry in rec["invoices"]:
+            raw = _text(entry.get("file")) if isinstance(entry, dict) else ""
+            if not raw or not entry.get("kept", True) or _same_file(raw) in named:
+                continue
+            named.add(_same_file(raw))
+            extra.append({"PDF Full Path": raw, "PDF Filename": Path(raw).name,
+                          "Order or Receipt Number": number,
+                          "Purchase Date": str(rec.get("purchase_date") or ""),
+                          "Processing Status": "Completed", "Notes": ""})
+    return extra
 
 
 def _fits_whole(folder: Path, name: str, token: str, max_path_length: int) -> bool:

@@ -3466,6 +3466,14 @@ def _start_run(app: str, account: str, action: str, scope_flags, redownload=Fals
                                                 action, started, code, result)
                 for told in said:
                     yield f"data: {told}\n\n"
+            # Then what a download run saved and checked moves to the
+            # account's documents folder, if it has one (#102), after the
+            # plug-ins have read each file where the run saved it.
+            if action in DOWNLOAD_ACTIONS and root is not None:
+                said = await to_thread.run_sync(_move_new_documents, meta, account, root,
+                                                started, env)
+                for told in said:
+                    yield f"data: {told}\n\n"
             if result is not None:
                 yield f"event: result\ndata: {json.dumps(result)}\n\n"
             # The files this run saved, by name, for the page to list under
@@ -3615,7 +3623,10 @@ def _named_where(record: dict, out: Optional[Path], documents: str = "") -> str:
     path = Path(raw.strip())
     if not path.is_absolute():
         path = out / path
-    for root in [out] + ([Path(documents)] if documents else []):
+    # The deeper first, as a documents folder inside the output folder is.
+    roots = sorted([out] + ([Path(documents)] if documents else []),
+                   key=lambda p: len(str(p)), reverse=True)
+    for root in roots:
         try:
             parts = path.relative_to(root).parts
         except ValueError:
@@ -3790,6 +3801,10 @@ DOCUMENTS_KEY = "documents_dir"
 # The folders that stay in an account's own folder whatever its documents
 # folder says, as core storage keeps them (_KEPT_WITH_RECORDS).
 KEPT_FOLDERS = ("Manual Review", "Logs", "Diagnostics", "Backups")
+# Each documents folder an account's documents were moved to, in its folder.
+DOCUMENTS_FOLDERS = "documents-folders.json"
+# What tells an app's Rename to move documents (core renaming.MOVE_DOCUMENTS_ENV).
+MOVE_DOCUMENTS_ENV = "PAPERPULL_MOVE_DOCUMENTS"
 
 
 def _account_config(meta: dict, account: str) -> Path:
@@ -3851,45 +3866,104 @@ def _documents_problem(apps: dict, app_name: str, account: str, folder: str):
             return ("That folder holds %s's own folder, with its settings and records. "
                     "Choose a folder of their own." % name)
         for other in meta["accounts"]:
-            if (name, other) == (app_name, account):
-                continue
             try:
                 root = _account_root(meta, other)
             except ValueError:
                 continue
-            if _within(target, root):
-                who = name if other == "primary" else "%s, %s" % (name, other)
+            who = name if other == "primary" else "%s, %s" % (name, other)
+            # Around any account's own folder, this one's included, its
+            # records and Manual Review would sit in the watched folder.
+            if _within(root, target):
+                return ("That folder holds the folder %s keeps its records and Manual Review "
+                        "in. Choose a folder of their own." % who)
+            if (name, other) != (app_name, account) and _within(target, root):
                 return ("That folder is inside the folder %s keeps its records in. "
                         "Choose a folder of its own." % who)
     return None
 
 
+def _documents_roots(root: Path) -> list:
+    """Each documents folder an account's documents were moved to, as the
+    Move wrote them down in its folder (core storage.Paths.documents_roots)."""
+    listed = _read_json(root / DOCUMENTS_FOLDERS)
+    return [Path(p) for p in (listed if isinstance(listed, list) else ())
+            if isinstance(p, str) and Path(p).is_absolute()]
+
+
 def _documents_left(meta: dict, account: str) -> int:
-    """How many documents an account's records name in its own folder, in a
-    folder documents are routed to, and so not yet in its documents folder.
-    Read from its progress.json, each file counted once and only while it
-    is there."""
+    """How many documents an account's records name that are saved and
+    checked, and are in a folder of their kind in its own folder or in a
+    documents folder it used before, and so not yet in its documents folder,
+    as the Move would count them. Read from its progress.json, each file
+    counted once and only while it is there, never one in Manual Review."""
     try:
         root = _account_root(meta, account)
         home = root.resolve()
+        docs = _documents_of(meta, account)
+        here = Path(docs).resolve() if docs else home
+        roots = [home] + [r.resolve() for r in _documents_roots(root)]
     except (ValueError, OSError, RuntimeError):
         return 0
     data = _read_json(root / "progress.json")
     seen = set()
     for rec in data.values() if isinstance(data, dict) else ():
-        raw = rec.get("pdf_path") if isinstance(rec, dict) else None
-        if not isinstance(raw, str) or not raw.strip():
+        if not isinstance(rec, dict) or not (
+                rec.get("downloaded_ok") is True or rec.get("state") in ("Completed",
+                                                                        "PDF Verified")):
             continue
-        path = Path(raw.strip())
-        path = path if path.is_absolute() else root / path
-        try:
-            inside = path.resolve().relative_to(home).parts
-        except (ValueError, OSError, RuntimeError):
-            continue
-        if len(inside) < 2 or inside[0] in KEPT_FOLDERS or not path.is_file():
-            continue
-        seen.add(os.path.normcase(str(path.resolve())))
+        files = [rec.get("pdf_path")] + [e.get("file") for e in rec.get("invoices") or ()
+                                         if isinstance(e, dict) and e.get("kept", True)]
+        for raw in files:
+            if not isinstance(raw, str) or not raw.strip().lower().endswith(".pdf"):
+                continue
+            path = Path(raw.strip())
+            path = path if path.is_absolute() else root / path
+            try:
+                where = path.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if here in where.parents or not where.is_file():
+                continue
+            for top in roots:
+                if top == here or top not in where.parents:
+                    continue
+                parts = where.relative_to(top).parts
+                if len(parts) >= 2 and not (top == home and parts[0] in KEPT_FOLDERS):
+                    seen.add(os.path.normcase(str(where)))
+                break
     return len(seen)
+
+
+def _move_new_documents(meta: dict, account: str, root: Path, started: float,
+                        env: dict) -> list:
+    """Once a download run has ended, move what it saved and checked into the
+    account's documents folder, through the app's own Rename told to move
+    the documents its run listed in new-this-run.txt alone (#102). Nothing
+    for an account with no documents folder, or a run that listed nothing
+    since it started. The lines to show beneath the run's own."""
+    if not _documents_of(meta, account):
+        return []
+    # What the run listed since it started, the same list the page shows.
+    if not _saved_this_run(root, started):
+        return []
+    cmd = _command(meta, account, ["--rename", "--apply"])
+    try:
+        proc = subprocess.Popen(cmd, cwd=meta["dir"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                encoding="utf-8", errors="replace",
+                                env=dict(env, **{MOVE_DOCUMENTS_ENV: "new"}))
+    except Exception as e:
+        return ["", "The new documents could not be moved to the documents folder (%s). "
+                    "Settings, Documents folder, can move them." % type(e).__name__]
+    try:
+        proc.stdin.close()
+    except OSError:
+        pass
+    said = [line.rstrip() for line in proc.stdout if run_result.parse(line) is None]
+    if proc.wait():
+        said.append("Not every new document was moved to the documents folder. Settings, "
+                    "Documents folder, can move them.")
+    return [""] + said
 
 
 def _documents_account(app_name: str, account: str):

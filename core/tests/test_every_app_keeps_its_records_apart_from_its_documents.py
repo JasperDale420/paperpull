@@ -1,5 +1,5 @@
-"""Every app sends its documents to the account's documents folder and
-keeps its records in its own folder, and moves what it saved before (#102).
+"""Every app checks its documents in its own folder, knows the account's
+documents folder, and moves its checked documents there (#102).
 
 A config's documents_dir reaches an app through the Paths it builds from
 its config's output_dir (core storage.Paths, documents_dir_for), which
@@ -8,12 +8,15 @@ way, after load_config, and the census here reads each app's own code for
 it. Then each app is built as it is at home from its own code, with a
 made-up config and output folder and no browser (the rename census
 harness, test_every_app_renames_each_file_for_its_own_record), and asked
-where each of its folders is, with no documents_dir and with one. Two of
-its documents saved before the folder was set stay where they are, are
-named right where they are, and the panel's Move, the app's own Rename
-with MOVE_DOCUMENTS_ENV set, takes them to the documents folder with the
-index and the run state following.
+where each of its folders is, with no documents_dir and with one. Every
+folder stays in the output folder, so a download is checked there, and a
+run writes nothing in the documents folder. Two of its documents saved
+before the folder was set stay where they are, are named right, verified
+and counted as done where they are, and the panel's Move, the app's own
+Rename with MOVE_DOCUMENTS_ENV set, takes them to the documents folder
+with the index and the run state following.
 """
+
 import ast
 import importlib.util
 from pathlib import Path
@@ -149,20 +152,26 @@ def set_documents(home, docs: Path):
 
 
 @pytest.mark.parametrize("home", APPS, ids=IDS, indirect=True)
-def test_every_app_sends_documents_to_the_documents_folder_and_keeps_its_records(home):
+def test_every_app_writes_and_checks_in_its_own_folder_and_knows_its_documents_folder(home):
+    """A download is written and checked where it always was, with or
+    without a documents folder, and only the Move ever writes there."""
     out, docs = home.out, home.out.parent / "Watched"
     app = home.build()
     folders = [f for f in core_storage.spec().folders]
     for f in folders:
         assert getattr(app.paths, f.attr) == out / f.name, f.attr
+    assert app.paths.documents == out and app.paths.documents_moves() == {}
     set_documents(home, docs)
     app = home.build()
     for f in folders:
-        want = (out if f.attr in KEPT else docs) / f.name
-        assert getattr(app.paths, f.attr) == want, (f.attr, getattr(app.paths, f.attr))
+        assert getattr(app.paths, f.attr) == out / f.name, f.attr
+    assert app.paths.documents == docs
+    assert app.paths.documents_moves() == {out / f.name: docs / f.name for f in folders
+                                           if f.attr not in KEPT}
     for record in (app.index_csv.path, app.progress.path, app.discovery.path):
         assert Path(record).parent == out, record
-    assert not docs.exists() or not [p for p in docs.rglob("*") if p.is_file()]
+    app.paths.ensure()
+    assert not docs.exists(), "a run wrote into the documents folder"
 
 
 @pytest.mark.parametrize("home", APPS, ids=IDS, indirect=True)

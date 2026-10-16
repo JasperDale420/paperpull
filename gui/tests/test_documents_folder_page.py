@@ -150,25 +150,44 @@ def test_on_the_server_a_folder_outside_the_data_folder_is_refused(apps, tmp_pat
     assert save({"app": "Chase Statements", "folder": str(inside)})["written"]
 
 
-def test_the_page_counts_the_documents_still_in_the_accounts_own_folder(apps, tmp_path):
+def test_the_page_counts_the_documents_the_move_would_take(apps, tmp_path):
+    """Saved and checked documents in a folder of their kind in the
+    account's own folder, or in a documents folder it used before, each
+    once while it is there, never one in Manual Review, one whose check
+    failed, or one already in the documents folder, a folder inside the
+    account's own folder included."""
     chase = apps["Chase Statements"]
     statements = chase / "Statements" / "Testco"
     statements.mkdir(parents=True)
     (statements / "a.pdf").write_bytes(b"%PDF- a")
     (chase / "Statements" / "b.pdf").write_bytes(b"%PDF- b")
+    (chase / "Statements" / "failed.pdf").write_bytes(b"%PDF- failed")
     (chase / "Manual Review").mkdir()
     (chase / "Manual Review" / "c.pdf").write_bytes(b"%PDF- c")
-    records = {"a": {"pdf_path": "Statements/Testco/a.pdf"},
-               "a again": {"pdf_path": str(statements / "a.pdf")},
-               "b": {"pdf_path": str(chase / "Statements" / "b.pdf")},
-               "c": {"pdf_path": "Manual Review/c.pdf"},
-               "gone": {"pdf_path": "Statements/gone.pdf"},
-               "elsewhere": {"pdf_path": str(tmp_path / "x.pdf")}}
+    earlier = tmp_path / "Earlier Watched" / "Statements"
+    earlier.mkdir(parents=True)
+    (earlier / "d.pdf").write_bytes(b"%PDF- d")
+    (chase / "documents-folders.json").write_text(
+        json.dumps([str(tmp_path / "Earlier Watched")]), encoding="utf-8")
+    docs = chase / "Documents"
+    (docs / "Statements").mkdir(parents=True)
+    (docs / "Statements" / "e.pdf").write_bytes(b"%PDF- e")
+    done = {"downloaded_ok": True}
+    records = {"a": dict(done, pdf_path="Statements/Testco/a.pdf"),
+               "a again": dict(done, pdf_path=str(statements / "a.pdf")),
+               "b": {"state": "Completed", "pdf_path": str(chase / "Statements" / "b.pdf")},
+               "failed": {"downloaded_ok": False, "state": "Needs Manual Review",
+                          "pdf_path": "Statements/failed.pdf"},
+               "c": dict(done, pdf_path="Manual Review/c.pdf"),
+               "d": dict(done, pdf_path=str(earlier / "d.pdf")),
+               "e": dict(done, pdf_path=str(docs / "Statements" / "e.pdf")),
+               "gone": dict(done, pdf_path="Statements/gone.pdf"),
+               "elsewhere": dict(done, pdf_path=str(tmp_path / "x.pdf"))}
     (chase / "progress.json").write_text(json.dumps(records), encoding="utf-8")
     assert app_module.api_documents("Chase Statements")["left"] == 0, "no folder, none left"
-    d = save({"app": "Chase Statements", "folder": str(tmp_path / "Watched")})
-    assert d["left"] == 2
-    assert app_module.api_documents("Chase Statements")["left"] == 2
+    d = save({"app": "Chase Statements", "folder": str(docs)})
+    assert d["left"] == 3
+    assert app_module.api_documents("Chase Statements")["left"] == 3
 
 
 def test_an_unknown_account_is_refused(apps):
@@ -225,6 +244,83 @@ def test_only_the_move_runs_the_apps_rename_with_the_mark(started, action, moves
     [(cmd, env)] = started
     assert cmd == ["py", "shop_docs.py", *app_module.ACTIONS[action]["flags"]]
     assert (env.get(renaming.MOVE_DOCUMENTS_ENV) == "1") is moves
+
+
+def test_a_folder_around_an_accounts_own_folder_is_refused(apps, tmp_path):
+    """A provider whose folder is kept elsewhere, as the default
+    Downloads/<provider> is. Around it, its records and Manual Review would
+    sit in the watched folder, the account's own or another's."""
+    target = apps["Target Receipts"]
+    out = tmp_path / "Somewhere" / "Target Out"
+    out.mkdir(parents=True)
+    (target / "config.json").write_text(json.dumps({
+        "output_dir": str(out), "profile_dir": str(target / "primary-profile")}),
+        encoding="utf-8")
+    for app_name in ("Target Receipts", "Chase Statements"):
+        with pytest.raises(HTTPException) as e:
+            save({"app": app_name, "folder": str(tmp_path / "Somewhere")})
+        assert "keeps its records and Manual Review in" in e.value.detail, e.value.detail
+
+
+@pytest.fixture()
+def downloading(started, tmp_path):
+    """The started stand-in, with a download run that lists what it saved
+    in new-this-run.txt as every app does, and an account whose documents
+    folder is set."""
+    (tmp_path / "config.json").write_text(json.dumps({
+        "output_dir": ".", "documents_dir": str(tmp_path.parent / "Watched")}),
+        encoding="utf-8")
+    listed = tmp_path / "new-this-run.txt"
+
+    def lists(names):
+        listed.write_text("# saved this run\n" + "".join(n + "\n" for n in names),
+                          encoding="utf-8")
+    return lists
+
+
+def test_after_a_download_run_what_it_saved_moves_to_the_documents_folder(
+        started, downloading, tmp_path):
+    real = app_module.subprocess.Popen
+
+    def first_lists(cmd, **kwargs):
+        if "--pilot" in cmd:
+            downloading([str(tmp_path / "Statements" / "a.pdf")])
+        return real(cmd, **kwargs)
+
+    app_module.subprocess.Popen = first_lists
+    try:
+        out = ran("pilot")
+    finally:
+        app_module.subprocess.Popen = real
+    assert "event: done\ndata: 0" in out, out
+    (pilot, pilot_env), (move, move_env) = started
+    assert "--pilot" in pilot and renaming.MOVE_DOCUMENTS_ENV not in pilot_env
+    assert move == ["py", "shop_docs.py", "--rename", "--apply"]
+    assert move_env[renaming.MOVE_DOCUMENTS_ENV] == "new"
+
+
+@pytest.mark.parametrize("why", ["no documents folder", "nothing saved", "an old list"])
+def test_no_move_follows_a_run_with_nothing_of_its_own_to_move(started, downloading, tmp_path,
+                                                               why):
+    if why == "no documents folder":
+        (tmp_path / "config.json").write_text('{"output_dir": "."}', encoding="utf-8")
+    if why == "an old list":
+        downloading([str(tmp_path / "Statements" / "a.pdf")])
+        import os
+        os.utime(tmp_path / "new-this-run.txt", (1000000000, 1000000000))
+    real = app_module.subprocess.Popen
+
+    def lists(cmd, **kwargs):
+        if "--pilot" in cmd and why != "an old list":
+            downloading([] if why == "nothing saved" else [str(tmp_path / "a.pdf")])
+        return real(cmd, **kwargs)
+
+    app_module.subprocess.Popen = lists
+    try:
+        ran("pilot")
+    finally:
+        app_module.subprocess.Popen = real
+    assert len(started) == 1, started
 
 
 def test_the_move_is_the_apps_own_rename_with_the_cores_mark():

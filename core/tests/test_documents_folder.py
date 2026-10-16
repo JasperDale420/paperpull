@@ -1,18 +1,23 @@
 """A documents folder for each account (#102).
 
 An account's config can name documents_dir, a folder of its own that a
-program such as Paperless may watch. The folders a document is routed to,
-Statements, Tax Documents, Receipts and the rest, go there. Manual Review,
-Logs, Diagnostics, Backups, the index, the order history, progress.json and
-discovery.json stay in output_dir, so nothing half checked and no record
-reaches a watched folder. With no documents_dir every path is what it
-always was.
+program such as Paperless may watch. A download is written and checked in
+output_dir as it always was, and one that fails its check is put aside in
+Manual Review beside it, on the same drive. Only a document saved and
+checked is moved into the same folder of its kind in the documents folder,
+by the app's own Rename, which the control panel runs once each download
+run has ended for what that run saved, and for what was saved before when
+the person asks. Manual Review, Logs, Diagnostics, Backups, the index,
+the order history, progress.json and discovery.json never move. Every path
+a run writes to is what it always was, the setting or not.
 
-Setting it moves nothing. Files saved before stay in the output folder,
-where Rename, Review Names and every check of a file the app holds still
-find them, and the panel's Move takes them to the documents folder through
-the app's own Rename, with every rule a rename keeps and everything put
-back when a ledger cannot be written.
+Setting it moves nothing. Files saved before stay where they are, where
+Rename, Review Names and every check of a file the app holds still find
+them. The Move keeps every rule a rename keeps, copies to another drive or
+share where a rename cannot go, never leaves two copies, and puts every
+file back when a ledger cannot be written. Each documents folder it filled
+is written down, so its documents are still found after the setting
+changes or is cleared.
 
 On PaperPull Server a documents_dir is held inside the data folder, where
 its links lead, as output_dir is.
@@ -20,6 +25,7 @@ its links lead, as output_dir is.
 Every folder is a throwaway one under tmp_path, and every name and account
 is invented.
 """
+
 import json
 import os
 import sys
@@ -65,49 +71,45 @@ def old_layout(out: Path) -> dict:
     return paths
 
 
-def test_with_no_documents_folder_every_path_is_where_it_always_was(tmp_path):
-    out = tmp_path / "out"
-    paths = Paths(out)
+OLD_FILING = ("Statements", "Other Documents", "Manual Review")
+
+
+@pytest.mark.parametrize("documents", [False, True])
+def test_every_path_is_where_it_always_was_with_a_documents_folder_or_without(
+        tmp_path, documents):
+    """A download is written and checked in the output folder whatever the
+    setting says, and one that fails its check is put aside beside it."""
+    out, docs = tmp_path / "out", tmp_path / "Watched"
+    paths = Paths(out, documents_dir=str(docs) if documents else "")
     for attr, path in old_layout(out).items():
         assert getattr(paths, attr) == path, attr
-    assert paths.documents == out and paths.earlier_folders() == {}
-    assert paths.filing_folders() == [out / f.name for f in storage.spec().folders
-                                      if f.attr not in ("logs", "diagnostics", "backups")]
+    assert paths.folder_for("Statement") == out / "Statements"
     assert paths.all_dirs() == [out] + [out / f.name for f in storage.spec().folders
                                          if f.precreate]
-
-
-def test_documents_go_to_the_documents_folder_and_records_stay(tmp_path):
-    out, docs = tmp_path / "out", tmp_path / "Watched"
-    paths = Paths(out, documents_dir=str(docs))
-    old = old_layout(out)
-    kept = {"manual_review", "logs", "diagnostics", "backups", "document_index_csv",
-            "progress_json", "discovery_json", "last_listing", "run_summary"}
-    for attr, path in old.items():
-        want = path if attr in kept else docs / path.name
-        assert getattr(paths, attr) == want, attr
-    assert paths.folder_for("Statement") == docs / "Statements"
-    assert paths.folder_for("Notice") == docs / "Other Documents"
-    assert paths.earlier_folders() == {out / "Statements": docs / "Statements",
+    if not documents:
+        assert paths.documents == out and paths.documents_moves() == {}
+        assert paths.filing_folders() == [out / name for name in OLD_FILING]
+        return
+    assert paths.documents == docs
+    assert paths.documents_moves() == {out / "Statements": docs / "Statements",
                                        out / "Other Documents": docs / "Other Documents"}
-    # Files saved before are still the app's to hold.
-    assert out / "Statements" in paths.filing_folders()
-    assert docs / "Statements" in paths.filing_folders()
-    assert out / "Manual Review" in paths.filing_folders()
+    assert paths.filing_folders() == [out / name for name in OLD_FILING] + [
+        docs / "Statements", docs / "Other Documents"]
 
 
-def test_a_run_makes_the_documents_folders_and_writes_no_record_there(tmp_path):
+def test_a_run_writes_nothing_in_the_documents_folder(tmp_path):
     out, docs = tmp_path / "out", tmp_path / "Watched"
     Paths(out, documents_dir=str(docs)).ensure()
-    assert sorted(p.name for p in docs.iterdir()) == ["Statements"]
+    assert not docs.exists()
     assert sorted(p.name for p in out.iterdir()) == [
-        "Backups", "Diagnostics", "Logs", "Manual Review"]
+        "Backups", "Diagnostics", "Logs", "Manual Review", "Statements"]
 
 
 def test_the_documents_folder_is_the_output_folder_spelled_another_way(tmp_path):
     out = tmp_path / "out"
     paths = Paths(out, documents_dir=str(out / "." / ""))
-    assert paths.earlier_folders() == {}
+    assert paths.documents_moves() == {}
+    assert paths.filing_folders() == [out / name for name in OLD_FILING]
 
 
 # -- the setting, as load_config reads it -------------------------------------------------
@@ -118,8 +120,7 @@ def test_a_documents_folder_reaches_the_paths_every_app_builds(tmp_path, capsys)
                                                        "documents_dir": str(docs)}))
     assert cfg["documents_dir"] == str(docs)
     paths = Paths(Path(cfg["output_dir"]))
-    assert paths.statements == docs / "Statements"
-    assert paths.manual_review == out / "Manual Review"
+    assert paths.documents == docs and paths.statements == out / "Statements"
     assert capsys.readouterr().out == ""
 
 
@@ -127,7 +128,7 @@ def test_no_documents_folder_adds_nothing_to_a_config(tmp_path):
     out = tmp_path / "out"
     cfg = storage.load_config(write(tmp_path / "app", {"output_dir": str(out)}))
     assert "documents_dir" not in cfg
-    assert Paths(Path(cfg["output_dir"])).statements == out / "Statements"
+    assert Paths(Path(cfg["output_dir"])).documents == out
 
 
 def test_each_account_has_its_own_documents_folder(tmp_path):
@@ -136,8 +137,20 @@ def test_each_account_has_its_own_documents_folder(tmp_path):
     storage.load_config(write(app, {"output_dir": str(first),
                                     "documents_dir": str(tmp_path / "Docs")}))
     storage.load_config(write(app, {"output_dir": str(second)}, "config.spouse.json"))
-    assert Paths(first).statements == tmp_path / "Docs" / "Statements"
-    assert Paths(second).statements == second / "Statements"
+    assert Paths(first).documents == tmp_path / "Docs"
+    assert Paths(second).documents == second
+
+
+def test_a_documents_folder_holding_the_output_folder_is_not_used(tmp_path, capsys):
+    """Its records and Manual Review would sit in the watched folder."""
+    out = tmp_path / "Watched" / "out"
+    cfg = storage.load_config(write(tmp_path / "app", {
+        "output_dir": str(out), "documents_dir": str(tmp_path / "Watched")}))
+    assert cfg["documents_dir"] == "" and Paths(out).documents == out
+    assert "holds the output folder" in capsys.readouterr().out
+    inside = storage.load_config(write(tmp_path / "app", {
+        "output_dir": str(out), "documents_dir": str(out / "Documents")}))
+    assert inside["documents_dir"] == str(out / "Documents"), "a folder inside it may be"
 
 
 @pytest.mark.parametrize("given", ["Watched", "./Watched", "~/Watched", 7, ["x"], "   "])
@@ -148,7 +161,7 @@ def test_a_documents_folder_that_is_not_a_full_path_is_not_used(tmp_path, capsys
     cfg = storage.load_config(write(tmp_path / "app", {"output_dir": str(out),
                                                        "documents_dir": given}))
     assert cfg["documents_dir"] == ""
-    assert Paths(out).statements == out / "Statements"
+    assert Paths(out).documents == out
     said = capsys.readouterr().out
     assert "documents folder" in said and "output folder as before" in said
 
@@ -161,7 +174,7 @@ def test_a_documents_folder_at_a_browser_profile_is_not_used(tmp_path, capsys, w
     cfg = storage.load_config(write(tmp_path / "app", {
         "output_dir": str(out), "profile_dir": str(profile), "documents_dir": str(docs)}))
     assert cfg["documents_dir"] == ""
-    assert Paths(out).statements == out / "Statements"
+    assert Paths(out).documents == out
     assert "browser profile" in capsys.readouterr().out
 
 
@@ -191,7 +204,7 @@ def test_on_the_server_a_documents_folder_inside_the_data_folder_is_kept(server)
     docs = server.parent / "Documents"
     cfg = storage.load_config(on_the_server(server, documents_dir=str(docs)))
     assert cfg["documents_dir"] == str(docs)
-    assert Paths(Path(cfg["output_dir"])).statements == docs / "Statements"
+    assert Paths(Path(cfg["output_dir"])).documents == docs
 
 
 @pytest.mark.parametrize("given", ["outside", "relative", "number"])
@@ -257,21 +270,25 @@ class Office:
         self.paths = Paths(self.out, documents_dir=str(self.docs) if documents else "")
         self.paths.ensure()
 
-    def saved(self, account: str, aside: bool = False) -> Path:
+    def saved(self, account: str, aside: bool = False, checked: bool = True) -> Path:
+        """A statement as a download leaves it. One not `checked` failed its
+        check and could not be put aside, so it is still in the folder of
+        its kind, recorded as needing review."""
         name = storage.build_pdf_filename(DATE, "Monthly Statement", "",
                                           record={"account": account})
         folder = self.paths.manual_review if aside else self.paths.folder_for("Statement")
         path = storage.unique_path(folder, name if not aside else str(name))
         path.write_bytes(body_of(account))
+        status = "Completed" if checked else "Needs Manual Review"
         self.index_csv.append_rows([{
             "Document Date": DATE, "Document Title": "Monthly Statement",
             "Document Summary": "Monthly Statement", "Account": account,
             "PDF Filename": path.name, "PDF Full Path": str(path),
-            "Processing Status": "Completed", "Notes": ""}])
+            "Processing Status": status, "Notes": ""}])
         self.progress.update(account, {
             "date": DATE, "title": "Monthly Statement", "summary": "Monthly Statement",
             "account": account, "category": "Statement", "pdf_path": str(path),
-            "pdf_filename": path.name, "downloaded_ok": True, "state": "Completed"})
+            "pdf_filename": path.name, "downloaded_ok": checked, "state": status})
         return path
 
     def rename(self, apply_changes=True):
@@ -340,10 +357,35 @@ def test_a_file_saved_before_is_renamed_where_it_is(office):
     office.follows()
 
 
-def test_a_new_download_goes_to_the_documents_folder_beside_the_old(office):
-    path = office.saved("Brokerage 3333")
-    assert path.parent == office.docs / "Statements"
-    assert office.where()[body_of(ACCOUNTS[0])] == BEFORE[body_of(ACCOUNTS[0])]
+def test_after_a_run_only_what_it_saved_and_checked_moves(office, monkeypatch):
+    """A download is written and checked in the output folder, and once its
+    run has ended the panel moves what the run listed in new-this-run.txt.
+    The documents saved before wait for the person's own Move."""
+    new = office.saved("Brokerage 3333")
+    failed = office.saved("Loan 4444", checked=False)
+    assert new.parent == failed.parent == office.out / "Statements"
+    (office.out / "new-this-run.txt").write_text(
+        "# 1 file(s) downloaded on this run:\n%s\n" % new, encoding="utf-8")
+    monkeypatch.setenv(renaming.MOVE_DOCUMENTS_ENV, "new")
+    code, said = office.rename()
+    assert code == 0 and "Moved 1 file(s)" in said, said
+    where = office.where()
+    assert where[body_of("Brokerage 3333")] == "Watched/Statements/" + new.name
+    assert where[body_of("Loan 4444")] == "out/Statements/" + failed.name
+    for account in ACCOUNTS:
+        assert where[body_of(account)] == BEFORE[body_of(account)]
+    office.follows()
+
+
+def test_a_document_that_failed_its_check_never_moves(office, monkeypatch):
+    """Put aside it could not be, so it is still in the folder of its kind,
+    and its record says it needs review. It never reaches the watched
+    folder, through no Move at all."""
+    failed = office.saved("Loan 4444", checked=False)
+    moving(monkeypatch)
+    code, said = office.rename()
+    assert code == 0 and "Moved 2 file(s)" in said, said
+    assert office.where()[body_of("Loan 4444")] == "out/Statements/" + failed.name
 
 
 def test_the_move_takes_each_document_saved_before_to_the_documents_folder(
@@ -420,6 +462,97 @@ def test_a_move_with_no_documents_folder_says_there_is_nothing_to_move(tmp_path,
     code, said = office.rename()
     assert code == 0 and "there are none to move" in said
     assert office.where() == {body_of(ACCOUNTS[0]): "out/Statements/" + FIRST}
+
+
+def test_documents_moved_before_are_found_after_the_folder_changes_or_is_cleared(
+        office, monkeypatch):
+    """Each documents folder the Move filled is written down beside the
+    records, so after the setting changes its documents are still the
+    app's, and a Move takes them on to the new folder, or back to the
+    output folder once the setting is cleared."""
+    moving(monkeypatch)
+    assert office.rename()[0] == 0
+    assert json.loads((office.out / "documents-folders.json").read_text("utf-8")) == [
+        str(office.docs)]
+    first_docs, office.docs = office.docs, office.out.parent / "Other Watched"
+    office.build(documents=True)
+    monkeypatch.delenv(renaming.MOVE_DOCUMENTS_ENV)
+    code, said = office.rename(apply_changes=False)
+    assert "Every file is already named the way this app names them." in said, said
+    moving(monkeypatch)
+    code, said = office.rename()
+    assert code == 0 and "Moved 2 file(s)" in said, said
+    assert office.where() == {b: p.replace("out/", "Other Watched/") for b, p in BEFORE.items()}
+    assert not list(first_docs.rglob("*.pdf"))
+    office.follows()
+    office.build(documents=False)
+    code, said = office.rename()
+    assert code == 0 and "Moved 2 file(s)" in said, said
+    assert office.where() == BEFORE
+    office.follows()
+
+
+def across(monkeypatch, docs: Path, refuse_unlink: bool = False):
+    """Renames from one side of `docs` to the other refused as a rename to
+    another drive is, so the Move has to copy, and with `refuse_unlink`,
+    the file it copied cannot be taken away from where it was."""
+    real_rename, real_unlink = Path.rename, Path.unlink
+
+    def rename(self, target):
+        if (docs in Path(target).parents) != (docs in self.parents):
+            raise OSError(18, "Invalid cross-device link", str(self))
+        return real_rename(self, target)
+
+    def unlink(self, *a, **kw):
+        if refuse_unlink and docs not in self.parents and self.suffix == ".pdf":
+            raise PermissionError(13, "held by another program", str(self))
+        return real_unlink(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "rename", rename)
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+
+def test_the_move_goes_to_a_documents_folder_on_another_drive(office, monkeypatch):
+    across(monkeypatch, office.docs)
+    moving(monkeypatch)
+    code, said = office.rename()
+    assert code == 0 and "Moved 2 file(s)" in said, said
+    assert office.where() == {b: p.replace("out/", "Watched/") for b, p in BEFORE.items()}
+    assert not [p for p in office.docs.rglob("*") if ".moving" in p.name]
+    office.follows()
+
+
+def test_a_copy_to_another_drive_that_cannot_leave_its_first_place_goes_again(
+        office, monkeypatch):
+    """There are never two copies, one in each place."""
+    across(monkeypatch, office.docs, refuse_unlink=True)
+    moving(monkeypatch)
+    code, said = office.rename()
+    assert office.where() == BEFORE, said
+    assert not list(office.docs.rglob("*.pdf"))
+    monkeypatch.undo()
+    office.follows()
+
+
+def test_every_invoice_of_an_order_split_into_several_moves(tmp_path, monkeypatch):
+    """Target keeps each invoice of a split order in the record's list, and
+    only one of them has an index row. Each goes, and the list follows."""
+    office = Office(tmp_path)
+    first = office.saved("Order 5555")
+    second = first.with_name("2026-09-12 Testco Monthly Statement (2 of 2).pdf")
+    second.write_bytes(body_of("Order 5555 part 2"))
+    rec = office.progress.data["Order 5555"]
+    rec["order_number"] = "5555"
+    rec["invoices"] = [{"file": str(first), "kept": True}, {"file": str(second), "kept": True},
+                       {"file": str(first.with_name("put aside.pdf")), "kept": False}]
+    office.build(documents=True)
+    moving(monkeypatch)
+    code, said = office.rename()
+    assert code == 0 and "Moved 2 file(s)" in said, said
+    office.progress.save()
+    invoices = office.progress.data["Order 5555"]["invoices"]
+    assert [Path(e["file"]).parent for e in invoices[:2]] == [office.docs / "Statements"] * 2
+    assert all(Path(e["file"]).is_file() for e in invoices[:2])
 
 
 # -- what travels and what a second person gets ------------------------------------------

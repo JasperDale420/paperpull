@@ -75,21 +75,27 @@ All notable changes to PaperPull are recorded here. Versioning follows
   with no `/` names files exactly as before.
 - **A documents folder for each person (#102).** Settings has a Documents
   folder for each provider and person, written into that person's config
-  as `documents_dir`, a copy of the config kept first. Statements, Tax
-  Documents, Receipts and the other folders of each kind go there, with
-  any folders a naming pattern adds, so a folder Paperless-ngx watches can
-  get each person's documents. The records, Manual Review, Logs,
-  Diagnostics and Backups stay in the provider's own folder, so the
+  as `documents_dir`, a copy of the config kept first, so a folder
+  Paperless-ngx watches, a synced folder or a NAS share can get each
+  person's documents. A download is still saved and checked in the
+  provider's own folder, and one that fails its check is put aside in
+  Manual Review there. When a run from the panel ends, what it saved and
+  checked moves into the documents folder, into Statements, Tax Documents,
+  Receipts and the other folders of each kind, with any folders a naming
+  pattern adds, copied across when the folder is on another drive. The
+  records, Manual Review, Logs, Diagnostics and Backups never move, so the
   documents folder only ever gets documents that passed their checks.
-  Saving moves nothing, and documents saved before are still found where
-  they are by Verify, Rename, Review names and the check that never
-  downloads a document twice. The page says how many are still in the
-  provider's folder and offers Preview move and Move, which moves each one
-  under the name it has, with its records following it, and puts every
-  file back if a record cannot be written. A browser profile, a folder
-  around one, a folder holding a provider's own folder and a folder inside
-  another person's folder are refused, and on PaperPull Server so is a
-  folder outside the data folder, a link out of it included, both in the
+  Saving moves nothing already there, and documents saved before are still
+  found where they are by Verify, Rename, Review names and the check that
+  never downloads a document twice. The page says how many are still in
+  the provider's folder and offers Preview move and Move, which moves each
+  one under the name it has, with its records following it, and puts every
+  file back if a record cannot be written. After the folder changes or is
+  cleared, the documents moved before are still found, and the same Move
+  takes them to where it points now. A browser profile, a folder around
+  one, a folder holding a provider's own folder and a folder inside or
+  around a person's own folder are refused, and on PaperPull Server so is
+  a folder outside the data folder, a link out of it included, both in the
   panel and when a run starts. A second person added later starts with
   documents in their own folder. With no documents folder set, every file
   goes where it always did.
