@@ -21,9 +21,15 @@ download hands its name to unique_path whole is held by the census in
 test_every_app_hands_its_file_name_on_whole.
 """
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
+
+from paperpull_core import storage as core_storage
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_naming_folders import limit_for  # noqa: E402
 
 
 def _rename_census():
@@ -45,7 +51,14 @@ FOLDERED = "{year}/[{account}/]{date:yyyy-mm-dd} {provider}[ {account}][ {number
 
 @pytest.fixture
 def home(request, tmp_path, monkeypatch, capsys):
-    return census.Home(request.param, tmp_path, monkeypatch, capsys)
+    """The app at home, with a path limit that leaves its longest folder
+    room for the names here however deep pytest's temporary folder is
+    (test_naming_folders.limit_for)."""
+    home = census.Home(request.param, tmp_path, monkeypatch, capsys)
+    longest = max(len(f.name) for f in core_storage.spec().folders)
+    home.config["max_path_length"] = limit_for(home.out / ("x" * longest))
+    home._write_config()
+    return home
 
 
 def saved_two(home, app):

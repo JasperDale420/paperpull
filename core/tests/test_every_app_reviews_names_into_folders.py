@@ -29,6 +29,7 @@ from paperpull_core.models import ONLINE
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_every_app_reviews_a_name_once as census  # noqa: E402
 import test_review_names_with_a_ledger_held_open as held  # noqa: E402
+from test_naming_folders import limit_for  # noqa: E402
 
 APPS = census.APPS
 IDS = [a.name for a in APPS]
@@ -63,6 +64,7 @@ def with_folders(app: Path, tmp_path):
     with no folders, and then a naming pattern with folders chosen."""
     mod, inst, filed = held.two_unsure(app, tmp_path)
     core_storage.set_filename_patterns({"filename_pattern": PATTERN})
+    inst.config["max_path_length"] = limit_for(filed)
     return mod, inst, filed
 
 
@@ -112,6 +114,7 @@ def test_a_receipt_already_in_its_folders_stays_in_them(app, tmp_path, monkeypat
     inst = census.runnable(mod, tmp_path / "out")
     core_storage.set_filename_patterns({"filename_pattern": PATTERN})
     filed = inst.paths.folder_for(ONLINE)
+    inst.config["max_path_length"] = limit_for(filed)
     folder = filed.joinpath(*folders_for("Unsure").split("/"))
     folder.mkdir(parents=True, exist_ok=True)
     for number, name in (("ORDER-0001", held.FIRST), ("ORDER-0002", held.SECOND)):

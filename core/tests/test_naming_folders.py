@@ -47,6 +47,50 @@ def named(pattern=FOLDERS, summary="Monthly Statement", **record):
     return storage.build_pdf_filename(DATE, summary, "", record=record, pattern=pattern)
 
 
+# What a test here needs below the folder a document is routed to, for the
+# pattern's folders and the longest name it checks, an ending and a count
+# included.
+ROOM = 110
+_LONG_PATHS = []
+
+
+def _long_paths_work() -> bool:
+    """Whether this system holds a path longer than Windows' old 260
+    characters, found once by making one in a temporary folder."""
+    if not _LONG_PATHS:
+        import shutil
+        import tempfile
+        top = Path(tempfile.mkdtemp(prefix="paperpull-long-"))
+        try:
+            deep = top / ("d" * 120) / ("e" * 120)
+            deep.mkdir(parents=True)
+            (deep / "probe.txt").write_text("x", encoding="utf-8")
+            _LONG_PATHS.append(True)
+        except OSError:
+            _LONG_PATHS.append(False)
+        finally:
+            shutil.rmtree(top, ignore_errors=True)
+    return _LONG_PATHS[0]
+
+
+def limit_for(folder) -> int:
+    """The max_path_length a test gives a file routed to `folder`. The
+    usual 240 where that leaves ROOM, and more under a temporary folder deep
+    enough that 240 would cut the very names a test checks, so the tests
+    here pass however deep pytest's temporary folder is, on a developer's
+    machine or a CI runner. Skipped only where the system cannot hold a
+    path that long at all."""
+    limit = max(240, len(str(folder)) + 1 + ROOM)
+    if limit > 259 and not _long_paths_work():
+        pytest.skip("the temporary folder is too deep for a path this system can hold")
+    return limit
+
+
+def filed(folder, name, **how):
+    """unique_path, at the limit a test gives `folder` (limit_for)."""
+    return unique_path(folder, name, limit_for(folder), **how)
+
+
 def link_folder(target: Path, link: Path) -> None:
     if sys.platform == "win32":
         import _winapi
@@ -146,7 +190,7 @@ def base(tmp_path):
 
 def test_a_name_is_filed_in_its_folders_which_are_made(base):
     name = named(account="Checking 1111")
-    got = unique_path(base, name)
+    got = filed(base, name)
     assert got == base / "Testco" / "Checking 1111" / "2026-09-12 Monthly Statement.pdf"
     assert got.parent.is_dir() and not got.exists()
 
@@ -157,14 +201,14 @@ def test_a_name_filed_in_manual_review_takes_no_folders(tmp_path):
     name the pattern gives it, folders and all."""
     aside = tmp_path / "out" / "Manual Review"
     aside.mkdir(parents=True)
-    got = unique_path(aside, named(account="Checking 1111"))
+    got = filed(aside, named(account="Checking 1111"))
     assert got == aside / "2026-09-12 Monthly Statement.pdf"
     assert list(aside.iterdir()) == []
-    assert storage.fitted_name(aside, named(account="Checking 1111")) == got.name
+    assert storage.fitted_name(aside, named(account="Checking 1111"), limit_for(aside)) == got.name
 
 
 def test_a_preview_makes_no_folder(base):
-    got = unique_path(base, named(account="Checking 1111"), make=False)
+    got = filed(base, named(account="Checking 1111"), make=False)
     assert got.parent == base / "Testco" / "Checking 1111"
     assert not (base / "Testco").exists()
 
@@ -174,10 +218,10 @@ def test_a_clash_is_looked_for_in_the_folder_the_file_goes_to(base):
     another folder, and one in the pattern's folder is the clash."""
     name = named(account="Checking 1111")
     (base / str(name)).write_bytes(b"flat")
-    first = unique_path(base, name, distinguisher="DOC0001")
+    first = filed(base, name, distinguisher="DOC0001")
     assert first.name == str(name)
     first.write_bytes(b"first")
-    second = unique_path(base, name, distinguisher="DOC0002")
+    second = filed(base, name, distinguisher="DOC0002")
     assert second == first.parent / "2026-09-12 Monthly Statement DOC0002.pdf"
 
 
@@ -188,14 +232,14 @@ def test_a_file_stands_in_its_own_way_only_in_its_own_folder(base):
     name = named(account="Checking 1111")
     flat = base / str(name)
     flat.write_bytes(b"the file moving")
-    filed = unique_path(base, name)
-    filed.write_bytes(b"another file")
-    assert unique_path(base, name, ignoring=flat).name == \
+    taken = filed(base, name)
+    taken.write_bytes(b"another file")
+    assert filed(base, name, ignoring=flat).name == \
         "2026-09-12 Monthly Statement (2).pdf"
-    assert unique_path(base, name, ignoring=str(name)).name == \
+    assert filed(base, name, ignoring=str(name)).name == \
         "2026-09-12 Monthly Statement (2).pdf"
-    assert unique_path(base, name, ignoring=filed) == filed
-    assert unique_path(base, str(name), ignoring=str(name)) == flat
+    assert filed(base, name, ignoring=taken) == taken
+    assert filed(base, str(name), ignoring=str(name)) == flat
 
 
 def test_the_folders_count_toward_the_path_limit(base):
@@ -222,7 +266,7 @@ def test_a_folder_that_leads_out_through_a_link_is_never_written_into(base, tmp_
     outside = tmp_path / "elsewhere"
     outside.mkdir()
     link_folder(outside, base / "Testco")
-    got = unique_path(base, named(account="Checking 1111"))
+    got = filed(base, named(account="Checking 1111"))
     assert got.parent == base
     got.write_bytes(b"%PDF-")
     assert list(outside.iterdir()) == [], "nothing was written outside"
@@ -230,9 +274,9 @@ def test_a_folder_that_leads_out_through_a_link_is_never_written_into(base, tmp_
 
 def test_a_file_where_a_folder_should_be_leaves_the_file_where_it_is_routed(base):
     (base / "Testco").write_bytes(b"a file of that name")
-    got = unique_path(base, named(account="Checking 1111"))
+    got = filed(base, named(account="Checking 1111"))
     assert got.parent == base
-    assert storage.filing_folder(base, named(account="Checking 1111")) == base, (
+    assert storage.filing_folder(base, named(account="Checking 1111"), limit_for(base)) == base, (
         "Rename asks the same, so it offers no move a download would not make")
 
 
@@ -241,7 +285,7 @@ def test_a_folder_that_cannot_be_made_leaves_the_file_where_it_is_routed(base, m
         raise PermissionError(13, "not allowed here", str(self))
 
     monkeypatch.setattr(Path, "mkdir", refuse)
-    got = unique_path(base, named(account="Checking 1111"))
+    got = filed(base, named(account="Checking 1111"))
     assert got.parent == base
 
 
@@ -251,7 +295,7 @@ def test_a_name_built_by_hand_with_folders_that_climb_is_filed_where_routed(base
     """build_pdf_filename makes every folder safe, and a FileName is text
     anybody can build, so unique_path asks each folder again and files a
     name whose folders are not safe in the folder it was routed to."""
-    got = unique_path(base, FileName("x.pdf", folder))
+    got = filed(base, FileName("x.pdf", folder))
     assert got == base / "x.pdf"
     assert sorted(p.name for p in base.iterdir()) == []
 
@@ -259,9 +303,9 @@ def test_a_name_built_by_hand_with_folders_that_climb_is_filed_where_routed(base
 # -- moving a saved file to the name it learned --------------------------------------
 
 def test_refile_moves_a_saved_file_and_takes_away_the_folder_it_left(base):
-    old = unique_path(base, named(account="List Account"))
+    old = filed(base, named(account="List Account"))
     old.write_bytes(b"%PDF- the statement")
-    new = storage.refile(old, base, named(account="Checking 1111"))
+    new = storage.refile(old, base, named(account="Checking 1111"), limit_for(base))
     assert new == base / "Testco" / "Checking 1111" / old.name
     assert new.read_bytes() == b"%PDF- the statement"
     assert not (base / "Testco" / "List Account").exists()
@@ -269,13 +313,13 @@ def test_refile_moves_a_saved_file_and_takes_away_the_folder_it_left(base):
 
 
 def test_refile_leaves_a_file_already_named_so(base):
-    old = unique_path(base, named(account="Checking 1111"))
+    old = filed(base, named(account="Checking 1111"))
     old.write_bytes(b"%PDF-")
-    assert storage.refile(old, base, named(account="Checking 1111")) == old
+    assert storage.refile(old, base, named(account="Checking 1111"), limit_for(base)) == old
 
 
 def test_refile_refused_takes_away_the_folder_it_made(base, monkeypatch):
-    old = unique_path(base, named(account=""))
+    old = filed(base, named(account=""))
     old.write_bytes(b"%PDF-")
 
     def refuse(self, target):
@@ -283,7 +327,7 @@ def test_refile_refused_takes_away_the_folder_it_made(base, monkeypatch):
 
     monkeypatch.setattr(Path, "replace", refuse)
     with pytest.raises(PermissionError):
-        storage.refile(old, base, named(account="Checking 1111"))
+        storage.refile(old, base, named(account="Checking 1111"), limit_for(base))
     assert old.read_bytes() == b"%PDF-"
     assert not (base / "Testco" / "Checking 1111").exists()
 
@@ -345,7 +389,7 @@ class Bank:
         self.out = tmp_path / "out"
         self.paths = _Paths(self.out)
         backups = self.out / "Backups"
-        self.config = {"max_path_length": 240}
+        self.config = {"max_path_length": limit_for(self.paths.statements)}
         self.index_csv = storage.CsvFile(self.out / INDEX, INDEX_COLUMNS, backups)
         self.order_csv = None
         self.progress = storage.JsonStore(self.out / "progress.json", backups)
@@ -360,9 +404,9 @@ class Bank:
         name = storage.build_pdf_filename(DATE, "Monthly Statement", "",
                                           record={"account": account})
         if folder is None:
-            path = unique_path(self.paths.statements, name)
+            path = unique_path(self.paths.statements, name, self.config["max_path_length"])
         else:
-            path = unique_path(folder, str(name))
+            path = unique_path(folder, str(name), self.config["max_path_length"])
         path.write_bytes(body_of(account))
         written = spelled or str(path)
         self.index_csv.append_rows([{
