@@ -9,6 +9,22 @@ All notable changes to PaperPull are recorded here. Versioning follows
 
 ## [Unreleased]
 
+### Fixed
+- **A spreadsheet export no longer stops at a character an xlsx cannot
+  hold.** An item name, a merchant name or a document title can carry a
+  NUL or another control character from a provider's page, and the
+  library that writes the workbook refuses the 29 control characters an
+  xlsx has no place for, so one such character stopped the whole .xlsx export of
+  purchases or transactions, in the control panel and in a terminal.
+  U+FFFE, U+FFFF and half of a surrogate pair it wrote anyway, and Excel
+  then would not open the workbook. Both workbooks now leave those
+  characters out of the cell and keep the text around them, the way Excel
+  itself drops a NUL from a CSV it opens. None of them prints, so nothing
+  is put in their place. One in front of text like a formula still hides
+  nothing, and the cell keeps its quote prefix. The CSVs keep every
+  character as before. Measured on real archives, 180,418 values and 2,368
+  statement descriptions, none held such a character.
+
 ### Security
 - **Text from a receipt or a statement no longer becomes a formula in the
   spreadsheets.** The purchases and transactions spreadsheets write out
@@ -56,6 +72,13 @@ All notable changes to PaperPull are recorded here. Versioning follows
   formula, which now reads without that quote, and a row is quoted the
   next time it is written. Measured on real archives, 180,418 values in 55
   files, no value reads differently and none is written differently.
+- **Text Excel reads as its own escape stays as it came in the
+  workbooks.** Excel reads `_x003D_` in an xlsx cell as =, so an item
+  named `_x003D_1+1` opened as =1+1 without the quote prefix the other
+  formula-like cells carry, and editing the cell made it a working formula.
+  The underscore in front of such a run is now written as Excel's escape
+  for an underscore, so the cell shows exactly the text the provider gave
+  and the formula rule tests that text. No real value held such a run.
 
 ## [0.53.0] - 2026-10-15
 

@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 from paperpull_core.sheets import (csv_value, keep_text, read_stored, read_stored_row,
-                                   starts_a_formula, store_value)
+                                   starts_a_formula, store_value, xlsx_value)
 
 TOOLS = Path(__file__).resolve().parents[2] / "tools"
 
@@ -142,6 +142,119 @@ def test_an_xlsx_number_and_an_empty_cell_are_left_as_they_were():
     assert empty.value is None and empty.data_type == "n"
 
 
+# -- what an xlsx cell cannot hold ---------------------------------------------------
+
+def _xml_can_hold(n: int) -> bool:
+    """XML 1.0's Char production, written out from the standard, so the
+    tests below are not the rule checking itself."""
+    return (n in (0x9, 0xA, 0xD) or 0x20 <= n <= 0xD7FF or 0xE000 <= n <= 0xFFFD
+            or 0x10000 <= n <= 0x10FFFF)
+
+
+# Every character an xlsx cannot hold, the 29 control characters openpyxl
+# refuses, U+FFFE, U+FFFF and the 2,048 surrogates.
+CANNOT_HOLD = [chr(n) for n in range(0x110000) if not _xml_can_hold(n)]
+
+
+def _held(text: str) -> str:
+    return "".join(c for c in text if _xml_can_hold(ord(c)))
+
+
+def _excel_reads(text: str) -> str:
+    """What Excel shows for an xlsx string. Measured 2026-10-16, _x and four
+    hex digits of either case and _ are one character, read once from the
+    left, so _x005F_x003D_ shows as _x003D_. _X003D_, _x003D and _x03D_
+    show as they are."""
+    return re.sub(r"_x([0-9A-Fa-f]{4})_", lambda m: chr(int(m.group(1), 16)), text)
+
+
+def test_what_an_xlsx_cannot_hold_takes_in_all_openpyxl_refuses():
+    pytest.importorskip("openpyxl")
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+    refused = [c for c in CANNOT_HOLD if ILLEGAL_CHARACTERS_RE.search(c)]
+    assert len(refused) == 29 and len(CANNOT_HOLD) == 29 + 2 + 2048
+    assert not ILLEGAL_CHARACTERS_RE.search(_held("".join(map(chr, range(0x110000)))))
+
+
+def test_every_character_an_xlsx_cannot_hold_is_dropped_and_no_other():
+    every = "".join(map(chr, range(0x110000)))
+    assert xlsx_value(every) == _held(every)
+    for c in CANNOT_HOLD:
+        assert xlsx_value("a" + c + "b") == "ab", ascii(c)
+        assert xlsx_value(c * 3) == ""
+    assert xlsx_value(-12.34) == -12.34 and xlsx_value(7) == 7 and xlsx_value(None) is None
+    for text in FORMULAS + TEXT + PLAIN_NEGATIVE:
+        assert xlsx_value(text) == text, text
+
+
+def test_a_character_dropped_from_in_front_hides_no_formula_and_the_workbook_opens(tmp_path):
+    """openpyxl refused each of these as the row went in, and wrote U+FFFE,
+    U+FFFF and a surrogate into a workbook neither it nor Excel would open.
+    Dropped, each leaves the text around it, and what is left gets the
+    quote prefix when it starts like a formula."""
+    openpyxl = pytest.importorskip("openpyxl")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    for c in CANNOT_HOLD:
+        ws.append([xlsx_value(v) for v in (c + "=1+1", "=" + c + "1+1", " " + c + "@SUM(1,1)",
+                                          "Kettle " + c + "lid", c + "-12.34")])
+    for row in ws.iter_rows():
+        for cell in row:
+            keep_text(cell)
+    wb.save(tmp_path / "t.xlsx")
+    back = openpyxl.load_workbook(tmp_path / "t.xlsx").active
+    rows = [[(c.value, c.data_type, c.quotePrefix) for c in row] for row in back.iter_rows()]
+    assert len(rows) == len(CANNOT_HOLD)
+    assert all(row == [("=1+1", "s", True), ("=1+1", "s", True), (" @SUM(1,1)", "s", True),
+                       ("Kettle lid", "s", False), ("-12.34", "s", False)] for row in rows)
+
+
+ESCAPED = [
+    ("_x003D_1+1", "_x005F_x003D_1+1"),
+    ("_x003d_1+1", "_x005F_x003d_1+1"),
+    ("a_x0041_b", "a_x005F_x0041_b"),
+    ("__x003D_1+1", "__x005F_x003D_1+1"),
+    ("_x005F_x003D_1+1", "_x005F_x005F_x005F_x003D_1+1"),
+    ("_x0041__x0042_", "_x005F_x0041__x005F_x0042_"),
+    ("_x0000_", "_x005F_x0000_"),
+    # Excel showed these as they are.
+    ("_X003D_1+1", "_X003D_1+1"), ("_x003D1+1", "_x003D1+1"), ("_x03D_1+1", "_x03D_1+1"),
+    ("_x0003D_1+1", "_x0003D_1+1"), ("_xG03D_1+1", "_xG03D_1+1"),
+    # A character dropped from inside the run comes out before the run is seen.
+    ("_x" + chr(0) + "003D_1+1", "_x005F_x003D_1+1"),
+    ("_" + chr(0xFFFF) + "x003D_1+1", "_x005F_x003D_1+1"),
+]
+
+
+@pytest.mark.parametrize("text, cell", ESCAPED)
+def test_text_excel_would_read_as_its_escape_shows_as_it_came(text, cell):
+    """Excel read _x003D_1+1 in an xlsx as =1+1, which keep_text had not
+    given the quote prefix, and an edit made it a working formula."""
+    assert xlsx_value(text) == cell
+    assert _excel_reads(cell) == _held(text)
+
+
+def test_excel_shows_every_text_as_it_came_and_quoted_where_what_it_shows_is_a_formula():
+    """A model of the reader, not the rule again. Over made-up texts built
+    from the pieces that matter, Excel shows the cell as the text less what
+    an xlsx cannot hold, and the cell has the quote prefix exactly when what
+    Excel shows starts like a formula."""
+    openpyxl = pytest.importorskip("openpyxl")
+    pieces = ["_", "x", "X", "0", "3", "D", "d", "5", "F", "=", "1", "+", "@", " ", "a",
+              "\x00", "\x01", "\x0b", "\x1f", chr(0xFFFF), chr(0xD800),
+              "_x003D_", "_x005F_", "_x00", "_x0040_"]
+    rng = random.Random(20261016)
+    ws = openpyxl.Workbook().active
+    for i in range(1, 20001):
+        text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 8)))
+        cell = ws.cell(row=i, column=1)
+        cell.value = xlsx_value(text)
+        keep_text(cell)
+        shown = _excel_reads(cell.value)
+        assert shown == _held(text), ascii(text)
+        assert cell.quotePrefix is starts_a_formula(shown), ascii(text)
+
+
 # -- the census -------------------------------------------------------------------
 
 # A tool in tools/ that writes a spreadsheet and need not go through the
@@ -153,7 +266,7 @@ NOT_FOR_PEOPLE = {
                            "dates and numbers only",
 }
 # What each kind of spreadsheet has to be written through.
-NEEDS = {"csv": "csv_value", "xlsx": "keep_text"}
+NEEDS = {"csv": {"csv_value"}, "xlsx": {"xlsx_value", "keep_text"}}
 
 
 def _kinds(tree) -> set:
@@ -216,7 +329,7 @@ def test_every_function_writing_a_spreadsheet_for_a_person_goes_through_the_rule
     functions = _writing_functions(tree)
     assert functions, "%s writes a spreadsheet outside any function" % name
     for func, kinds in functions:
-        missing = {NEEDS[k] for k in kinds} - (rule & _called(func))
+        missing = set().union(*(NEEDS[k] for k in kinds)) - (rule & _called(func))
         assert not missing, "%s's %s writes a spreadsheet without paperpull_core.sheets' %s" % (
             name, func.name, ", ".join(sorted(missing)))
 
