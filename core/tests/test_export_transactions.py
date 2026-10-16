@@ -988,6 +988,12 @@ CONTROLS = [chr(n) for n in range(0x20) if n not in (0x9, 0xA, 0xD)]
 IN_A_FILE = CONTROLS + [chr(0xFFFE), chr(0xFFFF)]
 CANNOT_HOLD = IN_A_FILE + [chr(n) for n in range(0xD800, 0xE000)]
 _CANNOT = frozenset(CANNOT_HOLD)
+# The six Python counts as blank space, which become a space in a cell.
+BLANK = frozenset(chr(n) for n in (0x0B, 0x0C, 0x1C, 0x1D, 0x1E, 0x1F))
+
+
+def _held(text: str) -> str:
+    return "".join(" " if c in BLANK else "" if c in _CANNOT else c for c in text)
 
 
 def _excel_reads(text: str) -> str:
@@ -1046,9 +1052,10 @@ def test_an_index_and_a_statement_holding_a_character_an_xlsx_cannot_hold_make_b
     """A provider's JSON can carry a NUL or another control character in a
     document title, and a statement's text in a description. openpyxl
     refused the row holding one and the whole workbook was lost. Now the
-    character is dropped from the cell, the text around it stays, one in
-    front of =1+1 leaves =1+1 with the quote prefix, and the CSV keeps
-    every character the statement gave."""
+    character is taken out of the cell, a space standing in for one that is
+    blank space, the text around it stays, one in front of =1+1 leaves =1+1
+    with the quote prefix, and the CSV keeps every character the statement
+    gave."""
     pytest.importorskip("pdfplumber")
     assert len(CONTROLS) == 29
     index = _bank_folder(tmp_path, chr(0) + "=1+1", "Checking " + "".join(IN_A_FILE))
@@ -1060,7 +1067,7 @@ def test_an_index_and_a_statement_holding_a_character_an_xlsx_cannot_hold_make_b
     wb = _no_cell_holds_what_an_xlsx_cannot(r["path"])
     txns, stmts = wb["Transactions"], wb["Statements"]
     for c in _column(txns, "Account") + _column(stmts, "Account"):
-        assert (c.value, c.data_type, c.quotePrefix) == ("=1+1, Checking ", "s", True)
+        assert (c.value, c.data_type, c.quotePrefix) == ("=1+1, Checking " + " " * 6, "s", True)
     shown = {b.value: d for b, d in zip(_column(txns, "Balance"), _column(txns, "Description"))}
     escaped = shown.pop(last)
     assert _excel_reads(escaped.value) == "_x003D_1+1" and not escaped.quotePrefix
@@ -1071,7 +1078,7 @@ def test_an_index_and_a_statement_holding_a_character_an_xlsx_cannot_hold_make_b
         written = {float(x["Balance"]): x["Description"] for x in csv.DictReader(fh)}
     assert {c for c in IN_A_FILE if not c.isspace()} <= set("".join(written.values()))
     for balance, d in shown.items():
-        assert d.value == "".join(c for c in written[balance] if c not in _CANNOT), balance
+        assert d.value == _held(written[balance]), balance
 
 
 def test_a_statement_holding_a_surrogate_makes_the_xlsx_from_the_pdf_and_from_the_cache(

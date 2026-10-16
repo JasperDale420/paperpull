@@ -154,10 +154,14 @@ def _xml_can_hold(n: int) -> bool:
 # Every character an xlsx cannot hold, the 29 control characters openpyxl
 # refuses, U+FFFE, U+FFFF and the 2,048 surrogates.
 CANNOT_HOLD = [chr(n) for n in range(0x110000) if not _xml_can_hold(n)]
+# The six of them Python counts as blank space, which stand between words.
+BLANK = [c for c in CANNOT_HOLD if c.isspace()]
 
 
 def _held(text: str) -> str:
-    return "".join(c for c in text if _xml_can_hold(ord(c)))
+    """The text as a cell holds it, each character an xlsx cannot hold left
+    out, a space for one that is blank space."""
+    return "".join(c if _xml_can_hold(ord(c)) else " " if c.isspace() else "" for c in text)
 
 
 def _excel_reads(text: str) -> str:
@@ -176,28 +180,30 @@ def test_what_an_xlsx_cannot_hold_takes_in_all_openpyxl_refuses():
     assert not ILLEGAL_CHARACTERS_RE.search(_held("".join(map(chr, range(0x110000)))))
 
 
-def test_every_character_an_xlsx_cannot_hold_is_dropped_and_no_other():
+def test_every_character_an_xlsx_cannot_hold_is_dropped_or_a_space_and_no_other():
+    assert BLANK == [chr(0x0B), chr(0x0C), chr(0x1C), chr(0x1D), chr(0x1E), chr(0x1F)]
     every = "".join(map(chr, range(0x110000)))
     assert xlsx_value(every) == _held(every)
     for c in CANNOT_HOLD:
-        assert xlsx_value("a" + c + "b") == "ab", ascii(c)
-        assert xlsx_value(c * 3) == ""
+        between = " " if c in BLANK else ""
+        assert xlsx_value("Kettle" + c + "Lid") == "Kettle" + between + "Lid", ascii(c)
+        assert xlsx_value(c * 3) == between * 3
     assert xlsx_value(-12.34) == -12.34 and xlsx_value(7) == 7 and xlsx_value(None) is None
     for text in FORMULAS + TEXT + PLAIN_NEGATIVE:
         assert xlsx_value(text) == text, text
 
 
-def test_a_character_dropped_from_in_front_hides_no_formula_and_the_workbook_opens(tmp_path):
+def test_a_character_taken_out_from_in_front_hides_no_formula_and_the_workbook_opens(tmp_path):
     """openpyxl refused each of these as the row went in, and wrote U+FFFE,
     U+FFFF and a surrogate into a workbook neither it nor Excel would open.
-    Dropped, each leaves the text around it, and what is left gets the
+    Taken out, each leaves the text around it, and what is left gets the
     quote prefix when it starts like a formula."""
     openpyxl = pytest.importorskip("openpyxl")
     wb = openpyxl.Workbook()
     ws = wb.active
     for c in CANNOT_HOLD:
         ws.append([xlsx_value(v) for v in (c + "=1+1", "=" + c + "1+1", " " + c + "@SUM(1,1)",
-                                          "Kettle " + c + "lid", c + "-12.34")])
+                                          "Kettle" + c + "lid", c + "-12.34")])
     for row in ws.iter_rows():
         for cell in row:
             keep_text(cell)
@@ -205,8 +211,11 @@ def test_a_character_dropped_from_in_front_hides_no_formula_and_the_workbook_ope
     back = openpyxl.load_workbook(tmp_path / "t.xlsx").active
     rows = [[(c.value, c.data_type, c.quotePrefix) for c in row] for row in back.iter_rows()]
     assert len(rows) == len(CANNOT_HOLD)
-    assert all(row == [("=1+1", "s", True), ("=1+1", "s", True), (" @SUM(1,1)", "s", True),
-                       ("Kettle lid", "s", False), ("-12.34", "s", False)] for row in rows)
+    for c, row in zip(CANNOT_HOLD, rows):
+        s = " " if c in BLANK else ""
+        assert row == [(s + "=1+1", "s", True), ("=" + s + "1+1", "s", True),
+                       (" " + s + "@SUM(1,1)", "s", True), ("Kettle" + s + "lid", "s", False),
+                       (s + "-12.34", "s", False)], ascii(c)
 
 
 ESCAPED = [

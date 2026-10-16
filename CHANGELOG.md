@@ -14,16 +14,18 @@ All notable changes to PaperPull are recorded here. Versioning follows
   hold.** An item name, a merchant name or a document title can carry a
   NUL or another control character from a provider's page, and the
   library that writes the workbook refuses the 29 control characters an
-  xlsx has no place for, so one such character stopped the whole .xlsx export of
-  purchases or transactions, in the control panel and in a terminal.
-  U+FFFE, U+FFFF and half of a surrogate pair it wrote anyway, and Excel
-  then would not open the workbook. Both workbooks now leave those
-  characters out of the cell and keep the text around them, the way Excel
-  itself drops a NUL from a CSV it opens. None of them prints, so nothing
-  is put in their place. One in front of text like a formula still hides
-  nothing, and the cell keeps its quote prefix. The CSVs keep every
-  character as before. Measured on real archives, 180,418 values and 2,368
-  statement descriptions, none held such a character.
+  xlsx has no place for, so one such character stopped the whole .xlsx
+  export of purchases or transactions, in the control panel and in a
+  terminal. U+FFFE, U+FFFF and half of a surrogate pair it wrote anyway,
+  and Excel then would not open the workbook. Both workbooks now leave
+  those characters out of the cell and keep the text around them, the way
+  Excel itself drops a NUL from a CSV it opens. None of them prints, so no
+  mark is put in their place, except that the six which stand between
+  words, such as the vertical tab Word uses for a line break, become a
+  space. One in front of text like a formula still hides nothing, and the
+  cell keeps its quote prefix. The CSVs keep every character as before.
+  Measured on real archives, 180,418 values and 2,368 statement
+  descriptions, none held such a character.
 
 ### Security
 - **Text from a receipt or a statement no longer becomes a formula in the

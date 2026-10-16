@@ -94,16 +94,24 @@ control characters (IllegalCharacterError) as the row goes in, before any
 cell exists to sweep, so one item name with a NUL in it from a provider's
 JSON stopped the whole export. U+FFFE, U+FFFF and a lone surrogate it
 writes anyway, and Excel then would not open the workbook at all. So
-xlsx_value drops every one of those characters on the way into a cell.
+xlsx_value takes every one of those characters out on the way into a
+cell.
 
-Dropped, not replaced. None of them prints, so the text reads as it did
-on the provider's page, where a mark like U+FFFD would show a character
-the page never had. Excel itself drops a NUL from a CSV it opens, and its
-CLEAN function, made for tidying text brought in from elsewhere, removes
-all of the first 32 codes. Kept by Excel's own escape instead, a NUL came
-back from the xlsx and cut the cell short at that point when it was
-edited. From a CSV Excel kept the other 28 in the cell and read none of
-them as the start of a formula, so a CSV keeps them.
+Dropped, not replaced with a mark. None of them prints, so the text reads
+as it did on the provider's page, where a mark like U+FFFD would show a
+character the page never had. Excel itself drops a NUL from a CSV it
+opens, and its CLEAN function, made for tidying text brought in from
+elsewhere, removes all of the first 32 codes. Kept by Excel's own escape
+instead, a NUL came back from the xlsx and cut the cell short at that
+point when it was edited. From a CSV Excel kept the other 28 in the cell
+and read none of them as the start of a formula, so a CSV keeps them.
+
+Six of the control characters stand between words, the vertical tab
+Word uses for a line break, the form feed and the four separators from
+0x1C to 0x1F. Python counts them as blank space, and Uber's clean() and
+the transactions tool's reading of a statement both turn each into a
+space. Dropped, Kettle and a vertical tab and Lid would read KettleLid,
+so each of those six becomes a space instead.
 
 Excel also reads _x and four hex digits and _ in an xlsx string as its
 escape for one character, _x003D_ as =, and openpyxl writes such text as
@@ -111,8 +119,8 @@ it is. So _x003D_1+1 opened as =1+1, with no quote prefix since the text
 keep_text tested did not start like a formula, and an edit made it a
 working formula. xlsx_value writes the _ in front of such a run as
 _x005F_, the escape for _ itself, and Excel shows the text as it came.
-That comes after the drop, since a dropped character inside such a run
-would otherwise hide it until Excel joined it up.
+That comes after the drop, since dropping a character from inside such a
+run joins it up, and Excel would then read it. A space never makes one.
 
 THE APPS' OWN CSV FILES
 
@@ -237,21 +245,26 @@ def csv_value(value):
 
 
 # What an xlsx cannot hold (WHAT AN XLSX CELL CANNOT HOLD, above). The
-# control characters are the 29 openpyxl refuses, its ILLEGAL_CHARACTERS_RE.
-_NOT_IN_AN_XLSX = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+# control characters are the 29 openpyxl refuses, its ILLEGAL_CHARACTERS_RE,
+# with the six of them Python counts as blank space kept apart, since those
+# become a space.
+_NOT_IN_AN_XLSX = re.compile(r"[\x00-\x08\x0e-\x1b\ud800-\udfff\ufffe\uffff]")
+_BLANK_NOT_IN_AN_XLSX = re.compile(r"[\x0b\x0c\x1c-\x1f]")
 # The _ in front of a run Excel reads as its escape for one character.
 _EXCEL_ESCAPE = re.compile(r"_(?=x[0-9A-Fa-f]{4}_)")
 
 
 def xlsx_value(value):
     """What an xlsx cell is given for value. A number or None is given as it
-    is. Text loses every character an xlsx cannot hold, and then the _ in
-    front of a run Excel reads as its escape for a character, _x003D_ for =,
-    becomes _x005F_, the escape for _ itself, so Excel shows the text as it
-    came. keep_text then tests the text the cell holds."""
+    is. Text loses every character an xlsx cannot hold, a space standing in
+    for each of the six that are blank space, and then the _ in front of a
+    run Excel reads as its escape for a character, _x003D_ for =, becomes
+    _x005F_, the escape for _ itself, so Excel shows the text as it came.
+    keep_text then tests the text the cell holds."""
     if not isinstance(value, str):
         return value
-    return _EXCEL_ESCAPE.sub("_x005F_", _NOT_IN_AN_XLSX.sub("", value))
+    text = _BLANK_NOT_IN_AN_XLSX.sub(" ", _NOT_IN_AN_XLSX.sub("", value))
+    return _EXCEL_ESCAPE.sub("_x005F_", text)
 
 
 def keep_text(cell) -> None:
