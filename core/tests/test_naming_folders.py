@@ -328,12 +328,13 @@ def body_of(key: str) -> bytes:
 class _Paths:
     def __init__(self, out: Path):
         self.statements = out / "Statements"
+        self.tax_documents = out / "Tax Documents"
         self.manual_review = out / "Manual Review"
-        for folder in (self.statements, self.manual_review):
+        for folder in (self.statements, self.tax_documents, self.manual_review):
             folder.mkdir(parents=True, exist_ok=True)
 
     def filing_folders(self):
-        return [self.statements, self.manual_review]
+        return [self.statements, self.tax_documents, self.manual_review]
 
 
 class Bank:
@@ -352,9 +353,10 @@ class Bank:
         self.progress.load()
         self.discovery.load()
 
-    def saved(self, account: str, folder: Path = None) -> Path:
+    def saved(self, account: str, folder: Path = None, spelled: str = "") -> Path:
         """A statement of the account, saved the way a download saves it
-        under the pattern set now, or in `folder` under its usual name."""
+        under the pattern set now, or in `folder` under its usual name, and
+        written down as `spelled` when that is given."""
         name = storage.build_pdf_filename(DATE, "Monthly Statement", "",
                                           record={"account": account})
         if folder is None:
@@ -362,14 +364,15 @@ class Bank:
         else:
             path = unique_path(folder, str(name))
         path.write_bytes(body_of(account))
+        written = spelled or str(path)
         self.index_csv.append_rows([{
             "Document Date": DATE, "Document Title": "Monthly Statement",
             "Document Summary": "Monthly Statement", "Account": account,
-            "PDF Filename": path.name, "PDF Full Path": str(path),
+            "PDF Filename": path.name, "PDF Full Path": written,
             "Processing Status": "Completed", "Notes": ""}])
         self.progress.update(account, {
             "date": DATE, "title": "Monthly Statement", "summary": "Monthly Statement",
-            "account": account, "category": "Statement", "pdf_path": str(path),
+            "account": account, "category": "Statement", "pdf_path": written,
             "pdf_filename": path.name, "downloaded_ok": True, "state": "Completed"})
         return path
 
@@ -501,6 +504,40 @@ def test_a_file_in_manual_review_stays_there_with_no_folders(tmp_path):
     assert where[body_of(ACCOUNTS[1])] == IN_FOLDERS[body_of(ACCOUNTS[1])]
     assert sorted(p.name for p in bank.paths.manual_review.iterdir()) == \
         ["2026-09-12 Monthly Statement.pdf"]
+
+
+@pytest.mark.parametrize("how", ["climbs", "link"])
+def test_a_file_is_filed_where_it_really_is_however_its_path_is_spelled(tmp_path, how):
+    """A recorded path that climbs out of Statements through "..", or goes
+    through a link inside Statements, names a file in another of the app's
+    folders. Taken by its spelling for one filed in Statements, a statement
+    put aside in Manual Review was moved into the pattern's folders there,
+    and a tax form was moved into Statements under the default pattern."""
+    bank = Bank(tmp_path)
+    statements = bank.paths.statements
+    links = set()
+    if how == "climbs":
+        aside = os.path.join(str(statements), "Chase", "..", "..", "Manual Review", "")
+        tax = os.path.join(str(statements), "Chase", "..", "..", "Tax Documents", "")
+    else:
+        link_folder(bank.paths.manual_review, statements / "aside")
+        link_folder(bank.paths.tax_documents, statements / "tax")
+        aside, tax = str(statements / "aside") + os.sep, str(statements / "tax") + os.sep
+        links = {"aside", "tax"}
+    name = "2026-09-12 Testco Monthly Statement.pdf"
+    bank.saved(ACCOUNTS[0], folder=bank.paths.manual_review, spelled=aside + name)
+    bank.saved(ACCOUNTS[1], folder=bank.paths.tax_documents, spelled=tax + name)
+    code, said = bank.rename(apply_changes=False)
+    assert "Every file is already named the way this app names them." in said, said
+    storage.set_filename_patterns({"filename_pattern": FOLDERS})
+    code, said = bank.rename()
+    assert code == 0, said
+    real = {p.read_bytes(): p.resolve() for p in bank.out.rglob("*.pdf") if not p.is_symlink()}
+    assert real[body_of(ACCOUNTS[0])] == \
+        (bank.paths.manual_review / "2026-09-12 Monthly Statement.pdf").resolve(), said
+    assert real[body_of(ACCOUNTS[1])] == (bank.paths.tax_documents / "Testco" / ACCOUNTS[1]
+                                          / "2026-09-12 Monthly Statement.pdf").resolve(), said
+    assert {p.name for p in statements.iterdir()} == links, "nothing moved into Statements"
 
 
 def test_a_file_already_in_the_folder_it_moves_to_is_never_written_over(bank):

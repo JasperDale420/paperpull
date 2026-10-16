@@ -234,31 +234,51 @@ class _Homes:
     check is put aside."""
 
     def __init__(self, folders: Iterable[Path], flat: Iterable[Path] = ()):
-        self.folders = [Path(f) for f in folders]
-        self._plain = {os.path.normcase(str(f)) for f in self.folders}
-        self.real = _real(self.folders)
+        # Each folder as the app spells it, with where it really is.
+        self._pairs = []
+        for folder in folders:
+            real = _real([folder])
+            if real:
+                self._pairs.append((Path(folder), real[0]))
+        self.real = [real for _folder, real in self._pairs]
         self._flat = _real(flat)
         self._seen = {}
 
+    def _where(self, path: Path) -> Optional[Path]:
+        key = str(path)
+        if key not in self._seen:
+            try:
+                self._seen[key] = Path(path).resolve()
+            except (OSError, RuntimeError, ValueError):
+                self._seen[key] = None
+        return self._seen[key]
+
     def home(self, path: Path) -> Optional[Path]:
-        """The folder of the app's that `path` is filed in, spelled as the
-        path spells it, or None. Read from the spelling first, since a
-        recorded path is written from the same output folder as the app's
-        folders, and from the disk only when that does not say."""
-        parents = list(Path(path).parents)
-        for parent in parents:
-            if os.path.normcase(str(parent)) in self._plain:
-                return parent
-        for parent in parents:
-            key = str(parent)
-            if key not in self._seen:
-                try:
-                    self._seen[key] = parent.resolve() in self.real
-                except (OSError, RuntimeError, ValueError):
-                    self._seen[key] = False
-            if self._seen[key]:
-                return parent
-        return None
+        """The folder of the app's that `path` is filed in, or None.
+
+        It is the folder the file really is in, with links and ".." on the
+        way followed, never the one its path's spelling seems to name. A
+        path written "Statements/../Manual Review/x.pdf", or one through a
+        link inside Statements to Manual Review, is filed in Manual Review,
+        and taking it for one in Statements would move a file put aside
+        into the pattern's folders there. It is spelled as the path spells
+        it when one of the path's own folders is it and the path climbs
+        through no "..", and as the app spells it otherwise."""
+        real = self._where(path)
+        if real is None:
+            return None
+        found = None
+        for folder, where in self._pairs:
+            if where in real.parents and (found is None
+                                          or len(where.parts) > len(found[1].parts)):
+                found = (folder, where)
+        if found is None:
+            return None
+        if ".." not in Path(path).parts:
+            for parent in Path(path).parents:
+                if self._where(parent) == found[1]:
+                    return parent
+        return found[0]
 
     def is_flat(self, home: Path) -> bool:
         try:
