@@ -214,7 +214,7 @@ Three plain-text files carry the state, and you can read all of them:
 |------|-------|
 | `discovery.json` | what the provider showed us this run |
 | `progress.json` | what happened to each document, including the sticky `downloaded_ok` |
-| `<Provider> Document Index.csv` | one row per saved document, for humans and spreadsheets (receipt apps also keep an `Order History.csv`, one row per line item) |
+| `<Provider> Document Index.csv` | one row per saved document, for humans and spreadsheets (receipt apps also keep an `Order History.csv`, one row per line item). Text that starts like a formula, an item a seller named `=...` for one, is written with a `'` in front, so Excel opens it as text |
 
 That last step is what makes a re-run safe. `downloaded_ok` is keyed to the
 document, not to the file on disk, so you can import everything into

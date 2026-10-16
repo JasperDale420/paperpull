@@ -79,6 +79,15 @@ The `.gitignore` already blocks all of the following. Do not override it.
   it, not even one that points a name of its own at your computer, and no
   other site may show the panel inside a page of its own. A link opened
   from an email, a chat or a PDF can open the panel, never start a run.
+- **Spreadsheet text stays text.** Item names, store and merchant names and
+  document titles are chosen by other people, and a spreadsheet takes a cell
+  that starts with =, +, - or @ as a formula. The CSV files every app keeps
+  beside its PDFs and both spreadsheet tools write such text with a single
+  quote in front, or as an Excel text cell, so opening a file never works
+  one out, and an app reading its own files back takes that quote off again.
+  The rule is `core/paperpull_core/sheets.py`, and a repo-wide test
+  (`core/tests/test_sheets.py`) checks that every CSV reader and writer goes
+  through it.
 - **Delete-safe.** A sticky `downloaded_ok` marker means deleting the PDFs after
   you import them elsewhere will not cause re-downloads.
 

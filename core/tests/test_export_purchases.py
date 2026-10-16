@@ -357,3 +357,61 @@ def test_text_with_a_lead_a_wide_sign_or_a_break_inside_is_kept_from_a_formula(t
         back = list(csv.DictReader(fh))
     assert [x["Item"] for x in back] == [cell for _text, cell, _prefix in LEADS]
     assert all(x["Item"] == x["Notes"] and x["Line Total"] == "-1.5" for x in back)
+
+
+# -- a history the app wrote itself ----------------------------------------------------
+
+def _written_by_the_app(folder: Path, provider: str, rows) -> Path:
+    """The history as a receipt app writes it, through core storage's
+    CsvFile, which holds text like a formula with a quote in front."""
+    from paperpull_core.storage import CsvFile
+    folder.mkdir(parents=True, exist_ok=True)
+    f = CsvFile(folder / f"{provider} Order History.csv", HEADER)
+    f.append_rows(rows)
+    return f.path
+
+
+def _sheets(path):
+    openpyxl = pytest.importorskip("openpyxl")
+    wb = openpyxl.load_workbook(path)
+    return {ws.title: [[(c.value, c.data_type, c.quotePrefix) for c in row] for row in ws.iter_rows()]
+            for ws in wb}
+
+
+def test_a_history_the_app_wrote_gives_both_spreadsheets_the_words_it_was_given(tmp_path):
+    """The app's file holds each formula-like value with a quote in front,
+    which has to come off as the history loads, or every such cell would
+    carry two quotes and a file name one the file does not have. So the
+    spreadsheets built from it are the ones built from the same words
+    written plainly, as an older version wrote them."""
+    pytest.importorskip("openpyxl")
+    old, new = tmp_path / "old", tmp_path / "new"
+    _history(old / "Shop Receipts", "@Shop",
+             [[FORMULA_ROW[h] for h in HEADER], [REFUND_ROW[h] for h in HEADER]])
+    held = _written_by_the_app(new / "Shop Receipts", "@Shop", [FORMULA_ROW, REFUND_ROW])
+    text = held.read_text(encoding="utf-8-sig")
+    assert "'=3+3.pdf" in text and "-$12.34" in text and "'-$12.34" not in text
+    assert xp.load_purchases("@Shop", held) == \
+        xp.load_purchases("@Shop", old / "Shop Receipts" / "@Shop Order History.csv")
+    old_csv, new_csv = (Path(xp.export(root, as_csv=True)["path"]).read_bytes()
+                        for root in (old, new))
+    assert old_csv == new_csv
+    assert _sheets(xp.export(old)["path"]) == _sheets(xp.export(new)["path"])
+
+
+def test_a_name_that_really_starts_with_a_quote_keeps_it(tmp_path):
+    pytest.importorskip("openpyxl")
+    row = dict(FORMULA_ROW, **{"Item Name": "'=1+1 kettle", "Notes": "'Tis the season",
+                               "PDF Filename": "'=3+3.pdf"})
+    held = _written_by_the_app(tmp_path / "Shop Receipts", "Shop", [row])
+    assert "''=1+1 kettle" in held.read_text(encoding="utf-8-sig")
+    (item,) = xp.load_purchases("Shop", held)
+    assert (item["Item"], item["Notes"], item["Receipt PDF"]) == \
+        ("'=1+1 kettle", "'Tis the season", "'=3+3.pdf")
+    with open(xp.export(tmp_path, as_csv=True)["path"], encoding="utf-8-sig", newline="") as fh:
+        (out,) = list(csv.DictReader(fh))
+    assert (out["Item"], out["Notes"], out["Receipt PDF"]) == \
+        ("'=1+1 kettle", "'Tis the season", "'=3+3.pdf")
+    cells = {v: (t, q) for sheet in _sheets(xp.export(tmp_path)["path"]).values()
+             for row in sheet for v, t, q in row}
+    assert cells["'=1+1 kettle"] == ("s", False)

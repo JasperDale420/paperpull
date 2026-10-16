@@ -292,7 +292,8 @@ def body_of(account: str) -> bytes:
 TITLE = "Monthly Statement - September 12, 2026"
 
 
-def two_documents(home: Home, with_ids: bool = False, titles=(TITLE, TITLE)):
+def two_documents(home: Home, with_ids: bool = False, titles=(TITLE, TITLE),
+                  summary="Monthly Statement"):
     """Two documents of one date for two accounts, of one title unless
     `titles` says otherwise, as this app's own Document class records them
     and told apart the way it tells them apart, by the account or by which
@@ -304,7 +305,7 @@ def two_documents(home: Home, with_ids: bool = False, titles=(TITLE, TITLE)):
     takes = inspect.signature(Document.__init__).parameters
 
     def make(account, title, occurrence=None):
-        kw = dict(title=title, category=category, summary="Monthly Statement", date=DATE,
+        kw = dict(title=title, category=category, summary=summary, date=DATE,
                   account=account)
         if with_ids:
             kw["document_id"] = "DOC%s" % account
@@ -631,14 +632,15 @@ def test_a_freed_invoice_name_another_orders_invoices_name_keeps_its_name(home):
     assert home.browser.asked == 0, "Rename reached for a browser"
 
 
-def purchased(home: Home, app, number: str, body: bytes = b"") -> Path:
+def purchased(home: Home, app, number: str, body: bytes = b"",
+              summary: str = "Household Goods") -> Path:
     """One purchase listed then downloaded, written down by the app's own
     code, of one day and one summary with the other, under its own order
     number."""
     Purchase = home.mod.Purchase
     kind = next(k for k in (ONLINE, IN_STORE) if routes(app, k))
     p = Purchase(purchase_type=kind, purchase_date=DATE, order_number=number,
-                 total="$%s.00" % number[-2:], summary="Household Goods",
+                 total="$%s.00" % number[-2:], summary=summary,
                  document_type="Receipt", confidence="High")
     listed = p.to_dict()
     listed["state"] = State.DISCOVERED.value

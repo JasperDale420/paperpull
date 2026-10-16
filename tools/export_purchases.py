@@ -38,7 +38,7 @@ _CORE = Path(__file__).resolve().parents[1] / "core"
 if (_CORE / "paperpull_core").is_dir() and str(_CORE) not in sys.path:
     sys.path.insert(0, str(_CORE))
 try:
-    from paperpull_core.sheets import csv_value, keep_text  # noqa: E402
+    from paperpull_core.sheets import csv_value, keep_text, read_stored  # noqa: E402
 except ImportError as e:
     raise ImportError("export_purchases.py needs PaperPull's core folder beside its tools folder") from e
 
@@ -128,7 +128,9 @@ def load_purchases(provider: str, path: Path) -> List[dict]:
         for raw in csv.DictReader(fh):
             row = {}
             for out, src in COLUMNS:
-                value = provider if src is None else (raw.get(src) or "").strip()
+                # The app put a quote in front of a value that starts like a
+                # formula, and it comes off here as it does in the app.
+                value = provider if src is None else (read_stored(raw.get(src)) or "").strip()
                 if out in MONEY:
                     value = money(value)
                 elif out == "Quantity":
