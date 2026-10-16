@@ -1,0 +1,452 @@
+"""A documents folder for each account (#102).
+
+An account's config can name documents_dir, a folder of its own that a
+program such as Paperless may watch. The folders a document is routed to,
+Statements, Tax Documents, Receipts and the rest, go there. Manual Review,
+Logs, Diagnostics, Backups, the index, the order history, progress.json and
+discovery.json stay in output_dir, so nothing half checked and no record
+reaches a watched folder. With no documents_dir every path is what it
+always was.
+
+Setting it moves nothing. Files saved before stay in the output folder,
+where Rename, Review Names and every check of a file the app holds still
+find them, and the panel's Move takes them to the documents folder through
+the app's own Rename, with every rule a rename keeps and everything put
+back when a ledger cannot be written.
+
+On PaperPull Server a documents_dir is held inside the data folder, where
+its links lead, as output_dir is.
+
+Every folder is a throwaway one under tmp_path, and every name and account
+is invented.
+"""
+import json
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from paperpull_core import renaming, storage  # noqa: E402
+from paperpull_core.storage import Paths  # noqa: E402
+from test_naming_folders import link_folder  # noqa: E402
+
+DATE = "2026-09-12"
+ACCOUNTS = ("Checking 1111", "Savings 2222")
+
+
+@pytest.fixture(autouse=True)
+def no_pattern():
+    storage.set_filename_patterns({})
+    yield
+    storage.set_filename_patterns({})
+
+
+def write(folder: Path, settings: dict, name: str = "config.json") -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / name
+    path.write_text(json.dumps(settings), encoding="utf-8")
+    return path
+
+
+# -- where everything goes ---------------------------------------------------------------
+
+def old_layout(out: Path) -> dict:
+    """Every path Paths gave before documents_dir existed, for the bound
+    spec, written out the way it was built."""
+    sp = storage.spec()
+    paths = {f.attr: out / f.name for f in sp.folders}
+    paths.update({c.attr: out / c.filename.format(provider=sp.provider) for c in sp.csv_files})
+    paths.update(progress_json=out / "progress.json", discovery_json=out / "discovery.json",
+                 last_listing=out / "last-listing.json", run_summary=out / "run-summary.txt")
+    return paths
+
+
+def test_with_no_documents_folder_every_path_is_where_it_always_was(tmp_path):
+    out = tmp_path / "out"
+    paths = Paths(out)
+    for attr, path in old_layout(out).items():
+        assert getattr(paths, attr) == path, attr
+    assert paths.documents == out and paths.earlier_folders() == {}
+    assert paths.filing_folders() == [out / f.name for f in storage.spec().folders
+                                      if f.attr not in ("logs", "diagnostics", "backups")]
+    assert paths.all_dirs() == [out] + [out / f.name for f in storage.spec().folders
+                                         if f.precreate]
+
+
+def test_documents_go_to_the_documents_folder_and_records_stay(tmp_path):
+    out, docs = tmp_path / "out", tmp_path / "Watched"
+    paths = Paths(out, documents_dir=str(docs))
+    old = old_layout(out)
+    kept = {"manual_review", "logs", "diagnostics", "backups", "document_index_csv",
+            "progress_json", "discovery_json", "last_listing", "run_summary"}
+    for attr, path in old.items():
+        want = path if attr in kept else docs / path.name
+        assert getattr(paths, attr) == want, attr
+    assert paths.folder_for("Statement") == docs / "Statements"
+    assert paths.folder_for("Notice") == docs / "Other Documents"
+    assert paths.earlier_folders() == {out / "Statements": docs / "Statements",
+                                       out / "Other Documents": docs / "Other Documents"}
+    # Files saved before are still the app's to hold.
+    assert out / "Statements" in paths.filing_folders()
+    assert docs / "Statements" in paths.filing_folders()
+    assert out / "Manual Review" in paths.filing_folders()
+
+
+def test_a_run_makes_the_documents_folders_and_writes_no_record_there(tmp_path):
+    out, docs = tmp_path / "out", tmp_path / "Watched"
+    Paths(out, documents_dir=str(docs)).ensure()
+    assert sorted(p.name for p in docs.iterdir()) == ["Statements"]
+    assert sorted(p.name for p in out.iterdir()) == [
+        "Backups", "Diagnostics", "Logs", "Manual Review"]
+
+
+def test_the_documents_folder_is_the_output_folder_spelled_another_way(tmp_path):
+    out = tmp_path / "out"
+    paths = Paths(out, documents_dir=str(out / "." / ""))
+    assert paths.earlier_folders() == {}
+
+
+# -- the setting, as load_config reads it -------------------------------------------------
+
+def test_a_documents_folder_reaches_the_paths_every_app_builds(tmp_path, capsys):
+    out, docs = tmp_path / "out", tmp_path / "Watched"
+    cfg = storage.load_config(write(tmp_path / "app", {"output_dir": str(out),
+                                                       "documents_dir": str(docs)}))
+    assert cfg["documents_dir"] == str(docs)
+    paths = Paths(Path(cfg["output_dir"]))
+    assert paths.statements == docs / "Statements"
+    assert paths.manual_review == out / "Manual Review"
+    assert capsys.readouterr().out == ""
+
+
+def test_no_documents_folder_adds_nothing_to_a_config(tmp_path):
+    out = tmp_path / "out"
+    cfg = storage.load_config(write(tmp_path / "app", {"output_dir": str(out)}))
+    assert "documents_dir" not in cfg
+    assert Paths(Path(cfg["output_dir"])).statements == out / "Statements"
+
+
+def test_each_account_has_its_own_documents_folder(tmp_path):
+    app = tmp_path / "app"
+    first, second = tmp_path / "first", tmp_path / "second"
+    storage.load_config(write(app, {"output_dir": str(first),
+                                    "documents_dir": str(tmp_path / "Docs")}))
+    storage.load_config(write(app, {"output_dir": str(second)}, "config.spouse.json"))
+    assert Paths(first).statements == tmp_path / "Docs" / "Statements"
+    assert Paths(second).statements == second / "Statements"
+
+
+@pytest.mark.parametrize("given", ["Watched", "./Watched", "~/Watched", 7, ["x"], "   "])
+def test_a_documents_folder_that_is_not_a_full_path_is_not_used(tmp_path, capsys, given):
+    """A typo in a setting never sends documents somewhere nobody meant,
+    and never stops a run."""
+    out = tmp_path / "out"
+    cfg = storage.load_config(write(tmp_path / "app", {"output_dir": str(out),
+                                                       "documents_dir": given}))
+    assert cfg["documents_dir"] == ""
+    assert Paths(out).statements == out / "Statements"
+    said = capsys.readouterr().out
+    assert "documents folder" in said and "output folder as before" in said
+
+
+@pytest.mark.parametrize("where", ["profile", "inside", "around"])
+def test_a_documents_folder_at_a_browser_profile_is_not_used(tmp_path, capsys, where):
+    out, profile = tmp_path / "out", tmp_path / "home" / "browser-profile"
+    docs = {"profile": profile, "inside": profile / "Default",
+            "around": tmp_path / "home"}[where]
+    cfg = storage.load_config(write(tmp_path / "app", {
+        "output_dir": str(out), "profile_dir": str(profile), "documents_dir": str(docs)}))
+    assert cfg["documents_dir"] == ""
+    assert Paths(out).statements == out / "Statements"
+    assert "browser profile" in capsys.readouterr().out
+
+
+# -- PaperPull Server -------------------------------------------------------------------
+
+@pytest.fixture()
+def server(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    install = data / "Testco Statements"
+    install.mkdir(parents=True)
+    (tmp_path / "profiles").mkdir()
+    monkeypatch.setenv("PAPERPULL_SERVER", "1")
+    monkeypatch.setenv("APPS_ROOT", str(data))
+    monkeypatch.setenv("PAPERPULL_PROFILES", str(tmp_path / "profiles"))
+    monkeypatch.chdir(install)
+    return install
+
+
+def on_the_server(install: Path, **changed) -> Path:
+    settings = {"owner": "", "output_dir": ".", "cdp_url": "http://127.0.0.1:9299",
+                "profile_dir": str(install.parent.parent / "profiles" / install.name)}
+    settings.update(changed)
+    return write(install, settings)
+
+
+def test_on_the_server_a_documents_folder_inside_the_data_folder_is_kept(server):
+    docs = server.parent / "Documents"
+    cfg = storage.load_config(on_the_server(server, documents_dir=str(docs)))
+    assert cfg["documents_dir"] == str(docs)
+    assert Paths(Path(cfg["output_dir"])).statements == docs / "Statements"
+
+
+@pytest.mark.parametrize("given", ["outside", "relative", "number"])
+def test_on_the_server_a_documents_folder_anywhere_else_stops_the_run(server, given):
+    value = {"outside": str(server.parent.parent / "elsewhere"), "relative": "Documents",
+             "number": 7}[given]
+    with pytest.raises(SystemExit) as stop:
+        storage.load_config(on_the_server(server, documents_dir=value))
+    assert "documents_dir" in str(stop.value) or "outside" in str(stop.value)
+    assert not (server.parent.parent / "elsewhere").exists()
+
+
+def test_on_the_server_a_documents_folder_that_is_a_link_out_stops_the_run(server):
+    outside = server.parent.parent / "elsewhere"
+    outside.mkdir()
+    link_folder(outside, server.parent / "Documents")
+    with pytest.raises(SystemExit) as stop:
+        storage.load_config(on_the_server(server, documents_dir=str(server.parent / "Documents")))
+    assert "outside" in str(stop.value)
+
+
+def test_on_the_server_a_link_out_inside_the_documents_folder_stops_the_run(server):
+    outside = server.parent.parent / "elsewhere"
+    outside.mkdir()
+    docs = server.parent / "Documents"
+    docs.mkdir()
+    link_folder(outside, docs / "Statements")
+    with pytest.raises(SystemExit) as stop:
+        storage.load_config(on_the_server(server, documents_dir=str(docs)))
+    assert "link" in str(stop.value)
+
+
+# -- Rename and the Move -----------------------------------------------------------------
+
+INDEX_COLUMNS = ["Document Date", "Document Title", "Document Summary", "Account",
+                 "PDF Filename", "PDF Full Path", "Processing Status", "Notes"]
+
+
+def body_of(key: str) -> bytes:
+    return b"%PDF-1.4\n% the invented statement " + key.encode() + b"\n%%EOF\n"
+
+
+class Office:
+    """Enough of a statements app for Rename, its folders the core's own
+    Paths, its index and run state real files."""
+
+    def __init__(self, tmp_path: Path):
+        self.out = tmp_path / "out"
+        self.docs = tmp_path / "Watched"
+        self.config = {"max_path_length": 240}
+        self.build(documents=False)
+        backups = self.out / "Backups"
+        self.index_csv = storage.CsvFile(self.out / "Testco Document Index.csv",
+                                         INDEX_COLUMNS, backups)
+        self.order_csv = None
+        self.progress = storage.JsonStore(self.out / "progress.json", backups)
+        self.discovery = storage.JsonStore(self.out / "discovery.json", backups)
+        self.progress.load()
+        self.discovery.load()
+
+    def build(self, documents: bool):
+        """The app's folders, with or without its documents folder."""
+        self.paths = Paths(self.out, documents_dir=str(self.docs) if documents else "")
+        self.paths.ensure()
+
+    def saved(self, account: str, aside: bool = False) -> Path:
+        name = storage.build_pdf_filename(DATE, "Monthly Statement", "",
+                                          record={"account": account})
+        folder = self.paths.manual_review if aside else self.paths.folder_for("Statement")
+        path = storage.unique_path(folder, name if not aside else str(name))
+        path.write_bytes(body_of(account))
+        self.index_csv.append_rows([{
+            "Document Date": DATE, "Document Title": "Monthly Statement",
+            "Document Summary": "Monthly Statement", "Account": account,
+            "PDF Filename": path.name, "PDF Full Path": str(path),
+            "Processing Status": "Completed", "Notes": ""}])
+        self.progress.update(account, {
+            "date": DATE, "title": "Monthly Statement", "summary": "Monthly Statement",
+            "account": account, "category": "Statement", "pdf_path": str(path),
+            "pdf_filename": path.name, "downloaded_ok": True, "state": "Completed"})
+        return path
+
+    def rename(self, apply_changes=True):
+        said = []
+        try:
+            renaming.run_for(self, apply_changes=apply_changes, say=said.append)
+            code = 0
+        except SystemExit as stop:
+            code = stop.code
+        return code, "\n".join(said)
+
+    def where(self) -> dict:
+        """Each statement's file by its bytes, seen from tmp_path."""
+        top = self.out.parent
+        return {p.read_bytes(): p.relative_to(top).as_posix()
+                for p in top.rglob("*.pdf")}
+
+    def follows(self) -> None:
+        rows = storage.CsvFile(self.index_csv.path, INDEX_COLUMNS).read_all()
+        self.progress.save()
+        on_disk = storage.JsonStore(self.out / "progress.json")
+        on_disk.load()
+        for row in rows:
+            path = Path(row["PDF Full Path"])
+            assert path.read_bytes() == body_of(row["Account"]), row
+            assert row["PDF Filename"] == path.name
+            for records in (self.progress.data, on_disk.data):
+                assert records[row["Account"]]["pdf_path"] == str(path)
+
+
+FIRST = "2026-09-12 Testco Monthly Statement.pdf"
+SECOND = "2026-09-12 Testco Monthly Statement (2).pdf"
+BEFORE = {body_of(ACCOUNTS[0]): "out/Statements/" + FIRST,
+          body_of(ACCOUNTS[1]): "out/Statements/" + SECOND}
+
+
+@pytest.fixture
+def office(tmp_path):
+    """Two statements saved before the account had a documents folder, and
+    the folder then set."""
+    office = Office(tmp_path)
+    for account in ACCOUNTS:
+        office.saved(account)
+    office.build(documents=True)
+    assert office.where() == BEFORE
+    return office
+
+
+def moving(monkeypatch):
+    monkeypatch.setenv(renaming.MOVE_DOCUMENTS_ENV, "1")
+
+
+def test_setting_a_documents_folder_moves_nothing(office):
+    code, said = office.rename(apply_changes=False)
+    assert code == 0 and "Every file is already named the way this app names them." in said
+    assert "name something other than a PDF" not in said, "a file saved before is held"
+    assert office.where() == BEFORE
+
+
+def test_a_file_saved_before_is_renamed_where_it_is(office):
+    storage.set_filename_patterns({"filename_pattern": "{provider}/{date} {account}"})
+    code, said = office.rename()
+    assert code == 0 and "Renamed 2 file(s)." in said, said
+    assert office.where() == {
+        body_of(a): "out/Statements/Testco/2026-09-12 %s.pdf" % a for a in ACCOUNTS}
+    office.follows()
+
+
+def test_a_new_download_goes_to_the_documents_folder_beside_the_old(office):
+    path = office.saved("Brokerage 3333")
+    assert path.parent == office.docs / "Statements"
+    assert office.where()[body_of(ACCOUNTS[0])] == BEFORE[body_of(ACCOUNTS[0])]
+
+
+def test_the_move_takes_each_document_saved_before_to_the_documents_folder(
+        office, monkeypatch):
+    aside = office.saved("Brokerage 3333", aside=True)
+    moving(monkeypatch)
+    code, said = office.rename(apply_changes=False)
+    assert code == 0 and "2 file(s) would be moved." in said, said
+    assert str(office.docs / "Statements" / FIRST) in said
+    assert office.where()[body_of(ACCOUNTS[0])] == BEFORE[body_of(ACCOUNTS[0])]
+    code, said = office.rename()
+    assert code == 0 and "Moved 2 file(s) to %s." % office.docs in said, said
+    where = office.where()
+    assert where[body_of(ACCOUNTS[0])] == "Watched/Statements/" + FIRST
+    assert where[body_of(ACCOUNTS[1])] == "Watched/Statements/" + SECOND
+    assert where[body_of("Brokerage 3333")] == "out/Manual Review/" + aside.name, (
+        "a file put aside never reaches the documents folder")
+    office.follows()
+    assert (office.out / "Statements").is_dir(), "the folder they were in is kept"
+    code, said = office.rename(apply_changes=False)
+    assert "Every document is in the documents folder already." in said, said
+    monkeypatch.delenv(renaming.MOVE_DOCUMENTS_ENV)
+    code, said = office.rename(apply_changes=False)
+    assert "Every file is already named the way this app names them." in said, said
+
+
+def test_the_move_keeps_a_patterns_folders_and_tells_apart_a_clash(office, monkeypatch):
+    storage.set_filename_patterns({"filename_pattern": "{provider}/{date} {account}"})
+    assert office.rename()[0] == 0
+    theirs = office.docs / "Statements" / "Testco" / ("2026-09-12 %s.pdf" % ACCOUNTS[0])
+    theirs.parent.mkdir(parents=True)
+    theirs.write_bytes(b"%PDF- somebody's own file")
+    # A move keeps every name and folder whatever the pattern says now.
+    storage.set_filename_patterns({})
+    moving(monkeypatch)
+    code, said = office.rename()
+    assert code == 0, said
+    assert theirs.read_bytes() == b"%PDF- somebody's own file"
+    where = office.where()
+    assert where[body_of(ACCOUNTS[0])] == "Watched/Statements/Testco/2026-09-12 %s (2).pdf" % (
+        ACCOUNTS[0])
+    assert where[body_of(ACCOUNTS[1])] == "Watched/Statements/Testco/2026-09-12 %s.pdf" % (
+        ACCOUNTS[1])
+    assert not (office.out / "Statements" / "Testco").exists(), "its emptied folder goes"
+    office.follows()
+
+
+def test_a_move_that_cannot_write_the_index_puts_every_file_back(office, monkeypatch):
+    storage.set_filename_patterns({"filename_pattern": "{provider}/{date} {account}"})
+    assert office.rename()[0] == 0
+    before = office.where()
+    real = storage.atomic_write_text
+
+    def refuse(path, text, encoding="utf-8", **how):
+        if Path(path).name == "Testco Document Index.csv":
+            raise PermissionError("%s stayed locked." % path)
+        return real(path, text, encoding, **how)
+
+    monkeypatch.setattr(storage, "atomic_write_text", refuse)
+    monkeypatch.setattr(renaming, "free_to_write", lambda *_a, **_kw: True)
+    moving(monkeypatch)
+    code, said = office.rename()
+    assert code == 1 and "every file was put back" in said, said
+    assert office.where() == before
+    assert not (office.docs / "Statements" / "Testco").exists(), "a folder made for nothing"
+    monkeypatch.setattr(storage, "atomic_write_text", real)
+    office.follows()
+
+
+def test_a_move_with_no_documents_folder_says_there_is_nothing_to_move(tmp_path, monkeypatch):
+    office = Office(tmp_path)
+    office.saved(ACCOUNTS[0])
+    moving(monkeypatch)
+    code, said = office.rename()
+    assert code == 0 and "there are none to move" in said
+    assert office.where() == {body_of(ACCOUNTS[0]): "out/Statements/" + FIRST}
+
+
+# -- what travels and what a second person gets ------------------------------------------
+
+def _tool(name: str):
+    import importlib.util
+    path = Path(__file__).resolve().parents[2] / "tools" / ("%s.py" % name)
+    spec = importlib.util.spec_from_file_location("tool_" + name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_documents_folder_never_travels_to_another_computer(tmp_path):
+    migrate = _tool("migrate")
+    install = tmp_path / "Testco Statements"
+    write(install, {"documents_dir": "", "owner": ""}, "config.example.json")
+    assert "documents_dir" not in migrate.settings_allowed(install)
+    assert migrate.settings_to_apply(install, {}, {"documents_dir": str(tmp_path / "x")}) == {}
+
+
+def test_a_second_person_starts_with_documents_in_their_own_folder(tmp_path):
+    add_account = _tool("add_account")
+    install = tmp_path / "Testco Statements"
+    write(install, {"output_dir": ".", "documents_dir": str(tmp_path / "First's Documents"),
+                    "owner": "First"})
+    made = add_account.make_config(install, "spouse")
+    cfg = json.loads(made.read_text(encoding="utf-8"))
+    assert "documents_dir" not in cfg
+    assert os.path.normpath(cfg["output_dir"]) == os.path.normpath("../Testco Statements - spouse")

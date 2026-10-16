@@ -1844,6 +1844,79 @@ function renderSettings() {
   $('g-sampleleave').hidden = !inSample();
   const theme = store.get('theme') || 'system';
   for (const el of document.querySelectorAll('input[name=theme]')) el.checked = el.value === theme;
+  openDocuments();
+}
+// The documents folder of one provider's person (#102). Saving writes it into
+// that person's config and moves nothing. Documents saved before stay where
+// they are until Move, which is the app's own Rename, offered only once a
+// preview of the same person has finished cleanly.
+let DC_PREVIEWED = false;
+function dcPick() {
+  const [app, account] = ($('dcpick').value || '').split('\n');
+  return app ? {app, account: account || 'primary'} : null;
+}
+function openDocuments() {
+  $('g-docscard').hidden = inSample() || !Object.keys(META.apps || {}).length;
+  if ($('g-docscard').hidden) return;
+  const sel = $('dcpick'), was = sel.value;
+  const opts = [];
+  for (const [app, m] of Object.entries(META.apps)) {
+    for (const acc of (m.accounts && m.accounts.length ? m.accounts : ['primary'])) {
+      const v = app + '\n' + acc;
+      opts.push('<option value="' + esc(v) + '"' + (v === was ? ' selected' : '') + '>' +
+        esc(app + (acc === 'primary' ? '' : ', ' + acc)) + '</option>');
+    }
+  }
+  sel.innerHTML = opts.join('');
+  $('dcinput').placeholder = SERVER ? '/data/Documents' : 'D:\\Documents\\Statements';
+  dcLoad();
+}
+async function dcLoad() {
+  const p = dcPick();
+  if (!p) return;
+  DC_PREVIEWED = false;
+  $('dcmsg').textContent = ''; $('dcstate').textContent = '';
+  $('dclog').hidden = true; $('dcmovebtn').disabled = true;
+  let d;
+  try { d = await (await fetch('/api/documents?' + new URLSearchParams(p))).json(); }
+  catch (e) { return; }
+  if (!d || d.detail) { $('dcnow').textContent = (d && d.detail) || ''; return; }
+  $('dcnow').textContent = d.documents_dir ? 'Documents go to ' + d.documents_dir + '. Records stay in ' + d.output_dir + '.'
+    : 'Documents and records both go to ' + d.output_dir + '.';
+  $('dcinput').value = d.documents_dir || '';
+  $('dcleft').hidden = !d.left;
+  $('dclefttext').textContent = d.left ? many(d.left, 'document') + (d.left === 1 ? ' is' : ' are') +
+    ' still in ' + d.output_dir + ', saved before. They are found there as they are. Move them to ' +
+    d.documents_dir + ' with a preview first.' : '';
+}
+async function dcSave(clear) {
+  const p = dcPick();
+  if (!p) return;
+  const folder = clear ? '' : $('dcinput').value.trim();
+  if (!clear && !folder) { $('dcmsg').textContent = 'Paste the folder path first, or use the provider\u2019s own folder.'; return; }
+  let d;
+  try { d = await postJSON('/api/documents', Object.assign({folder}, p)); }
+  catch (e) { $('dcmsg').textContent = e.message; return; }
+  await dcLoad();
+  $('dcmsg').textContent = d.written ? 'Saved. New downloads go there.' : 'Nothing to change.';
+}
+function dcMove(apply) {
+  const p = dcPick();
+  if (!p || (apply && !DC_PREVIEWED)) return;
+  const r = rowFor(p.app, p.account) || {app: p.app, account: p.account, provider: p.app, kind: ''};
+  $('dcprevbtn').disabled = true; $('dcmovebtn').disabled = true;
+  $('dcstate').textContent = apply ? 'Moving\u2026' : 'Previewing\u2026';
+  const done = code => {
+    $('dcprevbtn').disabled = false;
+    if (code !== undefined && code !== '0') { $('dcstate').textContent = 'It did not finish. The output says why.'; return; }
+    if (apply) { $('dcstate').textContent = 'Moved. The list above names each file.'; DC_PREVIEWED = false; dcLoad(); return; }
+    DC_PREVIEWED = true; $('dcmovebtn').disabled = false;
+    $('dcstate').textContent = 'Preview done. Read it above, then move.';
+  };
+  if (!startRun(r, apply ? 'move_documents_apply' : 'move_documents', {stay: true, sink: 'dclog', onDone: done})) {
+    $('dcstate').textContent = 'Wait for the run going now to finish first.';
+    $('dcprevbtn').disabled = false;
+  }
 }
 async function saveRoot() {
   const root = $('rootinput').value.trim();
@@ -1960,6 +2033,11 @@ const DO = {
   // which is what makes pressing it a decision rather than a guess.
   'nm-apply': () => nmRename(true),
   'nm-notnow': () => nmOffer(null),
+  'dc-save': () => dcSave(false),
+  'dc-clear': () => dcSave(true),
+  'dc-preview': () => dcMove(false),
+  // Enabled only once a preview of the same person finished cleanly.
+  'dc-move': () => dcMove(true),
 };
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-do]');
@@ -1977,6 +2055,7 @@ document.addEventListener('change', e => {
   } else if (t.name === 'rsby') rsBy();
   else if (t.id === 'rs-year' || t.id === 'rs-start' || t.id === 'rs-end') rsLabel();
   else if (t.name === 'theme') { store.set('theme', t.value); applyTheme(); }
+  else if (t.id === 'dcpick') dcLoad();
   else if (t.id === 'hxfile') planHistory();
   else if (t.id === 'nmapp') loadNaming();
   else if (t.name === 'nmscope') { if (NM) { $('nmpattern').value = (nmScopeValue() === 'own' ? NM.own : '') || NM.shared || NM.default; nmFromText(); } }

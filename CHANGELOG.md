@@ -73,6 +73,26 @@ All notable changes to PaperPull are recorded here. Versioning follows
   each receipt the same way. Before, a `/` was dropped from the name
   without a word, so `{provider}/{date}` ran the two together. A pattern
   with no `/` names files exactly as before.
+- **A documents folder for each person (#102).** Settings has a Documents
+  folder for each provider and person, written into that person's config
+  as `documents_dir`, a copy of the config kept first. Statements, Tax
+  Documents, Receipts and the other folders of each kind go there, with
+  any folders a naming pattern adds, so a folder Paperless-ngx watches can
+  get each person's documents. The records, Manual Review, Logs,
+  Diagnostics and Backups stay in the provider's own folder, so the
+  documents folder only ever gets documents that passed their checks.
+  Saving moves nothing, and documents saved before are still found where
+  they are by Verify, Rename, Review names and the check that never
+  downloads a document twice. The page says how many are still in the
+  provider's folder and offers Preview move and Move, which moves each one
+  under the name it has, with its records following it, and puts every
+  file back if a record cannot be written. A browser profile, a folder
+  around one, a folder holding a provider's own folder and a folder inside
+  another person's folder are refused, and on PaperPull Server so is a
+  folder outside the data folder, a link out of it included, both in the
+  panel and when a run starts. A second person added later starts with
+  documents in their own folder. With no documents folder set, every file
+  goes where it always did.
 
 ### Fixed
 - **Wells Fargo no longer signs you out looking for your statements (#27).**

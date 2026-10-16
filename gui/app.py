@@ -255,11 +255,20 @@ ACTIONS = {
     # with one button would show a preview and leave nowhere to go.
     "rename": {"label": "Rename preview", "flags": ["--rename"]},
     "rename_apply": {"label": "Apply renames", "flags": ["--rename", "--apply"]},
+    # Moving the documents an account saved before it had a documents folder
+    # into that folder (#102). The app's own Rename does it, told to by the
+    # environment (core renaming.MOVE_DOCUMENTS_ENV), so it keeps every rule
+    # a rename keeps and every app moves alike. A preview first, as above.
+    "move_documents": {"label": "Preview move", "flags": ["--rename"],
+                       "env": {"PAPERPULL_MOVE_DOCUMENTS": "1"}},
+    "move_documents_apply": {"label": "Move documents", "flags": ["--rename", "--apply"],
+                             "env": {"PAPERPULL_MOVE_DOCUMENTS": "1"}},
 }
 # The actions for when something is off, kept behind a "more" link so the
 # main panel stays the four a normal day needs. Verify re-checks saved PDFs,
 # Diagnose surveys the page. Both are harmless and both are rarely wanted.
-MORE_ACTIONS = ("verify", "diagnose", "record", "rename", "rename_apply")
+MORE_ACTIONS = ("verify", "diagnose", "record", "rename", "rename_apply",
+                "move_documents", "move_documents_apply")
 # An app's own script, never a hidden file. A Mac writing to a network
 # drive or a disk it does not format itself leaves "._ally_docs.py" beside
 # ally_docs.py, a few bytes of its own about the file, and that sorts first,
@@ -3335,6 +3344,10 @@ def _start_run(app: str, account: str, action: str, scope_flags, redownload=Fals
         # things that keep code on the image side and data on the /data
         # side. On the desktop it only carries the version through.
         env = _run_env(meta)
+        # What an action tells the app beyond its flags, the Move's mark
+        # (ACTIONS). Review Names carries its own below.
+        if review is None:
+            env.update(ACTIONS.get(action, {}).get("env", {}))
         # When the run began, so that only a list of new files this run
         # wrote is handed to the server's plug-ins afterwards.
         started = time.time()
@@ -3588,12 +3601,13 @@ def _naming_records(d: Path) -> list:
     return [r for r in (data or []) if isinstance(r, dict)]
 
 
-def _named_where(record: dict, out: Optional[Path]) -> str:
+def _named_where(record: dict, out: Optional[Path], documents: str = "") -> str:
     """A saved file as the preview shows it, its name, and the folders a
     naming pattern filed it in before it (#101), "Chase/2026/2026-01-31
     Chase Statement.pdf", inside the folder its kind is filed in. Read
     from the record's own path without touching the disk, and the name
-    alone for a path that is not in a folder of the output folder."""
+    alone for a path that is in a folder of neither the output folder nor
+    the account's documents folder (#102)."""
     name = str(record.get("pdf_filename") or "")
     raw = record.get("pdf_path")
     if out is None or not isinstance(raw, str) or not raw.strip():
@@ -3601,13 +3615,15 @@ def _named_where(record: dict, out: Optional[Path]) -> str:
     path = Path(raw.strip())
     if not path.is_absolute():
         path = out / path
-    try:
-        parts = path.relative_to(out).parts
-    except ValueError:
-        return name
-    if len(parts) < 3 or parts[-1] != name or ".." in parts:
-        return name
-    return "/".join(parts[1:])
+    for root in [out] + ([Path(documents)] if documents else []):
+        try:
+            parts = path.relative_to(root).parts
+        except ValueError:
+            continue
+        if len(parts) < 3 or parts[-1] != name or ".." in parts:
+            return name
+        return "/".join(parts[1:])
+    return name
 
 
 def _newest_saved(records, n=3):
@@ -3624,9 +3640,11 @@ def _naming_app(name: str) -> Path:
     return Path(apps[name]["dir"])
 
 
-def _write_config(cfg_path: Path, key: str, value: str, stamp: str) -> bool:
+def _write_config(cfg_path: Path, key: str, value: str, stamp: str,
+                  why: str = "naming") -> bool:
     """Set or clear one key, backed up first and written in one step, so a
-    crash part way leaves the old file whole."""
+    crash part way leaves the old file whole. The copy goes in
+    Backups/<why>-<stamp>."""
     if not server_mode.own_file(cfg_path):
         return False
     current = _read_json(cfg_path)
@@ -3639,7 +3657,7 @@ def _write_config(cfg_path: Path, key: str, value: str, stamp: str) -> bool:
     else:
         current.pop(key, None)
     try:
-        bak = cfg_path.parent / "Backups" / ("naming-" + stamp) / cfg_path.name
+        bak = cfg_path.parent / "Backups" / ("%s-%s" % (why, stamp)) / cfg_path.name
         _make_folder(bak.parent)
         _copy_file(cfg_path, bak)
         _replace_text(cfg_path, json.dumps(current, indent=2) + "\n")
@@ -3690,7 +3708,8 @@ async def api_naming_preview(request: Request):
     for r in _newest_saved(_naming_records(d)):
         # With the folders a pattern filed it in, as the new name shows the
         # folders it would be filed in.
-        current = _named_where(r, out)
+        current = _named_where(r, out, cfg.get(DOCUMENTS_KEY) if isinstance(
+            cfg.get(DOCUMENTS_KEY), str) else "")
         # The default names no folder, so a file a pattern put in folders
         # goes back to the folder of its kind, under the name it has.
         new = current if pattern else str(r.get("pdf_filename") or "")
@@ -3754,6 +3773,178 @@ async def api_naming_save(request: Request):
             changed.append(name)
     return {"written": written, "installs": len(targets), "key": key,
             "changed": changed}
+
+
+# -- the documents folder (#102) ----------------------------------------------
+#
+# Each account can send the folders its documents are routed to, Statements,
+# Tax Documents, Receipts and the rest, to a folder of its own, one a program
+# such as Paperless may watch. Its records, Manual Review, Logs, Diagnostics
+# and Backups stay in its own folder, so nothing half checked reaches a
+# watched folder (core storage.Paths). The page writes documents_dir into
+# that account's config, a copy of the config kept first, and setting it
+# moves nothing. Documents saved before stay where they are, still found,
+# until the person moves them, which the app's own Rename does (ACTIONS).
+
+DOCUMENTS_KEY = "documents_dir"
+# The folders that stay in an account's own folder whatever its documents
+# folder says, as core storage keeps them (_KEPT_WITH_RECORDS).
+KEPT_FOLDERS = ("Manual Review", "Logs", "Diagnostics", "Backups")
+
+
+def _account_config(meta: dict, account: str) -> Path:
+    return Path(meta["dir"]) / ("config.json" if account == "primary"
+                                else "config.%s.json" % account)
+
+
+def _documents_of(meta: dict, account: str) -> str:
+    """The documents folder an account's config names, or ""."""
+    value = (_read_json(_account_config(meta, account)) or {}).get(DOCUMENTS_KEY)
+    return value if isinstance(value, str) else ""
+
+
+def _within(path, folder) -> bool:
+    """Whether path is folder or inside it, where the links on the way to
+    each lead."""
+    try:
+        where, home = Path(path).resolve(), Path(folder).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return where == home or home in where.parents
+
+
+def _profiles_known(apps: dict) -> list:
+    """Every browser profile the panel can name, each account's profile_dir
+    and, on PaperPull Server, the profiles volume they are all kept on."""
+    out = []
+    if server_mode.enabled():
+        out.append(Path(os.environ.get("PAPERPULL_PROFILES") or "/profiles"))
+    for meta in apps.values():
+        install = Path(meta["dir"])
+        for account in meta["accounts"]:
+            profile = (_read_json(_account_config(meta, account)) or {}).get("profile_dir")
+            if isinstance(profile, str) and profile.strip():
+                path = Path(profile.strip())
+                out.append(path if path.is_absolute() else install / path)
+    return out
+
+
+def _documents_problem(apps: dict, app_name: str, account: str, folder: str):
+    """Why a folder cannot be an account's documents folder, or None. It has
+    to be a full path, never a browser profile or inside or around one,
+    never a folder holding a provider's own folder, and never inside the
+    folder another account keeps its records in. On PaperPull Server it has
+    to be inside the data folder, where its links lead."""
+    if not Path(folder).is_absolute():
+        return "Give the folder's full path, starting with a drive letter or a /."
+    target = Path(os.path.normpath(folder))
+    if server_mode.enabled() and not server_mode.inside_data(target):
+        return ("On PaperPull Server documents are kept inside the data folder, %s. "
+                "Choose a folder in it." % server_mode.data_root())
+    for profile in _profiles_known(apps):
+        if _within(target, profile) or _within(profile, target):
+            return ("That folder is a browser profile, is inside one or holds one, and "
+                    "documents are never kept with a signed-in browser. Choose a folder "
+                    "of their own.")
+    for name, meta in apps.items():
+        if _within(meta["dir"], target):
+            return ("That folder holds %s's own folder, with its settings and records. "
+                    "Choose a folder of their own." % name)
+        for other in meta["accounts"]:
+            if (name, other) == (app_name, account):
+                continue
+            try:
+                root = _account_root(meta, other)
+            except ValueError:
+                continue
+            if _within(target, root):
+                who = name if other == "primary" else "%s, %s" % (name, other)
+                return ("That folder is inside the folder %s keeps its records in. "
+                        "Choose a folder of its own." % who)
+    return None
+
+
+def _documents_left(meta: dict, account: str) -> int:
+    """How many documents an account's records name in its own folder, in a
+    folder documents are routed to, and so not yet in its documents folder.
+    Read from its progress.json, each file counted once and only while it
+    is there."""
+    try:
+        root = _account_root(meta, account)
+        home = root.resolve()
+    except (ValueError, OSError, RuntimeError):
+        return 0
+    data = _read_json(root / "progress.json")
+    seen = set()
+    for rec in data.values() if isinstance(data, dict) else ():
+        raw = rec.get("pdf_path") if isinstance(rec, dict) else None
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        path = Path(raw.strip())
+        path = path if path.is_absolute() else root / path
+        try:
+            inside = path.resolve().relative_to(home).parts
+        except (ValueError, OSError, RuntimeError):
+            continue
+        if len(inside) < 2 or inside[0] in KEPT_FOLDERS or not path.is_file():
+            continue
+        seen.add(os.path.normcase(str(path.resolve())))
+    return len(seen)
+
+
+def _documents_account(app_name: str, account: str):
+    apps = discover_apps()
+    meta = apps.get(app_name)
+    if meta is None or account not in meta["accounts"]:
+        raise HTTPException(404, "unknown app or account")
+    try:
+        root = _account_root(meta, account)
+    except ValueError:
+        raise HTTPException(404, "that account's config names no folder PaperPull can read")
+    return apps, meta, root
+
+
+@app.get("/api/documents", dependencies=[Depends(_same_origin_only)])
+def api_documents(app: str, account: str = "primary"):
+    _apps, meta, root = _documents_account(app, account)
+    folder = _documents_of(meta, account)
+    return {"documents_dir": folder, "output_dir": str(root),
+            "left": _documents_left(meta, account) if folder else 0,
+            "kept": list(KEPT_FOLDERS)}
+
+
+@app.post("/api/documents", dependencies=[Depends(_same_origin_only), Depends(_not_in_sample)])
+async def api_documents_save(request: Request):
+    """Set or clear one account's documents folder, in its own config, a
+    copy kept in Backups first. A folder that is the account's own folder
+    clears it, since documents go there already. Nothing is moved."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "expected a JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected a JSON object")
+    folder = body.get("folder")
+    if not isinstance(folder, str) or len(folder) > 1000:
+        raise HTTPException(400, "folder is the folder's path as text")
+    folder = folder.strip()
+    app_name, account = str(body.get("app") or ""), str(body.get("account") or "primary")
+    apps, meta, root = _documents_account(app_name, account)
+    if folder and Path(folder).is_absolute() and _within(folder, root) and _within(root, folder):
+        # The account's own folder, where its documents go already.
+        folder = ""
+    if folder:
+        problem = _documents_problem(apps, app_name, account, folder)
+        if problem:
+            raise HTTPException(400, problem)
+        folder = os.path.normpath(folder)
+    cfg_path = _account_config(meta, account)
+    if not cfg_path.is_file():
+        raise HTTPException(404, "that account has no settings yet")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    written = _write_config(cfg_path, DOCUMENTS_KEY, folder, stamp, why="documents")
+    return {"written": written, "documents_dir": _documents_of(meta, account),
+            "left": _documents_left(meta, account) if folder else 0}
 
 
 # -- the terms of use ---------------------------------------------------------

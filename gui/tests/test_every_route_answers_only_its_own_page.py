@@ -292,6 +292,12 @@ ROUTES = {
     ("POST", "/api/naming/save"): dict(body={"app": SHOP, "scope": "own",
                                              "pattern": "{date} {provider}"},
                                        desktop="changes", server="changes"),
+    ("GET", "/api/documents"): dict(ask="/api/documents?app=Shop%20Receipts",
+                                    desktop="reads", server="reads"),
+    # A folder inside the data folder, which the server takes too.
+    ("POST", "/api/documents"): dict(body=lambda box: {"app": SHOP, "account": "primary",
+                                                       "folder": str(box.root / "Documents")},
+                                     desktop="changes", server="changes"),
     # Accepting the terms writes the answer to the settings file.
     ("POST", "/api/terms"): dict(body={"accepted": app_module.TERMS_VERSION},
                                  desktop="changes", server="changes"),

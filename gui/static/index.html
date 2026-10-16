@@ -267,6 +267,27 @@ __CSS__
           <span class="hint" id="rootmsg" role="status"></span></div>
       </div>
     </section>
+    <section class="card pad stack" aria-labelledby="g-docs" id="g-docscard">
+      <h2 id="g-docs">Documents folder</h2>
+      <p class="hint">Where one person's statements, tax documents and receipts go, in folders of their kind,
+        such as a folder Paperless watches. The provider's records, Manual Review and logs stay in its own
+        folder, so that folder only ever gets documents that passed their checks. Saving moves nothing.</p>
+      <label class="field" for="dcpick">Provider and person<select id="dcpick"></select></label>
+      <p class="mono small" id="dcnow" style="word-break:break-all"></p>
+      <label class="field" for="dcinput">A folder of their own, as its full path</label>
+      <input id="dcinput" type="text" spellcheck="false" autocomplete="off">
+      <div class="row-actions"><button class="btn btn-s" type="button" data-do="dc-save">Save</button>
+        <button class="btn btn-ghost" type="button" data-do="dc-clear">Use the provider's own folder</button>
+        <span class="hint" id="dcmsg" role="status"></span></div>
+      <div id="dcleft" class="stack" hidden>
+        <p id="dclefttext"></p>
+        <div class="row-actions">
+          <button class="btn btn-s" type="button" id="dcprevbtn" data-do="dc-preview">Preview move</button>
+          <button class="btn btn-p" type="button" id="dcmovebtn" data-do="dc-move" disabled>Move</button>
+          <span class="hint" id="dcstate" role="status"></span></div>
+        <pre class="log short" id="dclog" hidden></pre>
+      </div>
+    </section>
     <section class="card pad stack" aria-labelledby="hxhead" id="stmove">
       <div id="movebox" class="stack">
         <h2 id="hxhead">Move to another computer</h2>

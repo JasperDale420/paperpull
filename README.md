@@ -523,6 +523,30 @@ rename, and nothing is downloaded again. Renaming moves files into the
 folders a pattern names, and back out again if you change your mind. The
 pattern language is in [docs/file-naming.md](docs/file-naming.md).
 
+## A documents folder for each person
+
+Each person on each provider can send their documents to a folder of their
+own, such as one Paperless-ngx watches or one a sync program keeps. In
+Settings, under **Documents folder**, pick the provider and the person and
+give the folder's full path. Statements, Tax Documents, Receipts and the
+other folders of each kind go there, with any folders your naming pattern
+adds. The provider's records, its Manual Review, Logs, Diagnostics and
+Backups stay in its own folder, so the documents folder only ever gets
+documents that passed their checks.
+
+Saving the setting moves nothing. Documents saved before stay where they
+are, and PaperPull still finds them there, so nothing is downloaded again.
+The page says how many are still in the provider's folder and offers
+**Preview move** and then **Move**, which moves each one under the name it
+has, with its records following it, and puts everything back if a record
+cannot be written. A browser profile, a folder inside or around one, a
+folder holding a provider's own folder and a folder inside another
+person's folder are refused. By hand, `"documents_dir"` in an account's
+config.json sets the same thing, as a full path, and from a terminal the
+move is a Rename run with `PAPERPULL_MOVE_DOCUMENTS=1` in its environment.
+On PaperPull Server the folder has to be inside the data folder, see
+[SERVER.md](SERVER.md#paperless).
+
 ## Moving to another computer
 
 The record of what each provider already downloaded is what keeps

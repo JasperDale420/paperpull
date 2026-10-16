@@ -34,12 +34,34 @@ _SPEC = None
 # own records and never a document. Manual Review, the fourth folder every
 # app has, is where a document is put aside.
 _RECORD_FOLDERS = {folder.attr for folder in INFRASTRUCTURE_FOLDERS} - {"manual_review"}
+# The folders that stay in the output folder, beside the run's records,
+# whatever documents_dir says (#102). Manual Review is one of them, since a
+# file put aside there failed its check and must never reach a folder
+# another program watches.
+_KEPT_WITH_RECORDS = {folder.attr for folder in INFRASTRUCTURE_FOLDERS}
+
+# The documents folder load_config read for each output folder, by
+# _folder_key of that folder (#102). Paths reads it, so every app gets it
+# from the Paths it builds from its config's output_dir.
+_DOCUMENTS = {}
+
+
+def _folder_key(path) -> str:
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def documents_dir_for(output_dir) -> str:
+    """The documents folder load_config read for this output folder, or ""
+    when documents go to the output folder itself."""
+    return _DOCUMENTS.get(_folder_key(output_dir), "")
 
 
 def bind(spec) -> None:
     """Attach this process's AppSpec. Called once by the app's storage shim."""
     global _SPEC
     _SPEC = spec
+    # A documents folder belongs to the config load_config reads next.
+    _DOCUMENTS.clear()
     from . import receipt_pdf
     receipt_pdf.bind(spec)
 
@@ -78,6 +100,8 @@ def load_config(path: Optional[Path] = None) -> dict:
     if os.environ.get("PAPERPULL_SERVER") == "1":
         hold_to_the_server(cfg, path)
         refuse_links_out(cfg["output_dir"], path)
+        if cfg.get("documents_dir"):
+            refuse_links_out(cfg["documents_dir"], path)
     cfg.setdefault("output_dir", str(Path.home() / "Downloads" / sp.provider))
     cfg.setdefault("min_pdf_bytes", 3000)
     cfg.setdefault("max_path_length", 240)
@@ -99,7 +123,45 @@ def load_config(path: Optional[Path] = None) -> dict:
     # How files are named (#50). Read here because every app loads its
     # config before it names anything, so no app has to remember to.
     set_filename_patterns(cfg)
+    # Where documents go (#102), read here for the same reason.
+    set_documents_dir(cfg, path)
     return cfg
+
+
+def set_documents_dir(cfg: dict, path) -> str:
+    """Take the documents folder a config names, for the Paths built from
+    its output_dir, and return it, "" for the output folder itself (#102).
+
+    It has to be an absolute path, a folder of its own. One that is not
+    text or not absolute, or that is a browser profile, is inside one or
+    holds one, is reported once and documents go to the output folder as
+    they always did, since a typo in a setting must never send documents
+    somewhere nobody meant, and must never be the reason a run stops. On
+    PaperPull Server hold_to_the_server has already held it inside the data
+    folder. The config in memory is given the folder as it is used."""
+    raw = cfg.get("documents_dir")
+    if raw is None or raw == "":
+        _DOCUMENTS[_folder_key(cfg["output_dir"])] = ""
+        return ""
+    name = Path(path).name if path else "config.json"
+    why = ""
+    if not isinstance(raw, str) or not raw.strip():
+        why = "it is not a folder's path"
+    elif not Path(raw.strip()).is_absolute():
+        why = "it is not a full path, starting with a drive or a /"
+    else:
+        docs = os.path.normpath(raw.strip())
+        profile = str(cfg.get("profile_dir") or "")
+        if profile and (_inside(docs, profile) or _inside(profile, docs)):
+            why = ("it is the browser profile, inside it or around it, and documents are "
+                   "never kept with a signed-in profile")
+    if why:
+        print("The documents folder in %s is not used, since %s, so documents go to the "
+              "output folder as before." % (name, why), flush=True)
+        docs = ""
+    cfg["documents_dir"] = docs
+    _DOCUMENTS[_folder_key(cfg["output_dir"])] = docs
+    return docs
 
 
 # -- PaperPull Server ----------------------------------------------------------
@@ -190,18 +252,40 @@ def hold_to_the_server(cfg: dict, path: Path) -> None:
                          "saving anything." % name)
     data = os.path.realpath(os.environ.get("APPS_ROOT") or "/data")
     where = os.path.realpath(out)
-    try:
-        inside = os.path.commonpath([os.path.normcase(where), os.path.normcase(data)]) \
-            == os.path.normcase(data)
-    except ValueError:
-        inside = False
-    if not inside:
+    if not _in_data(where, data):
         raise SystemExit(
             "%s sends this run's documents to %s, which is outside %s, the data folder, "
             "once its links are followed. On PaperPull Server a run's folder has to be "
             "inside it, so this run stopped before saving anything. Set output_dir to a "
             "folder inside %s, such as \".\" for this provider's own folder."
             % (name, where, data, data))
+
+    # The documents folder (#102) is held the same way, never anywhere a
+    # config in the shared folder says.
+    docs = cfg.get("documents_dir")
+    if docs is None or docs == "":
+        return
+    if not (isinstance(docs, str) and Path(docs).is_absolute()):
+        raise SystemExit("documents_dir in %s is not a full path, so this run stopped before "
+                         "saving anything. Set it to a folder inside %s, or take it out."
+                         % (name, data))
+    where = os.path.realpath(docs)
+    if not _in_data(where, data):
+        raise SystemExit(
+            "%s sends this run's documents to %s, which is outside %s, the data folder, "
+            "once its links are followed. On PaperPull Server documents are kept only "
+            "inside it, so this run stopped before saving anything. Set documents_dir to a "
+            "folder inside %s, or take it out." % (name, where, data, data))
+
+
+def _in_data(where: str, data: str) -> bool:
+    """Whether a folder, its links already followed, is the data folder or
+    inside it."""
+    try:
+        return os.path.commonpath([os.path.normcase(where), os.path.normcase(data)]) \
+            == os.path.normcase(data)
+    except ValueError:
+        return False
 
 
 def server_profile_dir(config_path) -> str:
@@ -338,13 +422,28 @@ class Paths:
 
     Folders and routing come from the AppSpec, so a provider declares *what*
     it files and where, and never reimplements *how*.
+
+    The folders a document is routed to, Statements, Tax Documents, Receipts
+    and the rest, go in the account's documents folder when its config sets
+    documents_dir (#102), a folder somebody may have another program watch.
+    Everything else stays in the output folder, Manual Review, Logs,
+    Diagnostics and Backups, the index and the order history, progress.json
+    and discovery.json, so nothing half checked and no record ever reaches
+    a watched folder. With no documents_dir every path is what it always
+    was. The documents folder is the one load_config read for this output
+    folder (documents_dir_for), so every app gets it from the Paths it has
+    always built, or `documents_dir` says it.
     """
 
-    def __init__(self, output_dir, app_spec=None):
+    def __init__(self, output_dir, app_spec=None, documents_dir=None):
         self._spec = app_spec or spec()
         self.root = Path(output_dir)
+        if documents_dir is None:
+            documents_dir = documents_dir_for(output_dir)
+        self.documents = Path(documents_dir) if documents_dir else self.root
         for folder in self._spec.folders:
-            setattr(self, folder.attr, self.root / folder.name)
+            home = self.root if folder.attr in _KEPT_WITH_RECORDS else self.documents
+            setattr(self, folder.attr, home / folder.name)
         for csv_spec in self._spec.csv_files:
             name = csv_spec.filename.format(provider=self._spec.provider)
             setattr(self, csv_spec.attr, self.root / name)
@@ -422,9 +521,25 @@ class Paths:
         declares but Logs, Diagnostics and Backups, which hold a run's own
         records. That is the ones routing reaches, the ones an app files in
         by name, as Anthem does its ID cards and letters, and Manual Review,
-        where a file that failed its check is put aside."""
-        return [getattr(self, folder.attr) for folder in self._spec.folders
-                if folder.attr not in _RECORD_FOLDERS]
+        where a file that failed its check is put aside.
+
+        With a documents folder set, the folders in the output folder where
+        documents went before are filing folders too (earlier_folders), so
+        Rename, Review Names and every check of a file the app holds still
+        find a file saved there. Setting the folder moves nothing."""
+        current = [getattr(self, folder.attr) for folder in self._spec.folders
+                   if folder.attr not in _RECORD_FOLDERS]
+        return current + list(self.earlier_folders())
+
+    def earlier_folders(self) -> Dict[Path, Path]:
+        """Each folder a document is routed to as the output folder kept it
+        before documents_dir was set, with where that folder is now, and
+        nothing when documents go to the output folder. Moving documents
+        saved before into the documents folder reads it (renaming.run_for)."""
+        if _folder_key(self.documents) == _folder_key(self.root):
+            return {}
+        return {self.root / folder.name: getattr(self, folder.attr)
+                for folder in self._spec.folders if folder.attr not in _KEPT_WITH_RECORDS}
 
 
 # ---------------------------------------------------------------------------

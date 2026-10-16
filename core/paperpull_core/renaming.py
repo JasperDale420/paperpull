@@ -305,7 +305,8 @@ def plan(rows: Iterable[dict], build_name: Callable[[dict], str], *,
          path_key: str = "PDF Full Path",
          name_key: str = "PDF Filename",
          max_path_length: int = 240,
-         flat: Iterable[Path] = ()) -> List[Change]:
+         flat: Iterable[Path] = (),
+         moved_to: Optional[Callable[[Path], Optional[Path]]] = None) -> List[Change]:
     """What every file would be called, without touching anything.
 
     `build_name` is handed a ledger row and returns the name that row
@@ -336,6 +337,11 @@ def plan(rows: Iterable[dict], build_name: Callable[[dict], str], *,
     folder whose name now carries none goes back to that folder itself
     (#101). A file in one of `flat`, Manual Review, keeps its folder and
     takes the name alone.
+
+    `moved_to` is handed the folder a file is filed in and returns the
+    folder it is to be filed in instead, or None to keep it there. Moving
+    the documents saved before into an account's documents folder plans
+    so (#102).
     """
     homes = _Homes(folders, flat)
     inside = homes.real
@@ -367,6 +373,8 @@ def plan(rows: Iterable[dict], build_name: Callable[[dict], str], *,
         # The folder the file is filed in, and the folder the name files it
         # in there, a pattern's folders or that folder itself.
         home, whole = homes.placed(old_path, new_name)
+        if moved_to is not None:
+            home = moved_to(home) or home
         # The name cut to fit max_path_length in the file's folder, as a
         # download cuts it. Taken whole, a file whose download had cut its
         # name was offered the whole name back, a path longer than the
@@ -453,23 +461,32 @@ def plan(rows: Iterable[dict], build_name: Callable[[dict], str], *,
     return changes
 
 
-def describe(changes: Iterable[Change], say=print, limit: int = 0) -> None:
+def describe(changes: Iterable[Change], say=print, limit: int = 0,
+             documents: bool = False) -> None:
     """The plan, in the order a person would read it, and how many rows
-    name something the app does not hold, which it leaves alone."""
+    name something the app does not hold, which it leaves alone. With
+    `documents`, the plan of moving documents saved before into the
+    documents folder (#102), each with where it is and where it goes."""
     changes = list(changes)
     moving = [c for c in changes if c.renaming]
     if not moving:
-        say("Every file is already named the way this app names them.")
+        say("Every document is in the documents folder already." if documents
+            else "Every file is already named the way this app names them.")
     else:
-        say("%d file(s) would be renamed." % len(moving))
+        say("%d file(s) would be %s." % (len(moving), "moved" if documents else "renamed"))
         elsewhere = sum(1 for c in moving if c.moves)
-        if elsewhere:
+        if elsewhere and not documents:
             say("%d of them would move to another folder, as the naming pattern's "
                 "folders have it." % elsewhere)
         shown = moving if limit <= 0 else moving[:limit]
         for c in shown:
             # Where a file moves, the folders it leaves and the ones it goes
-            # to, inside the folder it is filed in.
+            # to, inside the folder it is filed in, or the whole of each when
+            # it goes to the documents folder.
+            if documents:
+                say("  %s" % c.old_path)
+                say("    -> %s" % c.new_path)
+                continue
             say("  %s" % (c.shown(c.old_path) if c.moves else c.old_name))
             say("    -> %s" % (c.shown(c.new_path) if c.moves else c.new_name))
         if len(shown) < len(moving):
@@ -847,7 +864,8 @@ def _ring_back(ring: List[int], moves: List[tuple], home: set, stuck: dict) -> N
     stuck[ring[0]] = (where, old) if _put(aside, where) else (aside, old)
 
 
-def _write_ledgers(app, ledgers, result: Result, numbered: dict, say=print) -> None:
+def _write_ledgers(app, ledgers, result: Result, numbered: dict, say=print,
+                   note: str = "renamed") -> None:
     """Point each ledger at the files as they are now called, the index
     first, then the order history, then the run state.
 
@@ -863,7 +881,7 @@ def _write_ledgers(app, ledgers, result: Result, numbered: dict, say=print) -> N
     try:
         for (csv, rows), rows_before in zip(ledgers, before):
             writing = _name_of(csv)
-            if update_rows(rows, result, note="renamed", numbered=numbered):
+            if update_rows(rows, result, note=note, numbered=numbered):
                 csv.rewrite(rows)
                 written.append((csv, rows_before))
         writing = _name_of(app.progress)
@@ -1140,6 +1158,12 @@ def told_apart_by(record) -> str:
     return str(record.get("document_id") or "")[-6:]
 
 
+# Set to 1 by the control panel's Move for the Rename it starts, which then
+# moves the documents an account saved before it had a documents folder
+# into that folder, each under the name it has, and renames nothing (#102).
+# Every app's Rename is this core's, so every app moves them alike.
+MOVE_DOCUMENTS_ENV = "PAPERPULL_MOVE_DOCUMENTS"
+
 # The fields that say which document a file holds, the ones a pattern's
 # {number} is made of. Rename reads them as they were written down when the
 # file was saved (run_for).
@@ -1257,6 +1281,46 @@ def run_for(app, apply_changes: bool = False, say=print,
         home, name = homes.placed(Path((row.get("PDF Full Path") or "").strip()), name)
         return filing_folder(home, name, limit)
 
+    # Moving the documents saved before into the documents folder (#102),
+    # asked for by the panel's Move. Each file keeps its name and the
+    # folders it is in, and goes from the folder of its kind in the output
+    # folder to the same folder in the documents folder, by every rule a
+    # rename keeps.
+    documents = os.environ.get(MOVE_DOCUMENTS_ENV, "").strip() == "1"
+    earlier = {}
+    if documents:
+        for old, new in (getattr(app.paths, "earlier_folders", dict)() or {}).items():
+            try:
+                earlier[Path(old).resolve()] = Path(new)
+            except (OSError, RuntimeError, ValueError):
+                continue
+        if not earlier:
+            say("This account keeps its documents in its output folder, so there are none "
+                "to move. Set a documents folder for it first.")
+            return Result()
+        say("Moving the documents saved before into %s." % app.paths.documents)
+
+    def moved_to(home) -> Optional[Path]:
+        try:
+            return earlier.get(Path(home).resolve())
+        except (OSError, RuntimeError, ValueError):
+            return None
+
+    def kept_name(row):
+        """A row's file under the name it has, with the folders it is in
+        inside the folder of its kind, for a move that changes neither."""
+        raw = (row.get("PDF Full Path") or "").strip()
+        home = homes.home(Path(raw)) if raw else None
+        if home is None:
+            return ""
+        try:
+            inside = Path(raw).resolve().relative_to(Path(home).resolve())
+        except (OSError, RuntimeError, ValueError):
+            return ""
+        return FileName(Path(raw).name, "/".join(inside.parts[:-1]))
+
+    name_for = kept_name if documents else build_name
+
     def distinguisher(row):
         # What the download told this file apart by when its name was
         # taken, so a file it told apart keeps that, and a file wanting a
@@ -1286,14 +1350,15 @@ def run_for(app, apply_changes: bool = False, say=print,
         # Kept only where it fits whole, a count after it included. Cut to
         # fit, it no longer read as that ending, so the next Rename moved the
         # file again, and the one after that moved another into its name.
-        name = build_name(row)
+        name = name_for(row)
         if token and not _fits_whole(filed_in(row, name), name, token, limit):
             return ""
         return token
 
-    changes = plan(primary_rows, build_name, folders=folders, flat=flat,
-                   distinguisher=distinguisher, max_path_length=limit)
-    describe(changes, say=say, limit=0 if apply_changes else 20)
+    changes = plan(primary_rows, name_for, folders=folders, flat=flat,
+                   distinguisher=distinguisher, max_path_length=limit,
+                   moved_to=moved_to if documents else None)
+    describe(changes, say=say, limit=0 if apply_changes else 20, documents=documents)
 
     if not apply_changes:
         if any(c.renaming for c in changes):
@@ -1338,10 +1403,15 @@ def run_for(app, apply_changes: bool = False, say=print,
     # the app names it. Now every file goes back when a write fails, and a
     # folder made for one is taken away with it.
     try:
-        _write_ledgers(app, ledgers, result, _numbered(changes, result), say=say)
+        _write_ledgers(app, ledgers, result, _numbered(changes, result), say=say,
+                       note="moved to the documents folder" if documents else "renamed")
     finally:
         tidy(result, folders)
-    if result.renamed:
+    if result.renamed and documents:
+        say("")
+        say("Moved %d file(s) to %s. The index and the run state now point at them."
+            % (result.renamed, app.paths.documents))
+    elif result.renamed:
         say("")
         say("Renamed %d file(s). The index and the run state now point at them."
             % result.renamed)
