@@ -32,6 +32,25 @@ All notable changes to PaperPull are recorded here. Versioning follows
   its title's month, or a date printed within a few days of the list's date
   in that month, since the bank's PDFs date themselves a day or three after
   the list does.
+- **Coinbase One Card statements.** The Coinbase app now also saves your
+  Coinbase One Card statements, as `<closing date> Coinbase One Card
+  Statement.pdf` in the Statements folder. It opens the Statements page's
+  Credit Card tab, reads the list of statements the page itself asks
+  Coinbase for, and needs the rows the page shows to match that list
+  exactly. For each statement it presses that row's own PDF button once,
+  takes the address the page was handed for that statement only when it is
+  on Coinbase's card statement host and carries that statement's closing
+  date, and keeps the file only when it is a PDF that says Coinbase One
+  Card and prints that closing date. A popup, a download, the tab going
+  anywhere else, or an answer naming another statement or another date
+  stops the run. The statement's id, the card account's id, the signed
+  address and the amounts are never logged or kept. A card list that
+  cannot be read whole, or that names more than one card account, leaves
+  only the card statements, for the next run. Your monthly account
+  statements and tax documents are still taken exactly as before, and the
+  run then ends as one that did not finish. Run live on one account on
+  2026-10-15, where it saved all 13 card statements beside the account
+  statements and tax documents.
 
 ### Fixed
 - **Wells Fargo no longer signs you out looking for your statements (#27).**
@@ -57,6 +76,19 @@ All notable changes to PaperPull are recorded here. Versioning follows
   together. The settings page now says why, and a saved pattern that holds
   one leaves files their usual names with a warning, as any pattern that
   cannot be used does (#101).
+- **SDG&E lists your bills with no My Energy Center tab open, and dates
+  each bill by its Statement Date alone.** With no tab of yours on My
+  Energy Center, Discover, Pilot and Run All stopped at once, saying the
+  browser tab had left My Energy Center, since the new tab the app opens
+  for itself was checked before Billing History was opened in it. Billing
+  History now opens in that tab first, and a tab of another site is still
+  never read or loaded. A bill's date was the first date in its row, so a
+  blank Statement Date would have dated the bill by the Due Date beside it.
+  The date is now read only from the column headed Statement Date, and a
+  blank one stops the list rather than taking another column's date. No
+  such row has been seen on the real page. Diagnose now writes the bill
+  table's header, so a list that stops for want of that column can be
+  repaired.
 
 ### Security
 - **PaperPull Server's sign-in cookie stays off plain HTTP behind an HTTPS
@@ -342,39 +374,6 @@ Robinhood.
   connections, gives a browser still starting a few seconds to answer, and
   otherwise opens nothing and says how to find what holds the port and how
   to end it.
-- **Coinbase One Card statements.** The Coinbase app now also saves your
-  Coinbase One Card statements, as `<closing date> Coinbase One Card
-  Statement.pdf` in the Statements folder. It opens the Statements page's
-  Credit Card tab, reads the list of statements the page itself asks
-  Coinbase for, and needs the rows the page shows to match that list
-  exactly. For each statement it presses that row's own PDF button once,
-  takes the address the page was handed for that statement only when it is
-  on Coinbase's card statement host and carries that statement's closing
-  date, and keeps the file only when it is a PDF that says Coinbase One
-  Card and prints that closing date. A popup, a download, the tab going
-  anywhere else, or an answer naming another statement or another date
-  stops the run. The statement's id, the card account's id, the signed
-  address and the amounts are never logged or kept. A card list that
-  cannot be read whole, or that names more than one card account, leaves
-  only the card statements, for the next run. Your monthly account
-  statements and tax documents are still taken exactly as before, and the
-  run then ends as one that did not finish. Run live on one account on
-  2026-10-15, where it saved all 13 card statements beside the account
-  statements and tax documents.
-### Fixed
-- **SDG&E lists your bills with no My Energy Center tab open, and dates
-  each bill by its Statement Date alone.** With no tab of yours on My
-  Energy Center, Discover, Pilot and Run All stopped at once, saying the
-  browser tab had left My Energy Center, since the new tab the app opens
-  for itself was checked before Billing History was opened in it. Billing
-  History now opens in that tab first, and a tab of another site is still
-  never read or loaded. A bill's date was the first date in its row, so a
-  blank Statement Date would have dated the bill by the Due Date beside it.
-  The date is now read only from the column headed Statement Date, and a
-  blank one stops the list rather than taking another column's date. No
-  such row has been seen on the real page. Diagnose now writes the bill
-  table's header, so a list that stops for want of that column can be
-  repaired.
 
 ## [0.52.0] - 2026-10-14
 
