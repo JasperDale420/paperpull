@@ -17,7 +17,7 @@ import shutil
 import tempfile
 import time
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Dict, Iterable, List, Optional
 
 from . import shared_folder
@@ -461,10 +461,150 @@ def sanitize_component(name: str, max_len: int = 120) -> str:
     return name
 
 
+# ---------------------------------------------------------------------------
+# Folders from a naming pattern (#101)
+# ---------------------------------------------------------------------------
+
+# The longest a folder a pattern names may be. A file's own name keeps the
+# room it needs under the path limit, three folders deep included.
+FOLDER_MAX = 60
+
+
+class FileName(str):
+    """A document's file name, and the folders a naming pattern files it in
+    (#101).
+
+    It is the name itself, so a caller that compares it with a saved file's
+    name, prints it or writes it into a record reads the name alone, as it
+    always did. `folder` is the folders the pattern names, one inside the
+    other with a / between them, and "" for none. unique_path and
+    fitted_name file the name there, inside the folder they are handed,
+    which is the folder the document is routed to. Any change a caller
+    makes to the name, a cut or an ending, gives plain text with no folder,
+    and such a file is filed in the folder it was routed to, where every
+    file went before a pattern could name folders."""
+
+    folder = ""
+
+    def __new__(cls, name: str, folder: str = ""):
+        self = super().__new__(cls, name)
+        self.folder = folder
+        return self
+
+
+def folder_of(filename) -> str:
+    """The folders a name is filed in, as FileName.folder gives them, and ""
+    for a name that is plain text."""
+    return filename.folder if isinstance(filename, FileName) else ""
+
+
+def _folder_name(text: str) -> str:
+    """One folder a pattern names, made safe as a file name is, or "" when
+    nothing is left of it, which leaves that folder out. Dots and spaces
+    come off both ends, so ".." is nothing and a masked account such as
+    "...1234" is not a hidden folder on a Mac."""
+    cleaned = re.sub(r"\s+", " ", _INVALID_CHARS.sub("", text or "")).strip(" .")
+    if not cleaned:
+        return ""
+    return sanitize_component(cleaned, max_len=FOLDER_MAX).strip(" .")
+
+
+def file_name_of(parts: List[str]) -> FileName:
+    """A file's name and folders from the text naming.render_path gives,
+    the folders first and the name last, each made safe. A folder that
+    comes to nothing is left out, so a document a folder's fields say
+    nothing about is filed one folder up."""
+    *folders, name = parts or [""]
+    kept = [f for f in (_folder_name(text) for text in folders) if f]
+    return FileName(sanitize_component(name) + ".pdf", "/".join(kept))
+
+
+def _put_aside_in(directory: Path) -> bool:
+    """Whether *directory* is Manual Review, where a document that failed its
+    check is put aside, which stays one folder whatever a pattern names, so
+    everything set aside is found in one place. Known by the name the bound
+    app gives it, which is Manual Review in every app."""
+    name = "Manual Review"
+    if _SPEC is not None:
+        try:
+            name = _SPEC.folder("manual_review").name
+        except KeyError:
+            pass
+    return Path(directory).name == name
+
+
+def _inside(path, folder) -> bool:
+    """Whether path is folder or inside it once the links on the way to
+    each are followed."""
+    try:
+        real = os.path.normcase(os.path.realpath(path))
+        home = os.path.normcase(os.path.realpath(folder))
+        return os.path.commonpath([real, home]) == home
+    except (OSError, ValueError):
+        return False
+
+
+def filing_folder(directory: Path, filename, max_path_length: int = 240) -> Path:
+    """The folder *filename* is filed in, inside *directory*, the folder its
+    document is routed to.
+
+    That is *directory* itself for a name with no folder, for Manual
+    Review, which stays one folder (_put_aside_in), for a name whose
+    folders would leave no room for a name under max_path_length, for one
+    where a file has the name of one of its folders, and for one whose
+    folders lead outside *directory* once the links on the way are
+    followed, a folder somebody made a link to another drive, say. A
+    pattern never puts a file outside the folder it was routed to, and a
+    folder it names never keeps a file from being saved. A download and
+    Rename both ask here, so they agree where a file belongs."""
+    directory = Path(directory)
+    folder = folder_of(filename)
+    if not folder or _put_aside_in(directory):
+        return directory
+    parts = folder.split("/")
+    # Each is made safe already, which is asked again here, since a name is
+    # text anybody can build, and one part that is not stays out of a path.
+    if any(not part or _folder_name(part) != part for part in parts):
+        return directory
+    target = directory.joinpath(*parts)
+    ext = os.path.splitext(filename)[1] or ".pdf"
+    if max_path_length - len(str(target)) - 1 < len(ext) + 8:
+        return directory
+    at = directory
+    for part in parts:
+        at = at / part
+        if os.path.lexists(at) and not at.is_dir():
+            return directory
+    if not _inside(target, directory):
+        return directory
+    return target
+
+
+def _make_folder(folder: Path) -> bool:
+    """Make a folder a pattern names, held inside the data folder first on
+    PaperPull Server as every routed folder is (Paths._ready). False when it
+    cannot be made, a file of its name being in the way, say."""
+    shared_folder.hold(folder)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    return folder.is_dir()
+
+
+def _one_folder(a, b) -> bool:
+    if Path(a) == Path(b):
+        return True
+    try:
+        return os.path.samefile(a, b)
+    except (OSError, ValueError):
+        return False
+
+
 def build_pdf_filename(purchase_date: str, summary: str,
                        document_type: str = "Receipt",
                        part: Optional[tuple] = None, owner=None,
-                       record=None, pattern: Optional[str] = None) -> str:
+                       record=None, pattern: Optional[str] = None) -> "FileName":
     """A document's file name, from the naming pattern (#50).
 
     With no pattern set, the default for the app's kind, which is exactly
@@ -472,7 +612,11 @@ def build_pdf_filename(purchase_date: str, summary: str,
     as it always was. `record` is the app's own record, which is where a
     pattern finds fields beyond the date, the summary and the kind, such as
     an order number or an account. `pattern` is for a preview, and a run
-    leaves it out and uses the one its config chose."""
+    leaves it out and uses the one its config chose.
+
+    The name comes back as a FileName, which is the name and carries the
+    folders a pattern with a / names (#101). Handed on unchanged to
+    unique_path, the file is filed in them."""
     from . import naming
     date = (purchase_date or "0000-00-00").strip()
     summary = title_case(summary or "Purchase")
@@ -493,11 +637,11 @@ def build_pdf_filename(purchase_date: str, summary: str,
         # from the record's category would rename every statement.
         fields["kind"] = document_type or ""
     try:
-        base = naming.render(chosen, fields)
+        parts = naming.render_path(chosen, fields)
     except naming.PatternError:
-        base = naming.render(naming.DEFAULT_RECEIPTS if receipts
-                             else naming.DEFAULT_STATEMENTS, fields)
-    return sanitize_component(base) + ".pdf"
+        parts = [naming.render(naming.DEFAULT_RECEIPTS if receipts
+                               else naming.DEFAULT_STATEMENTS, fields)]
+    return file_name_of(parts)
 
 
 _SMALL_WORDS = {"and", "of", "the", "a", "an", "or", "for", "in", "on", "to"}
@@ -526,10 +670,17 @@ def title_case(text: str) -> str:
 
 
 def unique_path(directory: Path, filename: str, max_path_length: int = 240,
-                distinguisher: str = "", ignoring: str = "",
-                held: Iterable[str] = ()) -> Path:
+                distinguisher: str = "", ignoring="",
+                held: Iterable[str] = (), make: bool = True) -> Path:
     """Return a path in *directory* that does not collide with any existing
     file, case-insensitively. Never returns a path to an existing file.
+
+    *directory* is the folder the document is routed to. A name carrying
+    the folders a naming pattern names (FileName) is filed in them, inside
+    *directory* (filing_folder), its collisions are looked for there, the
+    folders count toward max_path_length, and they are made unless `make`
+    is False, as Rename's preview asks. A folder that cannot be made leaves
+    the file in *directory*.
 
     Two purchases on one day are one name, because a date and a summary are
     all most rows give. The old answer was ' (2)', which says nothing about
@@ -544,25 +695,101 @@ def unique_path(directory: Path, filename: str, max_path_length: int = 240,
 
     `held` are names taken although no file has them yet. Rename passes the
     names its plan has given other files, so a file wanting one is named
-    as a download into a folder already holding that file would name it."""
-    directory = Path(directory)
+    as a download into a folder already holding that file would name it.
+
+    `ignoring` is the file being renamed, as a path, which does not stand
+    in its own way in the folder it is in. Given as a name alone it is a
+    name in *directory*, and it counts only when the file is filed there,
+    since a file of that name in a folder a pattern names is another file."""
+    base = Path(directory)
+    directory = filing_folder(base, filename, max_path_length)
+    if make and directory != base and not _make_folder(directory):
+        directory = base
     existing = {p.name.lower() for p in directory.iterdir()} if directory.exists() else set()
     # A file being renamed does not stand in its own way. Rename asks where a
     # file belongs while it is still there, and without this a file already
     # told apart by its order number was pushed on to " (2)".
-    existing.discard((ignoring or "").lower())
+    if isinstance(ignoring, PurePath):
+        own = ignoring.name if _one_folder(ignoring.parent, directory) else ""
+    else:
+        own = ignoring if directory == base else ""
+    existing.discard((own or "").lower())
     existing.update(name.lower() for name in held)
     return directory / _free_name(directory, filename, max_path_length, existing,
                                   distinguisher)
 
 
+def refile(path: Path, directory: Path, filename, max_path_length: int = 240,
+           distinguisher: str = "") -> Path:
+    """Move a file a run has just saved to the name `filename` gives it, in
+    *directory*, the folder its document is routed to, and in the folders
+    the name carries there (FileName), and return where it is.
+
+    For an app that learns a better name once a file is saved, from what
+    the PDF says. It was done by asking unique_path for a name in the
+    file's own folder, which is one of a pattern's folders when the
+    pattern names some, so the name's folders would have been made inside
+    them again. The file does not stand in its own way, a name already its
+    own leaves it where it is, and it is never moved over another file. A
+    folder of a pattern's it leaves empty is taken away, and so is one
+    made for it when the move is refused, whose OSError is raised."""
+    path = Path(path)
+    target = unique_path(directory, filename, max_path_length,
+                         distinguisher=distinguisher, ignoring=path)
+    if target.name == path.name and _one_folder(target.parent, path.parent):
+        return path
+    try:
+        # unique_path gives no name a file has, and one that came since, or
+        # another file of a name differing only in case where a folder tells
+        # case apart, is not replaced. The file itself under a change of
+        # case is.
+        if os.path.lexists(target) and not _one_folder(target, path):
+            raise FileExistsError(17, "a file has that name", str(target))
+        path.replace(target)
+    except OSError:
+        remove_empty(target.parent, [directory])
+        raise
+    remove_empty(path.parent, [directory])
+    return target
+
+
+def remove_empty(folder: Path, homes) -> None:
+    """Take away `folder` when it holds nothing, and each folder above it
+    left holding nothing, while each is inside one of `homes`, the folders
+    a document is routed to, and is not one of them. A link is never taken
+    away, and a folder holding anything never is, since the call that
+    takes one away refuses a folder that is not empty."""
+    real = []
+    for home in homes:
+        try:
+            real.append(Path(home).resolve())
+        except (OSError, RuntimeError, ValueError):
+            continue
+    folder = Path(folder)
+    while True:
+        try:
+            where = folder.resolve()
+        except (OSError, RuntimeError, ValueError):
+            return
+        inside = where not in real and not set(where.parents).isdisjoint(real)
+        if not inside or shared_folder.linked(folder):
+            return
+        try:
+            os.rmdir(folder)
+        except OSError:
+            return
+        folder = folder.parent
+
+
 def fitted_name(directory: Path, filename: str, max_path_length: int = 240) -> str:
     """*filename* as unique_path names it in *directory* when nothing there
-    holds it, cut to fit max_path_length. A download into a deep folder
-    cuts a name so, and Rename has to know the name it cut to tell a file
-    named right from one to rename. Raises ValueError, as unique_path does,
-    for a folder too deep to file into."""
-    return _free_name(Path(directory), filename, max_path_length, set(), "")
+    holds it, cut to fit max_path_length in the folder it is filed in
+    (filing_folder). A download into a deep folder cuts a name so, and
+    Rename has to know the name it cut to tell a file named right from one
+    to rename. Raises ValueError, as unique_path does, for a folder too
+    deep to file into."""
+    where = filing_folder(Path(directory), filename, max_path_length)
+    return _free_name(where, filename, max_path_length, set(), "")
 
 
 def _free_name(directory: Path, filename: str, max_path_length: int,

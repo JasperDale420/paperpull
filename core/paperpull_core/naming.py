@@ -16,9 +16,20 @@ must never be able to run anything.
                         and all, which is what stops a provider with no
                         order number leaving "Amazon -- " with nothing after
     \\[ \\] \\{ \\}           a bracket or a brace written as itself
+    /                   a folder, as in {provider}/{year}/{date} {summary}
 
 Everything else is written as it stands. The caller makes the result safe
 for the file system, so this only ever assembles text.
+
+A / in the pattern's own text puts files in folders, inside the folder a
+document is filed in today, Statements or Receipts or the like (#101).
+Only a / the pattern writes makes a folder. One in a field's value, an
+account written "Joint/Savings", stays in the value and is made safe with
+it, as it always was, so nothing a provider writes can make a folder. A
+folder whose fields are all empty is left out, so
+{provider}/[{account}/]{date} files a document with no account one
+folder up. A pattern may go three folders deep, every folder has to name a
+field, and the name after the last / has to name one too (check).
 
 The fields are the ones docs/file-naming.md settled on from an audit of
 every app, and a pattern naming anything else is refused with a message
@@ -54,6 +65,15 @@ DEFAULT_STATEMENTS = DEFAULT_RECEIPTS
 
 _DATE_TOKEN = re.compile(r"yyyy|yy|mmmm|mmm|mm|m|dd|d")
 _ISO = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
+
+# The most folders a pattern may make, one inside another.
+MOST_FOLDERS = 3
+
+# What a / of the pattern's own text is written as while a pattern renders
+# into folders (render_path), so it is told from a / in a field's value. A
+# value never carries it, since it is taken out of every value first, and a
+# file name could never hold it, as storage makes every name safe.
+_FOLDER = "\x00"
 
 
 class PatternError(ValueError):
@@ -180,30 +200,50 @@ def format_date(value: str, fmt: str) -> str:
     return _DATE_TOKEN.sub(lambda t: table[t.group(0)], fmt)
 
 
-def _value(node: _Field, fields: dict) -> str:
+def _value(node: _Field, fields: dict, slash: str = "/") -> str:
     for name in node.names:
         raw = fields.get(name)
         text = "" if raw is None else str(raw).strip()
+        if slash != "/":
+            # Rendering into folders, where only the pattern's own / may
+            # stand for one. The mark it is written as is taken out of a
+            # value, which a file name could never have held anyway.
+            text = text.replace(slash, "").strip()
         if text:
             return format_date(text, node.fmt) if node.fmt else text
     return ""
 
 
-def _render(parts: list, fields: dict) -> Optional[str]:
+def _render(parts: list, fields: dict, slash: str = "/") -> Optional[str]:
     """The parts as text, or None when a field directly in them is empty,
-    which is what makes an optional section drop out."""
+    which is what makes an optional section drop out. A / of the pattern's
+    own text is written as `slash`."""
     out = []
     for node in parts:
         if isinstance(node, _Text):
-            out.append(node.text)
+            out.append(node.text.replace("/", slash))
         elif isinstance(node, _Field):
-            v = _value(node, fields)
+            v = _value(node, fields, slash)
             if not v:
                 return None
             out.append(v)
         else:
-            inner = _render(node.parts, fields)
+            inner = _render(node.parts, fields, slash)
             out.append(inner or "")
+    return "".join(out)
+
+
+def _render_all(parts: list, fields: dict, slash: str) -> str:
+    """The whole pattern, where a field outside any optional section that
+    is empty is left empty rather than dropping anything."""
+    out = []
+    for node in parts:
+        if isinstance(node, _Text):
+            out.append(node.text.replace("/", slash))
+        elif isinstance(node, _Field):
+            out.append(_value(node, fields, slash))
+        else:
+            out.append(_render(node.parts, fields, slash) or "")
     return "".join(out)
 
 
@@ -211,16 +251,22 @@ def render(pattern: str, fields: dict) -> str:
     """The pattern filled in from `fields`. A field that is empty outside
     any optional section is left empty, so the words around it stay, and
     the caller's cleanup closes the gap."""
+    return _render_all(parse(pattern), fields, "/")
+
+
+def render_path(pattern: str, fields: dict) -> List[str]:
+    """The pattern filled in from `fields` as the folders it names and then
+    the file's name, each as text the caller still has to make safe. A
+    pattern with no / gives the name alone, exactly as render writes it.
+
+    Only a / of the pattern's own text divides them. A / in a value stays
+    in that folder's or that name's text, where making it safe takes it
+    out, as it always did. A folder whose text is empty is given here as
+    empty, and the caller leaves it out."""
     parts = parse(pattern)
-    out = []
-    for node in parts:
-        if isinstance(node, _Text):
-            out.append(node.text)
-        elif isinstance(node, _Field):
-            out.append(_value(node, fields))
-        else:
-            out.append(_render(node.parts, fields) or "")
-    return "".join(out)
+    if "/" not in _flat(parts):
+        return [_render_all(parts, fields, "/")]
+    return _render_all(parts, fields, _FOLDER).split(_FOLDER)
 
 
 def check(pattern: str) -> Optional[str]:
@@ -229,23 +275,69 @@ def check(pattern: str) -> Optional[str]:
         nodes = parse(pattern)
     except PatternError as e:
         return str(e)
-    # A / in the pattern's own text would name a folder, which file names
-    # cannot do yet, and it was dropped from the name without a word, so
-    # "{provider}/{date}" ran the two together (#101). It is refused, so a
-    # saved pattern holding one leaves files their usual names.
-    if any("/" in text for text in _texts(nodes)):
-        return ("a / would put files in folders, which file names cannot do "
-                "yet, so take it out of the pattern")
-    return None
+    return _folders_problem(nodes)
 
 
-def _texts(nodes):
-    """The pattern's own text, in and out of optional parts."""
+# What stands in the pattern for a field, and for each bracket of an
+# optional section, while _folders_problem reads its folders.
+_A_FIELD, _OPENS, _CLOSES = object(), object(), object()
+
+
+def _flat(nodes):
+    """The pattern as one run of its own characters, a mark for each field
+    and for each bracket of an optional section, in and out of optional
+    parts."""
     for node in nodes:
         if isinstance(node, _Text):
-            yield node.text
-        elif isinstance(node, _Optional):
-            yield from _texts(node.parts)
+            yield from node.text
+        elif isinstance(node, _Field):
+            yield _A_FIELD
+        else:
+            yield _OPENS
+            yield from _flat(node.parts)
+            yield _CLOSES
+
+
+def _folders_problem(nodes) -> Optional[str]:
+    """What is wrong with the folders a pattern makes, or None.
+
+    Every folder has to name a field. A folder of fixed text would be one
+    folder for every file, inside the folder its kind is filed in already,
+    and only a field gives a folder a reason to be there. The name after
+    the last / has to name a field too, or every file in a folder would
+    take that one name. A / that starts the pattern, or two with nothing
+    between them, would make a folder with no name at all, and one that
+    ends it a file with none."""
+    pieces = [[]]
+    for item in _flat(nodes):
+        if item == "/":
+            pieces.append([])
+        else:
+            pieces[-1].append(item)
+    if len(pieces) == 1:
+        return None
+    if len(pieces) - 1 > MOST_FOLDERS:
+        return ("a pattern can put files at most %d folders deep, and this one has %d "
+                "folders, one for each /" % (MOST_FOLDERS, len(pieces) - 1))
+    for i, piece in enumerate(pieces):
+        if _A_FIELD in piece:
+            continue
+        words = "".join(c for c in piece if isinstance(c, str)).strip()
+        if i == len(pieces) - 1:
+            if not words:
+                return ("a / at the end of the pattern would leave files with no name, so "
+                        "end it with the file's own name, as in {provider}/{date} {summary}")
+            return ('the name after the last /, "%s", names no field, so every file in a '
+                    "folder would get that one name" % words)
+        if not words:
+            if i == 0:
+                return ("a / at the start of the pattern would make a folder with no name, "
+                        "so start with a field, as in {provider}/{date} {summary}")
+            return "two / with nothing between them would make a folder with no name"
+        return ('the folder "%s" names no field. Every folder has to name one, as '
+                "{provider} or {year} does, since files are already filed in a folder "
+                "of their kind" % words)
+    return None
 
 
 def fields_of(record, *, date: str = "", summary: str = "", kind: str = "",
@@ -294,12 +386,15 @@ def fields_of(record, *, date: str = "", summary: str = "", kind: str = "",
 def preview(pattern: str, record, *, provider: str, owner: str = "",
             receipts: bool = False, document_type: str = "") -> str:
     """A document's name under `pattern`, the way a run would build it,
-    without binding an app. For the control panel's preview.
+    without binding an app. For the control panel's preview. A pattern that
+    puts files in folders gives the folders first, each followed by a /, as
+    in "Chase/2026/2026-01-31 Chase Statement.pdf", inside the folder the
+    document is filed in.
 
     Only for a pattern somebody wrote. Under the default the kind is what
     the app passed at the time, which is not in the record, and the name
     already on disk is the preview."""
-    from .storage import sanitize_component, title_case
+    from .storage import file_name_of, title_case
     date = ""
     summary = ""
     if isinstance(record, dict):
@@ -309,7 +404,8 @@ def preview(pattern: str, record, *, provider: str, owner: str = "",
                        summary=title_case(summary or "Purchase"),
                        kind=document_type, provider=provider,
                        owner=(owner or "").strip(), receipts=receipts)
-    return sanitize_component(render(pattern, fields)) + ".pdf"
+    name = file_name_of(render_path(pattern, fields))
+    return "%s/%s" % (name.folder, name) if name.folder else str(name)
 
 
 def fill_rates(records, receipts: bool = False) -> dict:

@@ -84,17 +84,75 @@ def test_a_bad_pattern_says_what_is_wrong_and_where(pattern, says):
         assert re.search(r"at character \d+", problem)
 
 
-@pytest.mark.parametrize("pattern", [
-    "{provider}/[ {account}]/{date:yyyy-mm-dd}[ {kind}][ ({part})]",
-    "{provider}/{date} {summary}",
-    "{date} [{provider}/]{summary}",
+@pytest.mark.parametrize("pattern,account,parts", [
+    ("{provider}/{date} {summary}", "", ["Amazon", "2026-09-23 Computer Accessories"]),
+    # A folder whose fields are empty comes back empty, for the caller to
+    # leave out, and an optional section takes its / with it.
+    ("{provider}/[ {account}]/{date}", "", ["Amazon", "", "2026-09-23"]),
+    ("{provider}/[ {account}]/{date}", "Joint", ["Amazon", " Joint", "2026-09-23"]),
+    ("{provider}[/{account}]/{date}", "", ["Amazon", "2026-09-23"]),
+    ("{provider}[/{account}]/{date}", "Joint", ["Amazon", "Joint", "2026-09-23"]),
+    ("{date} [{provider}/]{summary}", "", ["2026-09-23 Amazon", "Computer Accessories"]),
+    ("{year}/{month}/{date} {summary}", "", ["2026", "09", "2026-09-23 Computer Accessories"]),
 ])
-def test_a_slash_that_would_make_a_folder_is_refused(pattern):
+def test_a_slash_in_the_pattern_puts_files_in_folders(pattern, account, parts):
     """A / in the pattern's own text was dropped from the name without a
-    word, running "{provider}" into "{date}" (#101). It is refused, and a
-    saved pattern holding one leaves files their usual names."""
+    word, running "{provider}" into "{date}" (#101). It names a folder."""
+    assert naming.check(pattern) is None
+    assert naming.render_path(pattern, dict(FIELDS, account=account)) == parts
+
+
+def test_a_slash_in_a_value_never_makes_a_folder():
+    """Only the pattern's own / makes a folder. A provider writes whatever
+    it likes into an account or a summary, and "Joint/Savings" or "../.."
+    stays in its folder's or its name's text, where making it safe takes
+    the / out, as it always did. A date's own format is a value too."""
+    fields = dict(FIELDS, provider="A/B", account="../..")
+    assert naming.render_path("{provider} {date}", fields) == ["A/B 2026-09-23"]
+    assert naming.render_path("{provider}/{date}", fields) == ["A/B", "2026-09-23"]
+    assert naming.render_path("{provider}[/{account}] {date}", fields) == \
+        ["A/B", "../.. 2026-09-23"]
+    assert naming.render_path("{date:yyyy/mm} {provider}", fields) == ["2026/09 A/B"]
+
+
+def test_the_mark_a_folder_is_written_as_in_a_value_is_taken_out():
+    """The pattern's own / is written as a NUL while it renders, which a
+    value never carries into a folder, since it is taken out of it first.
+    A NUL could never be in a file name either."""
+    got = naming.render_path("{provider}/{date} {summary}",
+                             dict(FIELDS, summary="a\x00b", provider="x\x00"))
+    assert got == ["x", "2026-09-23 ab"]
+
+
+@pytest.mark.parametrize("pattern", [
+    "{date:yyyymmdd} - {provider} -- {number}", "{date} [{provider}]",
+    "{date:dd mmm yyyy}", "{year}{month}", naming.DEFAULT_RECEIPTS,
+])
+def test_a_pattern_with_no_slash_renders_exactly_as_before(pattern):
+    for fields in (FIELDS, dict(FIELDS, provider="A/B\x00", summary="x\x00")):
+        assert naming.render_path(pattern, fields) == [naming.render(pattern, fields)]
+
+
+@pytest.mark.parametrize("pattern,says", [
+    ("/{provider}/{date}", "at the start"),
+    ("{provider}/{date}/", "at the end"),
+    ("{provider}//{date}", "nothing between them"),
+    ("{provider}/ /{date}", "nothing between them"),
+    ("Statements/{date}", 'the folder "Statements" names no field'),
+    ("{provider}/../{date}", 'the folder ".." names no field'),
+    ("{provider}/[x]/{date}", 'the folder "x" names no field'),
+    ("{provider}/statement", 'the name after the last /, "statement", names no field'),
+    ("{provider}/{year}/{month}/{account}/{date}", "at most 3 folders deep"),
+    ("{a}/{date}", 'no field called "a"'),
+])
+def test_a_folder_that_names_no_field_or_goes_too_deep_is_refused(pattern, says):
     problem = naming.check(pattern)
-    assert problem and "folders" in problem
+    assert problem and says in problem, problem
+
+
+def test_three_folders_deep_is_as_deep_as_a_pattern_goes():
+    assert naming.check("{provider}/{year}/{month}/{date}") is None
+    assert naming.check("{provider}/{year}/{month}/{account}/{date}")
 
 
 def test_a_date_that_is_not_a_date_is_written_as_it_is():
@@ -147,6 +205,8 @@ def test_the_default_pattern_reproduces_every_old_name(kind, tmp_path, monkeypat
             new = storage.build_pdf_filename(d, s, t, part=p, owner=o,
                                              record=record)
             assert new == _old_build("Acme Co", d, s, t, p, o), (d, s, t, p, o)
+            # A summary holding a / makes no folder (#101).
+            assert storage.folder_of(new) == "", (d, s, t, p, o)
             checked += 1
     assert checked > 5000
 

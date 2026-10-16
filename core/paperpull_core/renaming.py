@@ -36,8 +36,12 @@ THE RULES
   treatment any new download gets.
 * A file that is already correctly named is left alone, so running this
   twice does nothing the second time.
-* Nothing moves between folders. A rename here changes a name, never a
-  location.
+* A file moves only within the folder it is filed in, Statements or
+  Receipts or the like, into the folders a naming pattern with a / names
+  there and back out of them (#101). It never moves to another of the
+  app's folders, and a file in Manual Review stays in Manual Review, with
+  no folders. A folder a rename leaves empty inside one of those is taken
+  away, and never one of those folders themselves or one holding anything.
 * Preview is the default everywhere. A caller has to ask for the change.
 * Rename never ends with a file moved and a ledger still giving it the
   name it had. Every ledger is shown to be writable before a file moves,
@@ -58,8 +62,9 @@ from typing import Callable, Iterable, List, Optional
 
 from . import shared_folder
 from .models import State
-from .storage import (build_pdf_filename, fitted_name, free_to_write, sanitize_component,
-                      title_case, unique_path)
+from .storage import (FileName, build_pdf_filename, filing_folder, fitted_name,
+                      free_to_write, remove_empty, sanitize_component, title_case,
+                      unique_path)
 
 
 @dataclass
@@ -74,6 +79,9 @@ class Change:
     # The limit new_path was cut to fit, which a name found again at apply
     # keeps to as well.
     max_path_length: int = 240
+    # The folder the file is filed in, Statements or the like, inside which
+    # a pattern's folders are (_Homes), for saying where a file moves.
+    home: Optional[Path] = None
 
     @property
     def renaming(self) -> bool:
@@ -82,6 +90,23 @@ class Change:
     @property
     def old_name(self) -> str:
         return self.old_path.name
+
+    @property
+    def moves(self) -> bool:
+        """Whether the file goes to another folder, as a pattern's folders
+        have it (#101)."""
+        return (self.new_path is not None
+                and not _same_folder(self.new_path.parent, self.old_path.parent))
+
+    def shown(self, path: Path) -> str:
+        """A path as a person reads it in a plan, from inside the folder the
+        file is filed in, "Chase/2026/2026-01-31 Chase Statement.pdf"."""
+        if self.home is not None:
+            try:
+                return Path(path).relative_to(self.home).as_posix()
+            except ValueError:
+                pass
+        return Path(path).name
 
 
 @dataclass
@@ -93,6 +118,13 @@ class Result:
     names: dict = field(default_factory=dict)     # old name -> new name
     spellings: dict = field(default_factory=dict) # another spelling -> old path str
     stranded: dict = field(default_factory=dict)  # aside path str -> old path str
+    # Each old name two files renamed had, each given a new name of its own,
+    # in two folders. A record or row knowing a file by its name alone
+    # cannot say which it is, so it takes neither new name.
+    unclear: set = field(default_factory=set)
+    # Each folder a rename made for a pattern's folders, the outermost first,
+    # so one left with nothing in it can be taken away (tidy).
+    made: list = field(default_factory=list)
 
 
 # Why a row naming something on disk is left out of a rename, when that
@@ -180,12 +212,80 @@ def _held(text: str, real_folders: List[Path], staged: bool = False,
     return Path(text) if held else None
 
 
+def _same_folder(a, b) -> bool:
+    """Whether two paths are one folder, by their spelling or else on disk,
+    so a folder spelled in another case where the disk ignores case is the
+    same folder."""
+    if Path(a) == Path(b):
+        return True
+    try:
+        return os.path.samefile(a, b)
+    except (OSError, ValueError):
+        return False
+
+
+class _Homes:
+    """Which of an app's folders each file is filed in, and whether a
+    pattern's folders apply there.
+
+    `folders` are the folders the app files documents in
+    (Paths.filing_folders) and `flat` those of them a file stays in with no
+    folders of a pattern's, Manual Review, where a file that failed its
+    check is put aside."""
+
+    def __init__(self, folders: Iterable[Path], flat: Iterable[Path] = ()):
+        self.folders = [Path(f) for f in folders]
+        self._plain = {os.path.normcase(str(f)) for f in self.folders}
+        self.real = _real(self.folders)
+        self._flat = _real(flat)
+        self._seen = {}
+
+    def home(self, path: Path) -> Optional[Path]:
+        """The folder of the app's that `path` is filed in, spelled as the
+        path spells it, or None. Read from the spelling first, since a
+        recorded path is written from the same output folder as the app's
+        folders, and from the disk only when that does not say."""
+        parents = list(Path(path).parents)
+        for parent in parents:
+            if os.path.normcase(str(parent)) in self._plain:
+                return parent
+        for parent in parents:
+            key = str(parent)
+            if key not in self._seen:
+                try:
+                    self._seen[key] = parent.resolve() in self.real
+                except (OSError, RuntimeError, ValueError):
+                    self._seen[key] = False
+            if self._seen[key]:
+                return parent
+        return None
+
+    def is_flat(self, home: Path) -> bool:
+        try:
+            return Path(home).resolve() in self._flat
+        except (OSError, RuntimeError, ValueError):
+            return False
+
+    def placed(self, path: Path, name):
+        """(the folder a file at `path` is filed in, the name it takes
+        there). A name a pattern gave folders keeps them, unless the file
+        is in a folder where files stay flat, where it is the name alone.
+        A file in none of the app's folders keeps the folder it is in."""
+        home = self.home(path)
+        if home is None:
+            return Path(path).parent, str(name)
+        if self.is_flat(home):
+            return home, str(name)
+        return home, name
+
+
 def plan(rows: Iterable[dict], build_name: Callable[[dict], str], *,
          folders: Iterable[Path],
          distinguisher: Optional[Callable[[dict], str]] = None,
          path_key: str = "PDF Full Path",
          name_key: str = "PDF Filename",
-         max_path_length: int = 240) -> List[Change]:
+         max_path_length: int = 240,
+         flat: Iterable[Path] = ()) -> List[Change]:
     """What every file would be called, without touching anything.
 
     `build_name` is handed a ledger row and returns the name that row
@@ -209,10 +309,18 @@ def plan(rows: Iterable[dict], build_name: Callable[[dict], str], *,
     in the file's folder the way a download cuts it, so a file whose
     download cut its name is named right already, and no rename gives a
     file a longer path than its download would have.
+
+    A name carrying a pattern's folders (storage.FileName) is filed in
+    them, inside the folder of `folders` the file is in, as a download
+    files it there (storage.filing_folder), and a file in a pattern's
+    folder whose name now carries none goes back to that folder itself
+    (#101). A file in one of `flat`, Manual Review, keeps its folder and
+    takes the name alone.
     """
-    inside = _real(folders)
+    homes = _Homes(folders, flat)
+    inside = homes.real
     changes: List[Change] = []
-    wanted = []                       # (slot, row, old_path, name cut to fit, whole name)
+    wanted = []        # (slot, row, old_path, name cut to fit, whole name, home, folder)
 
     for row in rows:
         raw = (row.get(path_key) or "").strip()
@@ -224,7 +332,10 @@ def plan(rows: Iterable[dict], build_name: Callable[[dict], str], *,
             changes.append(Change(row, old_path, old_name, reason=NOT_HELD))
             continue
         try:
-            new_name = (build_name(row) or "").strip()
+            new_name = build_name(row) or ""
+            # Stripped as before, keeping the folders a pattern names.
+            new_name = (FileName(new_name.strip(), new_name.folder)
+                        if isinstance(new_name, FileName) else new_name.strip())
         except Exception as e:                       # a row too thin to name
             changes.append(Change(row, old_path, old_name,
                                   reason="could not work out a name (%s)" % type(e).__name__))
@@ -233,19 +344,22 @@ def plan(rows: Iterable[dict], build_name: Callable[[dict], str], *,
             changes.append(Change(row, old_path, old_name,
                                   reason="nothing to name it from"))
             continue
+        # The folder the file is filed in, and the folder the name files it
+        # in there, a pattern's folders or that folder itself.
+        home, whole = homes.placed(old_path, new_name)
         # The name cut to fit max_path_length in the file's folder, as a
         # download cuts it. Taken whole, a file whose download had cut its
         # name was offered the whole name back, a path longer than the
         # limit the download kept to.
-        whole = new_name
         try:
-            new_name = fitted_name(old_path.parent, whole, max_path_length)
+            where = filing_folder(home, whole, max_path_length)
+            new_name = fitted_name(home, whole, max_path_length)
         except ValueError:
             changes.append(Change(row, old_path, old_name,
                                   reason="its folder is too deep for any name to fit "
                                          "max_path_length"))
             continue
-        if new_name == old_path.name:
+        if new_name == old_path.name and _same_folder(where, old_path.parent):
             changes.append(Change(row, old_path, new_name, reason="already named that"))
             continue
         if not raw or not old_path.exists():
@@ -254,7 +368,7 @@ def plan(rows: Iterable[dict], build_name: Callable[[dict], str], *,
             continue
         # A placeholder, so the plan reads back in the ledger's own order
         # rather than with everything that could not be renamed first.
-        wanted.append((len(changes), row, old_path, new_name, whole))
+        wanted.append((len(changes), row, old_path, new_name, whole, home, where))
         changes.append(None)
 
     # A name is free if nothing holds it, and also if the only thing
@@ -262,11 +376,11 @@ def plan(rows: Iterable[dict], build_name: Callable[[dict], str], *,
     # that want each other's names is the case that proves it, and without
     # this pass each would be pushed to a " (2)" by a collision that was
     # about to stop existing. Freeing them is apply's job.
-    leaving = {str(p).lower() for _i, _r, p, _n, _w in wanted}
+    leaving = {str(w[2]).lower() for w in wanted}
     claimed = {}                      # a folder -> the names given out in it
     planned = {}                      # a file (_file_key) -> the change planned for it
 
-    for slot, row, old_path, new_name, whole in wanted:
+    for slot, row, old_path, new_name, whole, home, where in wanted:
         # One change for each file. Download again can leave two rows of one
         # purchase naming one file, and the second row was given a name of
         # its own beside the first's. The preview counted the file twice and
@@ -280,11 +394,11 @@ def plan(rows: Iterable[dict], build_name: Callable[[dict], str], *,
         key = _file_key(old_path)
         first = planned.get(key)
         if first is not None:
-            changes[slot] = Change(row, old_path, first.new_name,
+            changes[slot] = Change(row, old_path, first.new_name, home=first.home,
                                    reason=first.reason or "renamed for another row of the index")
             continue
-        target = old_path.parent / new_name
-        given = claimed.setdefault(str(old_path.parent).lower(), set())
+        target = where / new_name
+        given = claimed.setdefault(str(where).lower(), set())
         free = ((not target.exists() or str(target).lower() in leaving)
                 and new_name.lower() not in given)
         if not free:
@@ -300,20 +414,22 @@ def plan(rows: Iterable[dict], build_name: Callable[[dict], str], *,
             # first, as a download tells it. They used to be held only after
             # unique_path had answered, and a " (2)" put on its answer was
             # cut off again whenever the name had to be cut to fit, so
-            # plan() never returned.
-            target = unique_path(old_path.parent, whole, max_path_length,
-                                 distinguisher=token, ignoring=old_path.name, held=given)
+            # plan() never returned. The file stands in its own way only in
+            # the folder it is in, and a preview makes no folder.
+            target = unique_path(home, whole, max_path_length, distinguisher=token,
+                                 ignoring=old_path, held=given, make=False)
             # Told apart already, by the same order number it would be told
             # apart by now. It used to be pushed on to " (2)" because its own
             # name counted as taken, and five real files were asked to move.
-            if target.name.lower() == old_path.name.lower():
+            if (target.name.lower() == old_path.name.lower()
+                    and _same_folder(target.parent, old_path.parent)):
                 given.add(target.name.lower())
-                changes[slot] = planned[key] = Change(row, old_path, target.name,
+                changes[slot] = planned[key] = Change(row, old_path, target.name, home=home,
                                                       reason="already named that")
                 continue
         given.add(target.name.lower())
         changes[slot] = planned[key] = Change(row, old_path, target.name, new_path=target,
-                                              max_path_length=max_path_length)
+                                              max_path_length=max_path_length, home=home)
     return changes
 
 
@@ -326,10 +442,16 @@ def describe(changes: Iterable[Change], say=print, limit: int = 0) -> None:
         say("Every file is already named the way this app names them.")
     else:
         say("%d file(s) would be renamed." % len(moving))
+        elsewhere = sum(1 for c in moving if c.moves)
+        if elsewhere:
+            say("%d of them would move to another folder, as the naming pattern's "
+                "folders have it." % elsewhere)
         shown = moving if limit <= 0 else moving[:limit]
         for c in shown:
-            say("  %s" % c.old_name)
-            say("    -> %s" % c.new_name)
+            # Where a file moves, the folders it leaves and the ones it goes
+            # to, inside the folder it is filed in.
+            say("  %s" % (c.shown(c.old_path) if c.moves else c.old_name))
+            say("    -> %s" % (c.shown(c.new_path) if c.moves else c.new_name))
         if len(shown) < len(moving):
             say("  ... and %d more." % (len(moving) - len(shown)))
     left = sum(1 for c in changes if c.reason == NOT_HELD)
@@ -412,7 +534,7 @@ def _rename_one(c: Change, holder: Optional[Change], moved: set, result: Result,
             % (c.old_name, holder.old_name))
         result.failed += 1
         return
-    error = _land(c, c.old_path)
+    error = _land(c, c.old_path, result)
     if error:
         say("  could not rename %s (%s)" % (c.old_name, error.__class__.__name__))
         result.failed += 1
@@ -442,7 +564,7 @@ def _rename_ring(ring: List[Change], moved: set, result: Result, say) -> None:
 
     went = []
     for c in list(reversed(ring[1:])) + [first]:
-        error = _land(c, aside if c is first else c.old_path)
+        error = _land(c, aside if c is first else c.old_path, result)
         if not error:
             went.append(c)
             continue
@@ -496,11 +618,13 @@ def _also_left(left: List[Change], say) -> None:
             % _listed(c.old_name for c in left))
 
 
-def _land(c: Change, source: Path) -> Optional[Exception]:
+def _land(c: Change, source: Path, result: Result) -> Optional[Exception]:
     """Rename source to c's new name, and None, or the error that refused it.
     Never over another file, including one that appeared while this was
-    running, and never past the limit the plan kept to."""
+    running, and never past the limit the plan kept to. A folder of a
+    pattern's the file goes to is made first, and noted in result."""
     try:
+        _make_folders(c.new_path.parent, result)
         if c.new_path.exists():
             c.new_path = unique_path(c.new_path.parent, c.new_path.name,
                                      c.max_path_length)
@@ -509,6 +633,50 @@ def _land(c: Change, source: Path) -> Optional[Exception]:
         # ValueError when no name beside it fits the folder's limit.
         return e
     return None
+
+
+def _make_folders(folder: Path, result: Result) -> None:
+    """Make a folder a file is moving to when it is not there yet, held
+    inside the data folder first on PaperPull Server, as every folder a run
+    writes into is, and note in result each folder made, the outermost
+    first, so one left with nothing in it can be taken away (tidy)."""
+    if folder.is_dir():
+        return
+    missing, at = [], folder
+    while not os.path.lexists(at) and at.parent != at:
+        missing.append(at)
+        at = at.parent
+    try:
+        shared_folder.hold(folder)
+    except shared_folder.LeadsOut as e:
+        # Refused as a move is, so this file stays where it is and the files
+        # moved before it are still written down where they went. Stopping
+        # the run here would leave them moved and the ledgers not.
+        raise PermissionError(13, str(e), str(folder)) from e
+    folder.mkdir(parents=True, exist_ok=True)
+    result.made.extend(str(m) for m in reversed(missing))
+
+
+def tidy(result: Result, folders: Iterable[Path]) -> None:
+    """Take away each folder a rename left with nothing in it, the folders
+    files moved out of and those it made for files that then did not move,
+    and each folder above one taken away that is left empty too.
+
+    Only a folder inside one of `folders`, the folders the app files in,
+    and never one of those, a folder holding anything or a link. A folder
+    is taken away by the call that refuses one holding anything, so a file
+    arriving meanwhile keeps its folder."""
+    folders = list(folders)
+    candidates = [Path(m) for m in reversed(result.made)]
+    candidates += [Path(old).parent for old in result.mapping]
+    seen = set()
+    for folder in candidates:
+        # Up from each, until a folder that is not empty. One that is not
+        # may be empty once a folder inside it from a later candidate is
+        # taken away, and is asked again then.
+        if str(folder) not in seen:
+            seen.add(str(folder))
+            remove_empty(folder, folders)
 
 
 def _put(source: Path, target: Path) -> bool:
@@ -552,6 +720,10 @@ def _file_key(path: Path):
 def _renamed(c: Change, result: Result) -> None:
     result.renamed += 1
     result.mapping[str(c.old_path)] = str(c.new_path)
+    # Two files of one name in two folders, given two new names, as a
+    # pattern's folders make likely, leave that name saying neither.
+    if result.names.get(c.old_path.name, c.new_path.name) != c.new_path.name:
+        result.unclear.add(c.old_path.name)
     result.names[c.old_path.name] = c.new_path.name
 
 
@@ -806,7 +978,9 @@ def update_rows(rows: Iterable[dict], result: Result, *,
         else:
             old_name = (row.get(name_key) or "").strip()
             number = _first(row, _ID_KEYS) if numbered is not None else ""
+            # A name two files renamed both had says neither (Result.unclear).
             new_name = (numbered.get((number, old_name)) if number
+                        else None if old_name in result.unclear
                         else result.names.get(old_name))
             if not new_name:
                 continue
@@ -840,7 +1014,8 @@ def update_progress(progress, result: Result, *,
             if new_path:
                 patch = {path_field: new_path, filename_field: Path(new_path).name}
         else:
-            new_name = result.names.get(_text(rec.get(filename_field)))
+            named = _text(rec.get(filename_field))
+            new_name = None if named in result.unclear else result.names.get(named)
             if new_name:
                 patch = {filename_field: new_name}
         # Whether or not pdf_path moved, since it names one invoice of an
@@ -962,8 +1137,12 @@ def run_for(app, apply_changes: bool = False, say=print,
     carrying it too, and progress.json. What differs is only which column
     holds the date and the summary, which is what the lists above are for.
 
-    Nothing is downloaded, nothing moves folder, and the identity that
-    stops a second download is not touched.
+    Nothing is downloaded, the identity that stops a second download is
+    not touched, and a file moves only into or out of the folders a naming
+    pattern names inside the folder it is filed in (#101). A folder the
+    files left with nothing in it is taken away once the ledgers follow
+    them, and one made for a file that did not move is taken away whatever
+    happens (tidy).
 
     `told_apart` is handed a document's record and returns what the app's
     download adds to its name when another file has that name, for an app
@@ -1047,6 +1226,16 @@ def run_for(app, apply_changes: bool = False, say=print,
     rule = told_apart or told_apart_by
     before = tuple(told_apart_before)
     limit = app.config.get("max_path_length", 240)
+    folders = app.paths.filing_folders()
+    # Manual Review keeps a file put aside with no folders of a pattern's.
+    flat = [f for f in (getattr(app.paths, "manual_review", None),) if f is not None]
+    homes = _Homes(folders, flat)
+
+    def filed_in(row, name) -> Path:
+        """The folder a row's file is filed in under `name`, as plan and a
+        download file it (storage.filing_folder)."""
+        home, name = homes.placed(Path((row.get("PDF Full Path") or "").strip()), name)
+        return filing_folder(home, name, limit)
 
     def distinguisher(row):
         # What the download told this file apart by when its name was
@@ -1077,11 +1266,12 @@ def run_for(app, apply_changes: bool = False, say=print,
         # Kept only where it fits whole, a count after it included. Cut to
         # fit, it no longer read as that ending, so the next Rename moved the
         # file again, and the one after that moved another into its name.
-        if token and not _fits_whole(row, build_name(row), token, limit):
+        name = build_name(row)
+        if token and not _fits_whole(filed_in(row, name), name, token, limit):
             return ""
         return token
 
-    changes = plan(primary_rows, build_name, folders=app.paths.filing_folders(),
+    changes = plan(primary_rows, build_name, folders=folders, flat=flat,
                    distinguisher=distinguisher, max_path_length=limit)
     describe(changes, say=say, limit=0 if apply_changes else 20)
 
@@ -1117,6 +1307,7 @@ def run_for(app, apply_changes: bool = False, say=print,
     # A file left under a temporary name while its own name holds another
     # file is in the mapping too, with nothing renamed perhaps.
     if not result.mapping:
+        tidy(result, folders)
         _say_stranded(result, say)
         return result
     # The ledgers are written after the files move, and a write that cannot
@@ -1124,8 +1315,12 @@ def run_for(app, apply_changes: bool = False, say=print,
     # renamed file still named by its old name in the index and the run
     # state. Verify then found each one missing, and the next Rename, reading
     # rows whose files were gone, said every file was already named the way
-    # the app names it. Now every file goes back when a write fails.
-    _write_ledgers(app, ledgers, result, _numbered(changes, result), say=say)
+    # the app names it. Now every file goes back when a write fails, and a
+    # folder made for one is taken away with it.
+    try:
+        _write_ledgers(app, ledgers, result, _numbered(changes, result), say=say)
+    finally:
+        tidy(result, folders)
     if result.renamed:
         say("")
         say("Renamed %d file(s). The index and the run state now point at them."
@@ -1137,11 +1332,11 @@ def run_for(app, apply_changes: bool = False, say=print,
     return result
 
 
-def _fits_whole(row: dict, name: str, token: str, max_path_length: int) -> bool:
+def _fits_whole(folder: Path, name: str, token: str, max_path_length: int) -> bool:
     """Whether `name` with `token` after it and a count after that, as
     unique_path writes the second file told apart by one ending, fits
-    max_path_length whole in the folder of the row's file."""
-    folder = Path((row.get("PDF Full Path") or "").strip()).parent
+    max_path_length whole in `folder`, the one the row's file is filed in
+    under that name."""
     stem, ext = os.path.splitext(name)
     return len(str(folder)) + len("/%s %s (99)%s" % (stem, token, ext)) <= max_path_length
 
@@ -1157,13 +1352,22 @@ def _numbered(changes: Iterable[Change], result: Result) -> dict:
     of the row the plan read and the file's old name. The order history
     carries a number and a file name and no path, and matched by the name
     alone, two receipts of one name in two folders both took whichever new
-    name came last, which Review Names could then no longer put right."""
-    out = {}
+    name came last, which Review Names could then no longer put right.
+
+    Two files of one purchase and one name in two folders, given two new
+    names, are told apart by neither, so the order history's row of that
+    name keeps it rather than take the other file's (#101)."""
+    out, unclear = {}, set()
     for c in changes:
         new = result.mapping.get(str(c.old_path))
         number = _first(c.row, _ID_KEYS)
         if new and number:
-            out[(number, c.old_path.name)] = Path(new).name
+            key = (number, c.old_path.name)
+            if out.get(key, Path(new).name) != Path(new).name:
+                unclear.add(key)
+            out[key] = Path(new).name
+    for key in unclear:
+        del out[key]
     return out
 
 
@@ -1842,6 +2046,12 @@ def review_names(app, ask, words: ReviewWords = WORDS,
     else:
         print(f"{len(review)} receipt(s) need review. Enter a new summary, "
               "press Enter to keep, or 'q' to stop.\n")
+    # The folder each receipt is filed in, inside which a naming pattern's
+    # folders are, as Rename and a download have them (#101). One put aside
+    # in Manual Review stays there, with no folders.
+    folders = app.paths.filing_folders()
+    homes = _Homes(folders, [f for f in (getattr(app.paths, "manual_review", None),)
+                             if f is not None])
     written = stopped = False
     try:
         for r, old_path in review:
@@ -1897,21 +2107,25 @@ def review_names(app, ask, words: ReviewWords = WORDS,
                        for e in (invoices if isinstance(invoices, list) else ())
                        if isinstance(e, dict)}
             spelled = {raw for raw in spelled if raw and _one_file(raw, str(old_path))}
+            home, new_name = homes.placed(old_path, new_name)
             try:
                 # The file does not stand in its own way. Asked for a free
                 # name as though it were another file's, the summary it
                 # already had moved it to "... (2).pdf", and the next Rename
-                # offered to move it back.
+                # offered to move it back. It stands in its own way only in
+                # the folder it is in, since one of its name in a pattern's
+                # folder is another file.
                 # A name another order's file has is told apart by the order
                 # number, as a download and Rename tell it. Told apart by
                 # " (2)", the next Rename moved the file again, and the first
                 # invoice of a split order lost its part on the way.
-                new_path = unique_path(old_path.parent, new_name,
+                new_path = unique_path(home, new_name,
                                        app.config["max_path_length"],
                                        distinguisher=(r.get("Order or Receipt Number")
                                                       or "").strip(),
-                                       ignoring=old_path.name)
-                if new_path.name != old_path.name:
+                                       ignoring=old_path, make=False)
+                if (new_path.name != old_path.name
+                        or not _same_folder(new_path.parent, old_path.parent)):
                     # unique_path compares names in one case, so a folder
                     # that tells case apart can hold another file of the
                     # name a change of case gives, which a rename there
@@ -1920,6 +2134,7 @@ def review_names(app, ask, words: ReviewWords = WORDS,
                     if (os.path.lexists(new_path)
                             and not _one_file(str(new_path), str(old_path))):
                         raise FileExistsError(17, "Another file has that name", str(new_path))
+                    _make_folders(new_path.parent, moved)
                     old_path.rename(new_path)
                     moved.mapping[str(old_path)] = str(new_path)
                 elif not old_path.is_file():
@@ -1927,6 +2142,8 @@ def review_names(app, ask, words: ReviewWords = WORDS,
                     # failed, and the rows would be marked for a file gone.
                     raise FileNotFoundError(2, "The file is no longer there", str(old_path))
             except (OSError, ValueError) as e:
+                # A folder made for it and left empty goes too.
+                tidy(moved, folders)
                 print(f"    It could not be renamed ({type(e).__name__}), so it keeps "
                       "its name.\n")
                 continue
@@ -2007,13 +2224,19 @@ def review_names(app, ask, words: ReviewWords = WORDS,
             except BaseException as e:
                 stopped = True
                 stuck, unwritten = _undo(records, done, moved)
+                # Back in its own folder, a folder made for it goes with it.
+                tidy(moved, folders)
                 _say_review_undone(e, writing, bool(moved.mapping), stuck, unwritten, written)
                 if isinstance(e, OSError):
                     raise SystemExit(1) from e
                 raise
             written = True
-            if new_path.name == old_path.name:
+            # Written down where it is now, so a folder it left empty goes.
+            tidy(moved, folders)
+            if not moved.mapping:
                 print("    It already has that name, so the file stays as it is.\n")
+            elif not _same_folder(new_path.parent, old_path.parent):
+                print(f"{words.renamed}{Path(os.path.relpath(new_path, home)).as_posix()}\n")
             else:
                 print(f"{words.renamed}{new_path.name}\n")
     finally:

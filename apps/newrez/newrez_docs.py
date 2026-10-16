@@ -52,6 +52,7 @@ from paperpull_core import doc_types, receipt_pdf
 from paperpull_core import browser as browser_launcher
 import newrez_site as site
 from paperpull_core.models import State
+from paperpull_core.storage import refile
 from paperpull_core.keys import account_component as _account_component
 from paperpull_core.keys import migrate_account_keys as _migrate_account_keys
 from paperpull_core.words import Fixed, shape_tree, words_for, write_shaped
@@ -877,10 +878,12 @@ class App:
         if not printed or printed == doc.date:
             return out_path
         name = build_pdf_filename(printed, doc.summary, "", record=doc)
-        target = unique_path(out_path.parent, name, self.config["max_path_length"],
-                             ignoring=out_path.name)
+        # Filed from the folder its kind routes to, as download_one filed it,
+        # so a naming pattern's folders, a year's among them, follow the date
+        # the statement prints (#101).
         try:
-            out_path.replace(target)
+            target = refile(out_path, self.paths.folder_for(doc.category), name,
+                            self.config["max_path_length"])
         except OSError as e:
             log.info("kept the month's name for %s: %s", doc.key, e)
             return out_path
