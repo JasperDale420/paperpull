@@ -1078,9 +1078,13 @@ def _available_until(page, answers: list, account_id: str) -> str:
             return ""
         _guard_words([str(a.get(k) or "") for a in accounts if isinstance(a, dict)
                       for k in ("id", "name", "numbers")])
-        if len(accounts) != 1 or not isinstance(accounts[0], dict):
+        if len(accounts) > 1:
             raise ListStopped("the bank's accounts answer holds more than one account, and "
                               "this app reads one")
+        if len(accounts) != 1 or not isinstance(accounts[0], dict):
+            # A paid-off loan's account leaves the answer once its date has
+            # passed. Said as what was seen, never as more than one.
+            raise ListStopped("the bank's accounts answer holds no account this can read")
         if account_id and accounts[0].get("id") != account_id:
             raise ListStopped("the documents are of another account than the one the bank lists")
         return answer_date(accounts[0].get("closedAccountAvailableUntil")) or ""
@@ -1370,6 +1374,12 @@ def _catch_document(page, run: Run, dl_dir, target: Target, out_path,
     None when the page has turned the row's button off: nothing was pressed,
     nothing is waited for, and the document is left for the next run."""
     out_path = Path(out_path)
+    # press_once asks the guard only before its press through the page, not
+    # before Playwright's own first press, so the row's own text is asked
+    # here, before anything is found or pressed.
+    if not is_document_row(target.label, target.label):
+        _note(trace, note="the row's own text is not a document row this presses")
+        return False
     el = _row_button(page, target.label)
     if el is None:
         _note(trace, note="not one row reads this document's text")

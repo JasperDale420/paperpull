@@ -622,6 +622,31 @@ def test_an_account_part_the_blocklist_refuses_is_never_pressed():
     assert not site.is_document_row(want, want)
 
 
+def test_the_row_guard_is_asked_before_the_first_press(tmp_path, monkeypatch):
+    """press_once asks the app's guard only before its press through the
+    page, never before Playwright's own first press, which is the press made
+    nearly every time. So a row whose account part the blocklist refuses is
+    refused by the app itself, before press_once is called."""
+    page = Page(rows=[row_text(d, "Transfer funds (x%s)" % LAST4) for d in DOCS])
+    pressed = []
+
+    def press_once(page, el, **kw):
+        # As the real one presses first, with no guard asked.
+        pressed.append(el.i)
+        return pressing.Pressed(pressing.PRESSED)
+    monkeypatch.setattr(site.pressing, "press_once", press_once)
+    got, out, trace = take(page, tmp_path)
+    assert got is False and pressed == [] and not out.exists()
+    assert {"note": "the row's own text is not a document row this presses"} in trace
+
+
+def test_an_accounts_answer_of_no_account_says_so():
+    """A paid-off loan's account leaves the accounts answer once its date
+    has passed, and the list stops in words that say what it saw."""
+    with pytest.raises(site.ListStopped, match="no account this can read"):
+        listing_of(Page(documents=[], accounts={"accounts": []}))
+
+
 # ---------------------------------------------------------------------------
 # Taking one document
 # ---------------------------------------------------------------------------
