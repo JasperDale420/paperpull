@@ -111,3 +111,66 @@ def test_a_hidden_control_for_more_is_not_counted(wallet):
     state = read(wallet, page_of('<button type="button" style="display:none">Load more</button>'))
     assert state["pagers"] == []
 
+
+
+# The wallet as a signed-out visit drew it on 2026-10-15, at /wallet itself.
+SIGNED_OUT = """<!doctype html><html><body>
+<nav><a href="/">Bilt</a><button type="button">Sign up / Log in</button></nav>
+<main>
+ <h1>Complete login to continue</h1>
+ <p>Welcome to Bilt. Log in or sign up.</p>
+ <div role="tablist"><button role="tab">Phone</button><button role="tab">Email</button></div>
+ <input type="text" aria-label="Phone number">
+ <button type="button">Continue</button>
+ <button type="button">Sign in with passkey</button>
+</main>
+</body></html>"""
+
+
+def signed_out_by(pg, html):
+    pg.set_content(html)
+    state = pg.evaluate(site._STATE_JS)
+    alone = pg.evaluate(site._SIGNIN_JS)
+    assert set(alone) == {"signin", "summary"}
+    assert alone["signin"] == state["signin"]
+    assert site.shows_sign_in(alone) == site.shows_sign_in(state)
+    return site.shows_sign_in(state), state
+
+
+def test_the_sign_in_drawn_on_the_wallet_is_read_as_signed_out(wallet):
+    out, state = signed_out_by(wallet, SIGNED_OUT)
+    assert out is True
+    assert state["password"] is False and state["cards"] == [] and state["summary"] == []
+
+
+@pytest.mark.parametrize("keep", [
+    '<h1>Complete login to continue</h1>',
+    '<p>Welcome to Bilt. Log in or sign up.</p>',
+    '<button type="button">Sign up / Log in</button>',
+])
+def test_each_sign_of_the_sign_in_is_enough_alone(wallet, keep):
+    out, _state = signed_out_by(wallet, "<!doctype html><html><body>%s</body></html>" % keep)
+    assert out is True
+
+
+@pytest.mark.parametrize("html", [
+    '<p style="display:none">Complete login to continue</p>',
+    '<button type="button" style="visibility:hidden">Sign up / Log in</button>',
+    '<p>Complete login to continue later</p>',
+    '<p>Log in</p><button type="button">Log in</button>',
+    '<button type="button">Sign up / Log in now</button>',
+])
+def test_a_hidden_or_other_wording_is_not_the_sign_in(wallet, html):
+    out, _state = signed_out_by(wallet, "<!doctype html><html><body>%s</body></html>" % html)
+    assert out is False
+
+
+def test_the_sign_in_words_on_the_wallet_beside_its_card_are_not_signed_out(wallet):
+    """A merchant or a row of the card's own content reading the words is
+    not the sign-in while the balance summary button shows."""
+    html = page_of('<p>Log in or sign up</p><p>Recent activity Log in</p>')
+    out, state = signed_out_by(wallet, html)
+    assert state["signin"] is True and out is False
+    assert [c["last4"] for c in state["cards"]] == ["4821"]
+    out, _state = signed_out_by(wallet, page_of())
+    assert out is False

@@ -34,9 +34,8 @@ past the survey it was built from.
   path and exactly the query keys Expires, Signature and Key-Pair-Id. No
   browser download begins. The tab is closed once the PDF is taken.
 
-Three things are still unseen, the address of Bilt's sign-in page (the
-survey and the run never met it), how long Bilt keeps an idle session,
-and whether a statement's id holds across a fresh sign-in.
+Two things are still unseen, how long Bilt keeps an idle session and
+whether a statement's id holds across a fresh sign-in.
 
 Statements of the earlier Bilt card issued by Wells Fargo, before February
 2026, are not in the Bilt wallet. They are Wells Fargo's, and the
@@ -109,7 +108,11 @@ A statement whose button is turned off on the page is left for the next
 run and the run goes on. Anything else unexpected stops the run.
 
 If Bilt answers as signed out, the run stops and keeps what it saved. Sign
-in again and run Resume.
+in again and run Resume. A signed-out visit to the wallet stays at its own
+address and draws Bilt's sign-in there ("Complete login to continue", "Log
+in or sign up" and the "Sign up / Log in" button), and that is read as
+signed out too. A wallet that shows neither the sign-in nor one Bilt Card
+stops the list instead.
 
 Files are named `YYYY-MM-DD Bilt Card Statement.pdf`. Only when that name
 is already taken does the file add six letters that tell it apart. No card

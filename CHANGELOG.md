@@ -7,6 +7,17 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Fixed
+- **Bilt asks you to sign in again when it has signed you out.** A
+  signed-out visit to the Bilt wallet stays at the wallet's address and
+  draws the sign-in there, with no password field, so the run stopped
+  with "the wallet does not show one Bilt Card" instead. The wallet's own
+  sign-in words and its "Sign up / Log in" button are now read as signed
+  out, so the run saves, stops and asks you to sign in again and Resume. A
+  wallet that shows neither still stops the list as before.
+
 ## [0.53.0] - 2026-10-15
 
 Bilt Card statements arrive, there is a Mac package for Intel, and Wells

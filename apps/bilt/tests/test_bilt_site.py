@@ -262,6 +262,7 @@ class Wallet:
         self.list_delay = 0
         self.on_goto = None
         self.pager = False               # the sheet shows a control for more statements
+        self.sign_in_drawn = False       # the page draws Bilt's sign-in in place
 
     # -- the page's own behavior -------------------------------------------
     def schedule(self, ms, fn):
@@ -375,6 +376,7 @@ class Wallet:
             "profile": ["User profile. " + NAME],
             "welcome": [NAME],
             "pagers": [1] if self.pager and self.list_open else [],
+            "signin": self.sign_in_drawn,
         }
         out.update(self.state_override)
         return out
@@ -395,6 +397,9 @@ class Wallet:
     def evaluate(self, js, arg=None):
         if js == site._STATE_JS:
             return self.state()
+        if js == site._SIGNIN_JS:
+            state = self.state()
+            return {"signin": state["signin"], "summary": state["summary"]}
         raise AssertionError("unknown script")
 
     def get_by_role(self, role, name="", exact=False):
@@ -680,6 +685,63 @@ def test_the_sign_in_page_is_signed_out():
     with pytest.raises(site.SessionExpired):
         site.collect_download_docs(w, run_on(w))
     assert w.presses == []
+
+
+def signed_out_wallet():
+    """The wallet as a signed-out Discover found it on 2026-10-15. The visit
+    stays on /wallet, there is no password field, the page draws its
+    sign-in in place ("Complete login to continue", "Log in or sign up",
+    the nav's "Sign up / Log in"), and no card or balance summary shows."""
+    w = Wallet()
+    w.sign_in_drawn = True
+    w.state_override.update(summary=[], links=[], cards=[], summary_card=[], summary_link=[],
+                            profile=[], welcome=[])
+    return w
+
+
+def test_the_sign_in_drawn_on_the_wallet_is_signed_out():
+    w = signed_out_wallet()
+    with pytest.raises(site.SessionExpired):
+        site.collect_download_docs(w, run_on(w))
+    assert w.gotos == [site.WALLET_URL] and w.presses == []
+    assert w.password is False, "the live sign-in had no password field"
+    assert site.looks_signed_out(w)
+
+
+def test_a_signed_out_discover_asks_to_sign_in_again(tmp_path, monkeypatch):
+    w = signed_out_wallet()
+    app = wallet_app(tmp_path, monkeypatch, w)
+    out = io.StringIO()
+    with redirect_stdout(out), pytest.raises(SystemExit):
+        app.cmd_discover(quiet=True)
+    said = out.getvalue()
+    assert "Bilt answered as signed out" in said and "Sign in again" in said
+    assert "one Bilt Card" not in said
+    assert w.presses == []
+
+
+def test_a_wallet_that_shows_its_card_and_no_sign_in_is_read():
+    w = Wallet()
+    assert not site.looks_signed_out(w)
+    assert len(site.collect_download_docs(w, run_on(w))) == 3
+
+
+def test_a_wallet_with_neither_its_card_nor_the_sign_in_stops_at_one_card():
+    w = Wallet()
+    w.state_override.update(summary=[], cards=[], summary_card=[])
+    with pytest.raises(site.ListStopped) as stop:
+        site.collect_download_docs(w, run_on(w))
+    assert "one Bilt Card with its balance summary" in str(stop.value)
+    assert not site.looks_signed_out(w)
+
+
+def test_the_sign_in_words_beside_the_balance_summary_are_not_signed_out():
+    """The words are read as the sign-in only where the card's balance
+    summary button is not shown."""
+    w = Wallet()
+    w.sign_in_drawn = True
+    assert not site.looks_signed_out(w)
+    assert len(site.collect_download_docs(w, run_on(w))) == 3
 
 
 def test_an_answer_from_another_tab_is_not_this_runs():
