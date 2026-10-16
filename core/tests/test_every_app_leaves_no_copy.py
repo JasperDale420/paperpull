@@ -609,8 +609,45 @@ def test_chasebusiness_takes_its_statement_from_the_folder(left, browser_context
         pg.close()
 
 
+# A document row as Simmons Bank's Banno page draws it, every word made up:
+# the row's own button inside its list item, which here asks the test's
+# provider for the document, as the live page asks the bank for its PDF.
+SIMMONS_ROW = "Loan Periodic Statement August 2026 Statement, RE ARM 00000000 (x0000)"
+SIMMONS_PAGE = (b"<!doctype html><meta charset='utf-8'><jha-list-item role='listitem'>"
+                b"<button type='button' onclick=\"location.href='/doc'\">"
+                + SIMMONS_ROW.encode() + b"</button></jha-list-item>")
+SIMMONS_USER = "0a1b2c3d-1111-4222-8333-944455556666"
+SIMMONS_DOC = "11111111-aaaa-4bbb-8ccc-000000000001"
+
+
+@pytest.mark.parametrize("left", [False, True], ids=["empty folder", "same name already there"])
+def test_simmons_takes_its_document_from_the_folder(left, browser_context, provider, tmp_path,
+                                                   monkeypatch):
+    """Simmons Bank presses the bound row's own button and takes the one
+    download that press brings, through the core, when the page asked that
+    document's own PDF address and the download carries its own file name.
+    Only the bank's Blob address and its PDF address are stood in for, by
+    the test's provider, and the documents page is this page."""
+    site = site_of(REPO / "apps" / "simmons")
+    monkeypatch.setattr(site, "is_download_url", lambda url: url.startswith(provider.base + "/"))
+    monkeypatch.setattr(site, "pdf_ids", lambda url: (SIMMONS_USER, SIMMONS_DOC)
+                        if (url or "").split("?")[0] == provider.base + "/doc" else ("", ""))
+    provider.pages["/simmons"] = SIMMONS_PAGE
+    pg = browser_context.new_page()
+    try:
+        pg.goto(provider.base + "/simmons")
+        staging, out = folder_for(tmp_path, "simmons", left)
+        site.set_download_dir(pg, staging)
+        provider.reset()
+        target = site.Target(SIMMONS_ROW, SIMMONS_DOC, NAME, SIMMONS_USER)
+        got = site._catch_document(pg, site.Run(), staging, target, out, trace=[])
+        check("simmons", got, provider, out, staging)
+    finally:
+        pg.close()
+
+
 DRIVEN_ELSEWHERE_HERE = {"verizon", "vanguard", "ibkr", "coinbase", "alpaca", "firsthorizon",
-                         "chasebusiness"}
+                         "chasebusiness", "simmons"}
 
 # Apps that point the browser at a folder and take nothing from it, so
 # there is no capture here to drive, and why. Each is held to that below.
