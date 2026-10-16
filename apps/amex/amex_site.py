@@ -112,6 +112,7 @@ FALLBACK = {
     "doc_row": ("table tbody tr, [role='row'], [class*='statement-row'], "
                 "[class*='StatementRow'], [class*='document'], "
                 "[data-testid*='statement'], [data-testid*='document'], "
+                "[data-test-id*='statement'], [data-test-id*='document'], "
                 "li[class*='statement'], li[class*='document']"),
     "doc_link": ("a[href*='.pdf'], a[href*='statement'], a[href*='document'], "
                  "a[download], button[class*='download'], "
@@ -262,7 +263,30 @@ def is_safe_control(name: str) -> bool:
 # Documents page navigation
 # ---------------------------------------------------------------------------
 
-_PDF_LINK_SEL = "[data-testid='goToPdfLinkLg'], [data-testid='goToPdfLinkSm']"
+# Amex writes a control's test id as data-testid on some pages and as
+# data-test-id on others, the PDF statements page of a German account among
+# them (#107), so every test id is looked for under both names.
+TEST_ID_ATTRS = ("data-testid", "data-test-id")
+
+
+def _by_test_id(op: str, value: str) -> str:
+    """A selector for a test id under either of its names, `op` one of
+    =, *=, $= or ^=."""
+    return ", ".join("[%s%s'%s']" % (attr, op, value) for attr in TEST_ID_ATTRS)
+
+
+def _test_id_of(el, timeout: int = 0) -> str:
+    """An element's test id, under whichever name it carries, or ""."""
+    kw = {"timeout": timeout} if timeout else {}
+    for attr in TEST_ID_ATTRS:
+        tid = el.get_attribute(attr, **kw)
+        if tid:
+            return tid
+    return ""
+
+
+_PDF_LINK_SEL = ", ".join(_by_test_id("=", name) for name in ("goToPdfLinkLg", "goToPdfLinkSm"))
+_DOWNLOAD_BUTTONS = _by_test_id("*=", "download-button")
 
 
 def goto_documents(page) -> bool:
@@ -293,14 +317,14 @@ def goto_documents(page) -> bool:
                                words=_words(), step="open the statements page")
                 page.wait_for_timeout(6000)
         try:
-            page.wait_for_selector("[data-testid*='download-button']", timeout=12000)
+            page.wait_for_selector(_DOWNLOAD_BUTTONS, timeout=12000)
         except Exception:
             pass
         expand_sections(page)
-        return page.locator("[data-testid*='download-button']").count() > 0
+        return page.locator(_DOWNLOAD_BUTTONS).count() > 0
     except Exception as e:
         log.info("goto_documents (click-nav) failed: %s", e)
-        return page.locator("[data-testid*='download-button']").count() > 0
+        return page.locator(_DOWNLOAD_BUTTONS).count() > 0
 
 
 def expand_sections(page) -> None:
@@ -432,7 +456,8 @@ def collect_documents(page) -> List[RawDoc]:
 # Downloadable-document collection (verified 2026-07 against the live site).
 #
 # On the "Statements and Year End Summaries" page every document is a
-# <button> whose data-testid encodes its category AND date, e.g.
+# <button> whose test id, data-testid or on some pages data-test-id (#107),
+# encodes its category AND date, e.g.
 #   myca-activity-statements/common/Table/recent-statements/2020-01-15/download-button
 #   myca-activity-statements/common/Table/older-statements/2019-01-15/download-button
 #   myca-activity-statements/common/Table/year-end-summary/2019/download-button
@@ -451,14 +476,14 @@ def collect_download_docs(page) -> List[RawDoc]:
     read from the download-button testids (deduped by category+date)."""
     docs: List[RawDoc] = []
     seen = set()
-    loc = page.locator("[data-testid*='download-button']")
+    loc = page.locator(_DOWNLOAD_BUTTONS)
     try:
         n = loc.count()
     except Exception:
         n = 0
     for i in range(n):
         try:
-            tid = loc.nth(i).get_attribute("data-testid") or ""
+            tid = _test_id_of(loc.nth(i))
         except Exception:
             continue
         m = _STMT_TESTID_RE.search(tid)
@@ -569,9 +594,11 @@ def _choose_pdf(page, thing: str, words) -> None:
 
 
 # The "Select File Type" dialog's confirm button renders its label as an icon
-# glyph (its accessible name is unreliable), but it carries a stable test id.
+# glyph (its accessible name is unreliable), but it carries a stable test id,
+# matched by its own last words under either name (#107).
 _DIALOG_CONFIRM_SEL = (
-    "[data-test-id='myca-activity-download-footer-download-confirm-anchor'], "
+    "[data-test-id$='download-footer-download-confirm-anchor'], "
+    "[data-testid$='download-footer-download-confirm-anchor'], "
     "[id*='download-confirm'][id$='-anchor']")
 # The dialog's own controls, its PDF radio and its confirm button, looked for
 # inside the dialog whenever it is found (_dialog_open).
@@ -619,7 +646,7 @@ def _dialog_download_button(page, timeout: int = 8000):
     for i in range(min(_safe_count(cands), 12)):
         el = cands.nth(i)
         try:
-            tid = el.get_attribute("data-testid") or ""
+            tid = _test_id_of(el)
             if el.is_visible() and not tid.endswith("download-button"):
                 return el
         except Exception:
@@ -748,10 +775,10 @@ def download_document(page, category: str, date: str, out_path) -> bool:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     words = _words()
     if category == "Year-End Summary":
-        sel = f"[data-testid$='/year-end-summary/{date[:4]}/download-button']"
+        sel = _by_test_id("$=", f"/year-end-summary/{date[:4]}/download-button")
         thing = "the %s year-end summary" % date[:4]
     else:
-        sel = f"[data-testid$='/{date}/download-button']"
+        sel = _by_test_id("$=", f"/{date}/download-button")
         thing = "the statement dated %s" % date
     button = "the Download button of %s" % thing
 

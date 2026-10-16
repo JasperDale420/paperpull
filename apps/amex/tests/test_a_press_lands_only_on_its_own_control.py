@@ -136,8 +136,7 @@ footer { height: %(footer)s; }
     <label for="ft-csv">Spreadsheet (CSV)</label></div>
   <div class="footer">
     %(cancel)s
-    <a href="#" role="button" id="myca-activity-download-footer-download-confirm-anchor"
-       data-test-id="myca-activity-download-footer-download-confirm-anchor">&#x2913;</a>
+    %(confirm)s
   </div>
 </div>
 <script>
@@ -165,9 +164,10 @@ document.addEventListener('mousemove', (e) => {
     lateFrame.style.visibility = 'visible';
 });
 function closeDialog() { dialog.hidden = true; backdrop.hidden = true; }
-for (const b of document.querySelectorAll('[data-testid$="/download-button"]')) {
+for (const b of document.querySelectorAll(
+    '[data-testid$="/download-button"], [data-test-id$="/download-button"]')) {
   b.addEventListener('click', () => {
-    const date = b.dataset.testid.split('/').slice(-2)[0];
+    const date = (b.dataset.testid || b.dataset.testId).split('/').slice(-2)[0];
     said('row/' + date);
     if (SCENARIO.no_dialog.includes(date)) return;
     openDialog(date);
@@ -187,7 +187,7 @@ document.getElementById('chat-input').addEventListener('keydown', (e) => {
 });
 const other = document.getElementById('other-pdf');
 if (other) other.addEventListener('change', () => said('other-choice'));
-document.getElementById('myca-activity-download-footer-download-confirm-anchor')
+document.querySelector('[data-test-id$="download-footer-download-confirm-anchor"]')
   .addEventListener('click', (e) => {
     e.preventDefault();
     said('confirm/' + current);
@@ -224,10 +224,20 @@ document.getElementById('chat-launcher').addEventListener('click', () => {
 # The rows, each with the copy American Express keeps for a narrow window,
 # hidden, under the same test id.
 ROW = ('<div class="row">Statement closing %(date)s'
-       '<button class="dl" data-testid="myca-activity-statements/common/Table/'
+       '<button class="dl" %(attr)s="%(prefix)s/common/Table/'
        'recent-statements/%(date)s/download-button">Download</button>'
-       '<button class="dl mobile" data-testid="myca-activity-statements/common/Table/'
+       '<button class="dl mobile" %(attr)s="%(prefix)s/common/Table/'
        'recent-statements/%(date)s/download-button">Download</button></div>')
+# The dialog's Download, as the English statements page draws it.
+CONFIRM = ('<a href="#" role="button" id="myca-activity-download-footer-download-confirm-anchor"'
+           ' data-test-id="myca-activity-download-footer-download-confirm-anchor">&#x2913;</a>')
+# A German account's statements page writes its test ids as data-test-id
+# under another prefix (#107). How its dialog's Download is written was not
+# reported, so here it has a test id of the same shape and no id at all.
+GERMAN = {"attr": "data-test-id", "prefix": "axp-pdf-statements",
+          "confirm": ('<a href="#" role="button"'
+                      ' data-test-id="axp-pdf-download-footer-download-confirm-anchor">'
+                      '&#x2913;</a>')}
 
 # A collapsed section whose heading sits where the last Download button
 # would, under the bubble, for Diagnose, which opens such a section.
@@ -271,6 +281,8 @@ class FakeAmex:
         self.unfocusable_first = False
         self.slow = {}
         self.never = []
+        self.ids = {"attr": "data-testid", "prefix": "myca-activity-statements",
+                    "confirm": CONFIRM}
         self.pressed = []
         self.downloads = []
 
@@ -278,7 +290,8 @@ class FakeAmex:
         return PAGE % {
             "title": TITLE, "canary": CANARY, "bubble": self.bubble,
             "main": self.layout["main"], "footer": self.layout["footer"],
-            "rows": "".join(ROW % {"date": d} for d in DATES),
+            "rows": "".join(ROW % dict(self.ids, date=d) for d in DATES),
+            "confirm": self.ids["confirm"],
             "heading": HEADING if self.heading else "",
             "prefs": PREFS if self.prefs else "",
             "cancel": "" if self.escape_only else CANCEL,
@@ -714,6 +727,28 @@ def test_a_frame_that_comes_over_cancel_after_a_saved_statement_stops_the_run(
         == [State.COMPLETED.value], progress(tmp_path)
     assert [p for p in amex.pressed if p.startswith("row/")] == ["row/" + NEWEST], amex.pressed
     assert amex.count("cancel") == 0 and amex.count("frame-click") == 1, amex.pressed
+
+
+def test_a_page_that_writes_its_test_ids_as_data_test_id_is_read_and_saved(attached, amex,
+                                                                           tmp_path, capsys):
+    """A German account's statements page writes every test id as
+    data-test-id, under another prefix, and the app read data-testid alone,
+    so Discover found no statement on a page listing all of them (#107).
+    Both names are read now, and each statement is saved, its own row's
+    button and the dialog's Download pressed once."""
+    amex.bubble = OVER_A_CORNER
+    amex.ids = GERMAN
+    their_tab(attached, amex)
+    code, out = run_all(config(tmp_path, attached), capsys)
+    settle(amex, 4 * len(DATES))
+
+    assert code == 0 and panel_reads(out)["stopped"] == 0, folded(out)
+    assert sorted(saved(tmp_path)) == DATES, folded(out)
+    for date, text in saved(tmp_path).items():
+        assert date in text, "the statement saved for %s is that statement's" % date
+    for date in DATES:
+        assert amex.count("row/" + date) == 1, amex.pressed
+        assert amex.count("confirm/" + date) == 1, amex.pressed
 
 
 def test_a_download_that_answers_after_ten_seconds_is_saved(attached, amex, tmp_path, capsys,

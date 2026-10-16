@@ -7,6 +7,17 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Fixed
+
+- **American Express finds the statements on pages that spell their test ids
+  data-test-id (#107).** A German account's PDF statements page writes each
+  Download button's test id as data-test-id, and the app read data-testid
+  alone, so Discover reported no statements on a page listing all of them.
+  Every test id is now read under both names, the dialog's Download among
+  them. Thanks to Weyoun for finding it and the fix.
+
 ## [0.53.0] - 2026-10-15
 
 Bilt Card statements arrive, there is a Mac package for Intel, and Wells
