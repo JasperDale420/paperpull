@@ -40,6 +40,8 @@ SPEC = AppSpec(
         *INFRASTRUCTURE_FOLDERS,
     ],
     routes={
+        # The monthly account statements and the Coinbase One Card
+        # statements both, each under a name of its own.
         "Statement": "statements",
         "Tax Document": "tax_documents",
         "Insurance Document": "insurance_documents",

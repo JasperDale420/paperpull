@@ -81,6 +81,9 @@ STOPS = {
     ("coinbase", "_press_load_more", "click", "load more of the list"): (1,
         "a control of the whole list, read as showing and turned on before it is pressed, "
         "and a list shown in full leaves only the statement not shown"),
+    ("coinbase", "open_card_list", "click", "open the credit card statements"): (1,
+        "the Statements page's Credit Card tab reaches the list every card statement is "
+        "taken from, so a turned off tab there would leave every card statement"),
     ("ibkr", "open_activity_dialog", "click", "open the Activity Statement dialog"): (1,
         "the Activity Statement row's Run opens the dialog every month's statement is "
         "made in, so a turned off Run would leave every statement"),
@@ -130,7 +133,8 @@ STOPS = {
 LEAVES = {
     ("alpaca", "_press"), ("amex", "download_document"), ("bilt", "_press"),
     ("amfam", "_catch_pdf"), ("applecard", "_catch_pdf"), ("att", "_catch_pdf"),
-    ("chasebusiness", "_press_row"), ("coinbase", "_catch_statement"), ("firsthorizon", "_press"),
+    ("chasebusiness", "_press_row"), ("coinbase", "_catch_statement"),
+    ("coinbase", "_press_card_pdf"), ("firsthorizon", "_press"),
     ("etrade", "_catch_pdf"), ("golden1", "_catch_pdf"), ("nelnet", "_catch_pdf"),
     ("newrez", "_catch_pdf"), ("pge", "_press_once"), ("sba", "_catch_pdf"),
     ("simmons", "_catch_document"), ("smud", "_catch_pdf"), ("statefarm", "_catch_pdf"),
@@ -519,6 +523,18 @@ def _coinbase(site, page, out, staging, trace):
     return site._catch_statement(page, staging, "June 2026", out, trace)
 
 
+def _coinbase_card(site, page, out, staging, trace):
+    """A Coinbase One Card statement's row PDF button, pressed as its own
+    press path presses it, by its row's month."""
+    return site._press_card_pdf(page, "June 2026", trace)
+
+
+def _coinbase_card_button(off: bool) -> str:
+    return ('<button id="get" type="button" class="ctl"%s '
+            'onclick="window.presses++; fetch(\'/statement.pdf\');">PDF</button>'
+            % (" disabled" if off else ""))
+
+
 def _pge(site, page, out, staging, trace):
     said: dict = {}
     got = site._press_once(page, page.query_selector("#get"), lambda: False, said=said)
@@ -727,6 +743,8 @@ def _how(app: str, function: str, monkeypatch):
         return "chasebusiness_site", _chasebusiness, _chasebusiness_menu, "Jun 30, 2026"
     if (app, function) == ("coinbase", "_catch_statement"):
         return "coinbase_site", _coinbase, _coinbase_button, "June 2026"
+    if (app, function) == ("coinbase", "_press_card_pdf"):
+        return "coinbase_site", _coinbase_card, _coinbase_card_button, "June 2026"
     if (app, function) == ("firsthorizon", "_press"):
         return "firsthorizon_site", _firsthorizon, _firsthorizon_card, "06/30/2026"
     if (app, function) == ("pge", "_press_once"):

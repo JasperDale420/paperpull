@@ -342,6 +342,25 @@ Robinhood.
   connections, gives a browser still starting a few seconds to answer, and
   otherwise opens nothing and says how to find what holds the port and how
   to end it.
+- **Coinbase One Card statements.** The Coinbase app now also saves your
+  Coinbase One Card statements, as `<closing date> Coinbase One Card
+  Statement.pdf` in the Statements folder. It opens the Statements page's
+  Credit Card tab, reads the list of statements the page itself asks
+  Coinbase for, and needs the rows the page shows to match that list
+  exactly. For each statement it presses that row's own PDF button once,
+  takes the address the page was handed for that statement only when it is
+  on Coinbase's card statement host and carries that statement's closing
+  date, and keeps the file only when it is a PDF that says Coinbase One
+  Card and prints that closing date. A popup, a download, the tab going
+  anywhere else, or an answer naming another statement or another date
+  stops the run. The statement's id, the card account's id, the signed
+  address and the amounts are never logged or kept. A card list that
+  cannot be read whole, or that names more than one card account, leaves
+  only the card statements, for the next run. Your monthly account
+  statements and tax documents are still taken exactly as before, and the
+  run then ends as one that did not finish. Run live on one account on
+  2026-10-15, where it saved all 13 card statements beside the account
+  statements and tax documents.
 
 ## [0.52.0] - 2026-10-14
 

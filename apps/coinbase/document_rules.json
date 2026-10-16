@@ -1,5 +1,5 @@
 {
-  "_comment": "Editable rules mapping Coinbase document titles to filename summaries, checked in order, tax first, then insurance (unused), then statement. Statements are the monthly account statements on the Statements page, and tax documents are the forms and reports on the Taxes page. Repair after reading a recording or diagnose output.",
+  "_comment": "Editable rules mapping Coinbase document titles to filename summaries, checked in order, tax first, then insurance (unused), then statement. Statements are the monthly account statements on the Statements page and the Coinbase One Card statements on its Credit Card tab, and tax documents are the forms and reports on the Taxes page. Repair after reading a recording or diagnose output.",
   "tax_rules": [
     {
       "pattern": "\\b1099-?DA\\b",
@@ -36,6 +36,10 @@
   ],
   "insurance_rules": [],
   "statement_rules": [
+    {
+      "pattern": "coinbase\\s+one\\s+card\\s+statement",
+      "summary": "One Card Statement"
+    },
     {
       "pattern": "\\bstatement\\b",
       "summary": "Monthly Statement"

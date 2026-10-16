@@ -29,6 +29,29 @@ ways a document arrives:
     mark-read / mark-downloaded calls, which its Download button makes, are
     never made. Pregenerated gain/loss reports (/v2/tax/tax-reports) are
     listed the same way, PDFs only.
+  * A Coinbase One Card statement. The Statements page's "Credit Card"
+    tab (data-testid subpage-navigation-item, text "Credit Card", no href
+    on the survey) is pressed through the core on the statements page
+    loaded by its address. It is pressed rather than opened by its address,
+    /statements/credit-card, because the press is what the survey saw
+    work, twice, and a load of that address was never tried. Opening it,
+    the page itself POSTs graphql-direct/query and answers its list,
+    viewer.creditCard.statements.edges, each with statementId and
+    statementDate (the closing day). That answer is heard, never asked for,
+    and its count and months have to match the rows the page draws, one
+    "<Month YYYY>" row with one PDF button each. `_take_card_statement`
+    then presses that row's PDF button, through press_once, hears the
+    page's own CreditCardStatementRowQuery answer, whose request names the
+    statementId the list gave that month, takes its statementUrl only on
+    exactly statements.cardless.com with that closing date in its path
+    (is_card_statement_url), waits for the tab to arrive there itself,
+    fetches that exact address with the session and no redirect followed,
+    and keeps it only as a PDF that says "Coinbase One Card" and prints the
+    closing date. The tab then goes back to the list, and the list has to
+    show again. The tab's own responses at that address are Chrome's PDF
+    viewer, not the PDF, and are never read. A popup, a download, the tab
+    arriving anywhere else, or an answer that names another statement or
+    another date stops the run.
 
 Session: www.coinbase.com and accounts.coinbase.com share a sign-in through
 login.coinbase.com; `page.goto` to accounts.coinbase.com stays signed in.
@@ -38,8 +61,10 @@ SAFETY (this is a crypto exchange account that can move money):
   that buys, sells, trades, converts, swaps, sends, receives, withdraws,
   deposits, transfers, stakes, borrows, pays, creates an order, API key,
   address or custom statement, or edits any setting. The only controls
-  this app presses are a statement row's own PDF button and the list's
-  "Load more", each through is_safe_control first and then through the
+  this app presses are a statement row's own PDF button, the list's
+  "Load more", the Statements page's "Credit Card" tab (is_card_tab) and a
+  card statement row's own PDF button (is_card_pdf_label), each through
+  its own guard first and then through the
   core (pressing.press_once and pressing.click), which presses nothing
   that something covers and stops the run instead. FORBIDDEN_CONTROL_RE is
   the guard; a control must ALSO look like a document action
@@ -51,9 +76,13 @@ SAFETY (this is a crypto exchange account that can move money):
 
 HOSTS: exact, no subdomain wildcard, and on accounts.coinbase.com only the
 paths this app reads (ALLOWED_PATH_RE). A document is accepted from exactly
-the two S3 hosts above (DOWNLOAD_HOSTS) and from nowhere else. A presigned
-link is used once and never written anywhere; discovery keeps the form's
-opaque id and the API path only.
+the two S3 hosts above (DOWNLOAD_HOSTS) and from nowhere else, and a card
+statement from exactly statements.cardless.com and only at the address the
+page itself was handed for it (is_card_statement_url), which is on neither
+list. A presigned link is used once and never written anywhere. Discovery
+keeps the form's opaque id and the API path only, and for a card statement
+its title and closing date only. The card's account id, the statement's
+id, its signed address and anything in it are never logged or kept.
 
 KNOWN CEILINGS (ponytail: left as they are until a run shows otherwise)
   * The tax list's page cursor is sent as `cursor=`; next_cursor was empty on
@@ -62,8 +91,20 @@ KNOWN CEILINGS (ponytail: left as they are until a run shows otherwise)
     own year field names another year stops the listing.
   * The tax reports list is read as one page of up to 200. An answer that
     says there is another page, or fills the page, stops the listing.
-  * The statements page's "Credit Card" tab is not read; the account this
-    was built on has no Coinbase Card.
+  * The card list is the one answer the page asks for when its Credit Card
+    tab opens. When that answer carries a pageInfo it has to say there is
+    no next page, and when it carries none its months have to follow one
+    another with no month missing. Whether the answer carries a pageInfo
+    was not seen on the survey. Only one card account is read, and an
+    answer naming more than one is a card list this cannot read.
+  * An account whose Statements page shows no Credit Card tab lists no card
+    statement. One whose tab answers no card (creditCard null, or no card
+    account) lists none too. That reading of an account without a card is
+    not surveyed.
+  * A card list this cannot read whole leaves only the card statements,
+    none of them listed (CardListUnread). The monthly statements and tax
+    documents are listed and taken as usual, and the run ends as one that
+    did not finish, so the card statements are asked for again next time.
   * "Last 30 days" is skipped by design, it is not a statement. A list
     showing it twice is a list this cannot read.
   * The statements list is called whole only when its oldest month is the
@@ -74,6 +115,7 @@ KNOWN CEILINGS (ponytail: left as they are until a run shows otherwise)
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sys
@@ -81,7 +123,7 @@ from dataclasses import dataclass
 from datetime import date as _date
 from pathlib import Path
 from typing import List, Optional, Tuple
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from paperpull_core import pressing
 from paperpull_core import redirects
@@ -118,6 +160,12 @@ TAX_URL = f"{BASE}/taxes/documents"
 TAX_FORMS_API = f"{BASE}/v2/tax/forms"
 TAX_REPORTS_API = f"{BASE}/v2/tax/tax-reports"
 TAX_OWNER_API = f"{BASE}/v2/tax/owner-info"
+# The Coinbase One Card's own statements, the Statements page's "Credit Card"
+# tab. The app reaches it by pressing that tab, never by its address.
+CARD_LIST_URL = f"{BASE}/statements/credit-card"
+# Where the page asks for its card list and for a statement's address. The
+# app only listens to the page's own answers here and never asks it itself.
+GRAPHQL_URL = f"{BASE}/graphql-direct/query"
 BILLING_URL = STATEMENTS_URL
 URLS = {
     "home": f"{HOME}/",
@@ -401,6 +449,24 @@ class ListStopped(Exception):
     def __init__(self, why: str, docs=None):
         super().__init__(why)
         self.docs = list(docs or [])
+
+
+class CardListUnread(Exception):
+    """The Coinbase One Card statements could not be read whole, so none of
+    them is listed and they are left for the next run. Only that family is
+    left. `docs` holds the monthly statements and tax documents the listing
+    read, which a run still takes, and the listing is then not called
+    whole."""
+
+    def __init__(self, why: str, docs=None):
+        super().__init__(why)
+        self.docs = list(docs or [])
+
+
+class SessionExpired(Exception):
+    """Coinbase showed its sign-in page, by its address or a password field,
+    where a page of its own was expected. The run stops for the account
+    holder to sign in again."""
 
 
 _PDF_BTN = "button[data-testid='statements-pdf-v2']"
@@ -894,11 +960,16 @@ def shown_documents(page) -> List[RawDoc]:
 
 
 def collect_download_docs(page) -> List[RawDoc]:
-    """Every monthly statement and every tax document. Nothing is pressed
-    except Load more. A statements list that stopped partway still has the
-    tax documents read, and then raises ListStopped holding everything."""
+    """Every monthly statement, every tax document and every Coinbase One
+    Card statement. Nothing is pressed except Load more and the Credit Card
+    tab. A statements list that stopped partway still has the others read,
+    and then raises ListStopped holding everything. A card list that cannot
+    be read whole leaves only the card statements, none of them listed, and
+    raises CardListUnread holding the monthly statements and tax documents,
+    which a run still takes."""
     docs: List[RawDoc] = []
     stopped = None
+    unread = None
     if not goto_documents(page):
         raise ListStopped("the statements page did not open")
     first = _first_transaction(page)
@@ -912,9 +983,16 @@ def collect_download_docs(page) -> List[RawDoc]:
     except ListStopped as stop:
         stop.docs = docs
         raise
+    try:
+        docs.extend(_collect_card(page))
+    except CardListUnread as card:
+        unread = card
     if stopped is not None:
         stopped.docs = docs
         raise stopped
+    if unread is not None:
+        unread.docs = docs
+        raise unread
     return docs
 
 
@@ -1173,12 +1251,24 @@ def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
     taken by loading the statements page afresh, pressing its row's own PDF
     button once and catching the download, which is how the site hands one
     over. Whether the PDF names its own month is the caller's to check
-    (statement_identity)."""
+    (statement_identity). A Coinbase One Card statement is taken on the
+    statements page loaded afresh, through its Credit Card tab and its row's
+    own PDF button (_take_card_statement), which checks the PDF itself."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     t = (title or "").strip()
     if _TAX_TITLE_RE.match(t):
         return _fetch_tax_pdf(page, t, out_path, trace, document_id)
+    c = _CARD_TITLE_RE.match(t)
+    if c:
+        if _checked_date(iso_date, None) != iso_date or _card_label(iso_date) != c.group(1):
+            log.info("title %r and date %s disagree", t, iso_date)
+            return False
+        # Afresh, as for a monthly statement, and the card list heard anew.
+        if not load_statements_for_card(page):
+            log.info("could not open the statements page for %s", iso_date)
+            return False
+        return _take_card_statement(page, c.group(1), iso_date, out_path, trace)
     m = _STATEMENT_TITLE_RE.match(t)
     if not m:
         log.info("not a title this app knows how to fetch: %r", t)
@@ -1192,6 +1282,783 @@ def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
         log.info("could not open the statements page for %s", iso_date)
         return False
     return _catch_statement(page, dl_dir, m.group(1), out_path, trace)
+
+
+# ---------------------------------------------------------------------------
+# Coinbase One Card statements
+# ---------------------------------------------------------------------------
+
+CARD_STATEMENT_HOST = "statements.cardless.com"
+# The signing keys the statement's address carries, each once (a CloudFront signed URL).
+CARD_SIGNED_KEYS = ("Expires", "Signature", "Key-Pair-Id")
+# The Statements page's two sub-navigation links are "Transactions" and
+# "Credit Card". Only the second is ever pressed (is_card_tab).
+CARD_LINK_CSS = "a[data-testid='subpage-navigation-item']"
+CARD_LINK_TEXT = "Credit Card"
+CARD_ROW_QUERY = "CreditCardStatementRowQuery"
+# How long the card list is given to be heard and drawn once its tab is
+# pressed, and how long an account whose tab answers no card is watched
+# before that is believed.
+CARD_LIST_WAIT_MS = 20000
+CARD_NONE_WAIT_MS = 3000
+# How long a press of a card row's PDF button is given for the page's
+# answer and for the tab to arrive at the address it names.
+CARD_LAND_WAIT_MS = 30000
+# How long the list is given to show again once the tab has gone back.
+CARD_BACK_WAIT_MS = 10000
+_CARD_TITLE_RE = re.compile(r"^Coinbase One Card Statement ((?:January|February|March|April|May|"
+                            r"June|July|August|September|October|November|December) (?:19|20)\d{2})$")
+_CARD_PDF_PATH_RE = re.compile(r"/[A-Za-z0-9._~-]+_(\d{4}-\d{2}-\d{2})_Coinbase\.pdf")
+_MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August",
+                "September", "October", "November", "December"]
+# The icon glyphs Coinbase draws in a button, from Unicode's private use
+# areas, which a label is read without.
+_GLYPHS_RE = re.compile("[\\s-\U000f0000-\U000ffffd\U00100000-\U0010fffd]")
+
+# Whether a button is a card row's PDF button, a BUTTON that is not the
+# Transactions tab's own PDF button, whose text is an icon and "PDF". The
+# same reading as is_card_pdf_label.
+_IS_CARD_PDF_JS = r"""(x) => x && x.tagName === 'BUTTON'
+    && x.getAttribute('data-testid') !== 'statements-pdf-v2'
+    && (x.innerText || '').replace(/[\s\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/gu, '') === 'PDF'"""
+
+# The month a card row's PDF button sits in, "September 2026", read upward
+# from the button like _LABEL_OF_JS. An ancestor holding a second card PDF
+# button is the list around the rows, and the label is "" there, so a row
+# whose own text does not start with its month never reads as the first
+# row's.
+_CARD_LABEL_OF_JS = r"""(b) => {
+  const isCard = %s;
+  let el = b;
+  for (let k = 0; k < 8 && el; k++, el = el.parentElement) {
+    if ([...el.querySelectorAll('button')].filter(isCard).length > 1) return '';
+    const t = (el.innerText || '').trim();
+    const m = t.match(/^([A-Z][a-z]+ (?:19|20)\d{2})(?!\S)/);
+    if (m) return m[1];
+  }
+  return '';
+}""" % _IS_CARD_PDF_JS
+
+# Each card PDF button with its row's month, its own words and its place
+# among the page's buttons, which is how it is found again to be pressed.
+_CARD_ROWS_JS = r"""() => {
+  const isCard = %s;
+  const labelOf = %s;
+  return [...document.querySelectorAll('button')].map((b, i) => [b, i])
+    .filter(([b]) => isCard(b))
+    .map(([b, i]) => ({label: labelOf(b), button: (b.innerText || '').trim(), i: i}));
+}""" % (_IS_CARD_PDF_JS, _CARD_LABEL_OF_JS)
+
+
+def _no_fragment(url) -> str:
+    return str(url or "").split("#", 1)[0]
+
+
+def is_card_tab(text: str, href) -> bool:
+    """The Statements page's own Credit Card tab, its text exactly "Credit
+    Card" and no address or exactly the card list's. A "Credit Card" link
+    with any other address, the product page's /creditcard say, is not it.
+    Its words are never put to is_safe_control, which refuses "card" for
+    every other control and goes on doing so."""
+    if re.sub(r"\s+", " ", text or "").strip() != CARD_LINK_TEXT:
+        return False
+    if href in (None, ""):
+        return True
+    return str(href).strip() in ("/statements/credit-card", CARD_LIST_URL)
+
+
+def is_card_pdf_label(name: str) -> bool:
+    """A card statement row's PDF button, read by its words, an icon and
+    "PDF" and nothing else, with the guard's own verdict on them too."""
+    if not name or not is_safe_control(name):
+        return False
+    return _GLYPHS_RE.sub("", name) == "PDF"
+
+
+def is_card_statement_url(url, iso: str) -> bool:
+    """The one address a card statement is taken from, https on exactly
+    statements.cardless.com, no port and no user, a path of one token, the
+    statement's own closing date `iso` and "_Coinbase.pdf". It is applied
+    to the address the page itself was handed for the statement it pressed,
+    so this host is on none of the app's own host lists."""
+    if not url or not iso or not _host_allows(url, {CARD_STATEMENT_HOST}, subdomains=False):
+        return False
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    if port is not None or parts.username or parts.password or "@" in parts.netloc:
+        return False
+    if parts.netloc.lower() != CARD_STATEMENT_HOST or parts.fragment or ("?" in url and not parts.query):
+        return False
+    # The address is signed, so its query is exactly the three signing
+    # keys, each once with a value, or (for a bare address) nothing at all.
+    try:
+        pairs = parse_qsl(parts.query, keep_blank_values=True, strict_parsing=bool(parts.query))
+    except ValueError:
+        return False
+    if pairs and (sorted(k for k, _v in pairs) != sorted(CARD_SIGNED_KEYS) or any(not v for _k, v in pairs)):
+        return False
+    m = _CARD_PDF_PATH_RE.fullmatch(parts.path or "")
+    return bool(m) and m.group(1) == iso
+
+
+def closing_date_re(iso: str):
+    """How a card statement prints its closing day `iso`, "Sep 4, 2031",
+    and the same with the month written out or as "Sept"."""
+    year, month, day = int(iso[:4]), int(iso[5:7]), int(iso[8:10])
+    full = _MONTH_NAMES[month - 1]
+    names = {full, full[:3]} | ({"Sept"} if month == 9 else set())
+    return re.compile(r"\b(?:%s)\.?\s+0?%d,?\s+%d\b"
+                      % ("|".join(sorted(names, key=len, reverse=True)), day, year))
+
+
+def _card_label(iso: str) -> str:
+    """"2031-09-04" -> "September 2031", the month its row reads."""
+    return "%s %s" % (_MONTH_NAMES[int(iso[5:7]) - 1], iso[:4])
+
+
+def _is_graphql(url) -> bool:
+    try:
+        parts = urlsplit(url or "")
+        return (parts.scheme == "https" and (parts.hostname or "") == "accounts.coinbase.com"
+                and parts.port is None and parts.path == "/graphql-direct/query")
+    except ValueError:
+        return False
+
+
+def _listen(page) -> Tuple[list, object]:
+    """A response listener for the page's own graphql-direct answers, GET
+    persisted queries and POSTs alike, and what it hears. Each answer is
+    read as it comes, inside the listener,
+    because the press of a card PDF button sends the tab on at once and a
+    navigation takes the bodies with it. Kept for each are the operation
+    the request names, the statementId its variables name, the status and
+    the answer, None when it could not be read. Nothing of it is logged."""
+    heard: list = []
+
+    def on_response(res):
+        try:
+            method = res.request.method
+            if not _is_graphql(res.url) or method not in ("POST", "GET"):
+                return
+        except Exception:
+            return
+        entry = {"op": "", "statement_id": "", "status": 0, "body": None}
+        try:
+            entry["status"] = int(res.status or 0)
+        except Exception:
+            pass
+        try:
+            # The page sends each query first as a GET persisted query (its
+            # name and variables in the address) and again as a POST with
+            # the full query when the server does not know the hash. Live,
+            # a repeat visit is answered by the GET alone, so both are heard.
+            sent = res.request.post_data_json if method == "POST" else _sent_in_address(res.url)
+            if isinstance(sent, dict):
+                entry["op"] = str(sent.get("operationName") or "")
+                variables = sent.get("variables")
+                if isinstance(variables, dict):
+                    entry["statement_id"] = str(variables.get("statementId") or "")
+        except Exception:
+            pass
+        try:
+            entry["body"] = res.json()
+        except Exception:
+            entry["body"] = None
+        if method == "GET" and entry["status"] == 200 and _is_hash_miss(entry["body"]):
+            # Not an answer. The server did not know the hash (said with a
+            # 200, as live), and the page asks again by POST. Hearing it as
+            # an error would stop a list the POST then answers whole. The
+            # same words on any other status are heard as the error they are.
+            return
+        heard.append(entry)
+    return heard, on_response
+
+
+def _no_duplicate_keys(pairs):
+    """json.loads hook that refuses an object naming a key twice, so a
+    second statementId cannot hide behind the first."""
+    out: dict = {}
+    for k, v in pairs:
+        if k in out:
+            raise ValueError("duplicate key")
+        out[k] = v
+    return out
+
+
+def _sent_in_address(url) -> Optional[dict]:
+    """What a GET persisted query names in its address, operationName and
+    variables (a JSON object), or None when the address cannot be read, or
+    names operationName or variables more than once, or its JSON names a
+    key twice. An ambiguous address is no answer at all."""
+    try:
+        pairs = parse_qsl(urlsplit(url or "").query, keep_blank_values=True)
+    except ValueError:
+        return None
+    keys = [k for k, _v in pairs]
+    if keys.count("operationName") > 1 or keys.count("variables") > 1:
+        return None
+    query = dict(pairs)
+    sent: dict = {"operationName": query.get("operationName") or ""}
+    if "variables" in query:
+        try:
+            variables = json.loads(query["variables"], object_pairs_hook=_no_duplicate_keys)
+        except ValueError:
+            return None
+        sent["variables"] = variables if isinstance(variables, dict) else {}
+    return sent
+
+
+def _is_hash_miss(body) -> bool:
+    """True for the answer that only says the persisted query's hash is
+    unknown, every error coded PERSISTED_QUERY_NOT_FOUND and no data."""
+    if not isinstance(body, dict) or body.get("data") is not None:
+        return False
+    errors = body.get("errors")
+    if not isinstance(errors, list) or not errors:
+        return False
+    return all(isinstance(e, dict) and isinstance(e.get("extensions"), dict)
+               and e["extensions"].get("code") == "PERSISTED_QUERY_NOT_FOUND" for e in errors)
+
+
+def _clean(entry: dict) -> bool:
+    """An answer heard whole, status 200, a JSON object and no errors."""
+    body = entry.get("body")
+    return entry.get("status") == 200 and isinstance(body, dict) and not body.get("errors")
+
+
+def _card_of(body):
+    """viewer.creditCard of an answer, or None when the answer has none."""
+    try:
+        return body["data"]["viewer"]["creditCard"]
+    except (KeyError, TypeError):
+        return None
+
+
+def _has_no_card(body) -> bool:
+    """An answer that says this account has no card, creditCard null or a
+    list of card accounts that is empty."""
+    try:
+        viewer = body["data"]["viewer"]
+    except (KeyError, TypeError):
+        return False
+    if not isinstance(viewer, dict) or "creditCard" not in viewer:
+        return False
+    card = viewer["creditCard"]
+    return card is None or (isinstance(card, dict) and card.get("accounts") == [])
+
+
+def _card_accounts(body) -> int:
+    """How many card accounts an answer names, 0 when it names no list of
+    them."""
+    card = _card_of(body)
+    accounts = card.get("accounts") if isinstance(card, dict) else None
+    return len(accounts) if isinstance(accounts, list) else 0
+
+
+def _statements_of(body):
+    """The `statements` object of a card list answer, or None for an answer
+    that is not one."""
+    card = _card_of(body)
+    if isinstance(card, dict) and isinstance(card.get("statements"), dict) \
+            and "edges" in card["statements"]:
+        return card["statements"]
+    return None
+
+
+def _months_follow(dates: List[str]) -> bool:
+    months = sorted({(int(d[:4]), int(d[5:7])) for d in dates})
+    for (y1, m1), (y2, m2) in zip(months, months[1:]):
+        if (y2 * 12 + m2) - (y1 * 12 + m1) != 1:
+            return False
+    return True
+
+
+def _card_edges(entry: dict) -> List[Tuple[str, str]]:
+    """(statementId, closing day) of every statement a card list answer
+    names, or ListStopped when any of it cannot be read whole. The ids stay
+    in memory, never in a record or a log."""
+    if entry.get("status") != 200 or not isinstance(entry.get("body"), dict) \
+            or entry["body"].get("errors"):
+        raise ListStopped("the page's own list of card statements came back with an error")
+    statements = _statements_of(entry["body"])
+    edges = statements.get("edges") if statements else None
+    if not isinstance(edges, list):
+        raise ListStopped("the page's own list of card statements could not be read")
+    out: List[Tuple[str, str]] = []
+    for e in edges:
+        node = e.get("node") if isinstance(e, dict) else None
+        sid = node.get("statementId") if isinstance(node, dict) else None
+        when = node.get("statementDate") if isinstance(node, dict) else None
+        m = re.match(r"((?:19|20)\d{2}-\d{2}-\d{2})T", when) if isinstance(when, str) else None
+        if not isinstance(sid, str) or not sid.strip() or not m \
+                or _checked_date(m.group(1), None) != m.group(1):
+            raise ListStopped("a card statement in the page's own list could not be read")
+        out.append((sid, m.group(1)))
+    if len({d for _s, d in out}) != len(out) or len({_card_label(d) for _s, d in out}) != len(out):
+        raise ListStopped("two card statements in the page's own list share a month")
+    if len({s for s, _d in out}) != len(out):
+        raise ListStopped("two card statements in the page's own list share an id")
+    more = statements.get("pageInfo")
+    if more is not None:
+        if not isinstance(more, dict) or more.get("hasNextPage") is not False:
+            raise ListStopped("the page's own list of card statements has a page this does not read")
+    elif not _months_follow([d for _s, d in out]):
+        raise ListStopped("the page's own list of card statements skips a month and says "
+                          "nothing of another page")
+    return out
+
+
+@dataclass
+class CardList:
+    """The card list the page answered and drew, matched row for row."""
+    edges: List[Tuple[str, str]]
+    rows: list
+
+
+def _card_rows(page) -> list:
+    try:
+        return page.evaluate(_CARD_ROWS_JS) or []
+    except Exception:
+        return []
+
+
+_CARD_TAB_TEXT_RE = re.compile(r"^\s*Credit\s+Card\s*$")
+
+
+def _card_tab(page):
+    """The Statements page's own Credit Card tab, as (locator, selector),
+    or None when the page shows none. Looked for only on the statements
+    page itself. Found by its text and its address (is_card_tab), then
+    found again for the press by a selector only a link with that address
+    fits and by its exact text, which Playwright holds it to at the press
+    itself, so a link drawn anew in between is never the one pressed. Two
+    that are, or one that cannot be read, stops the list."""
+    if _no_fragment(page.url).rstrip("/") != STATEMENTS_URL:
+        raise ListStopped("the statements page is not open, so its Credit Card tab is not looked for")
+    try:
+        links = page.locator(CARD_LINK_CSS)
+        found = []
+        for i in range(links.count()):
+            link = links.nth(i)
+            href = link.get_attribute("href")
+            if is_card_tab(link.inner_text(timeout=2000), href):
+                found.append(href)
+        if len(found) > 1:
+            raise ListStopped("the statements page shows two Credit Card tabs")
+        if not found:
+            return None
+        href = found[0]
+        css = CARD_LINK_CSS + (":not([href])" if href is None else "[href='%s']" % href)
+        tab = page.locator(css).filter(has_text=_CARD_TAB_TEXT_RE)
+        if tab.count() != 1 or not is_card_tab(tab.inner_text(timeout=2000),
+                                               tab.get_attribute("href")):
+            raise ListStopped("the statements page's Credit Card tab could not be found alone")
+    except ListStopped:
+        raise
+    except Exception as e:
+        raise ListStopped("the statements page's sub-navigation could not be read (%s)"
+                          % type(e).__name__)
+    return tab, css
+
+
+def _left_the_list(step: str, why: str) -> pressing.Stop:
+    """The run's stop for a press that took the tab somewhere it should
+    not have gone or brought something it should not have."""
+    return pressing.Stop(step, why, [
+        "Coinbase answered a press of a card statement control in a way this app does "
+        "not expect (%s), so the run stops here." % why,
+        "Nothing more is pressed. Look at the browser window, then run this again."],
+        after_a_press=True)
+
+
+def _list_changed(step: str, why: str) -> pressing.Stop:
+    """The run's stop for a card list that, read again for one statement,
+    is not the list discovery read whole. Nothing was pressed for it."""
+    return pressing.Stop(step, why, [
+        "The list of card statements changed since it was read (%s), so the run stops "
+        "here rather than leave this statement and go on to the next." % why,
+        "Nothing was pressed for it. Run this again to read the list afresh."])
+
+
+def open_card_list(page) -> Optional[CardList]:
+    """Press the Statements page's Credit Card tab, hear the page's own
+    list of card statements, and match it to the rows it draws. None when
+    the page shows no Credit Card tab, or its answer says the account has
+    no card. A list that cannot be read whole, or that names more than one
+    card account, raises ListStopped. A tab that took the page to the
+    sign-in page raises SessionExpired, and one that took it anywhere else
+    but the card list stops the run."""
+    found_tab = _card_tab(page)
+    if found_tab is None:
+        return None
+    tab, css = found_tab
+    heard, on_response = _listen(page)
+    page.on("response", on_response)
+    rows: list = []
+    try:
+        pressing.click(page, tab, css=css, what="the Credit Card tab of the statements page",
+                       words=_words(), step="open the credit card statements")
+        waited = 0
+        while True:
+            here = _no_fragment(page.url)
+            if here != CARD_LIST_URL and not here.startswith(STATEMENTS_URL):
+                break
+            lists = [h for h in heard if _statements_of(h["body"]) is not None]
+            rows = _card_rows(page) if here == CARD_LIST_URL else []
+            if here == CARD_LIST_URL and lists:
+                try:
+                    want = len(_statements_of(lists[0]["body"]).get("edges") or [])
+                except Exception:
+                    want = -1
+                if len(rows) == want and all(month_to_iso(r.get("label") or "") for r in rows):
+                    break
+            if here == CARD_LIST_URL and not lists and not rows and waited >= CARD_NONE_WAIT_MS \
+                    and any(_has_no_card(h["body"]) for h in heard):
+                break
+            if waited >= CARD_LIST_WAIT_MS:
+                break
+            page.wait_for_timeout(500)
+            waited += 500
+    finally:
+        try:
+            page.remove_listener("response", on_response)
+        except Exception:
+            pass
+    if _no_fragment(page.url) != CARD_LIST_URL:
+        # A tab that went to the sign-in page was signed out, and that is the
+        # account holder's to answer by signing in again.
+        if looks_signed_out(page):
+            raise SessionExpired("the credit card tab opened the sign-in page")
+        raise _left_the_list("open the credit card statements",
+                             "the credit card tab did not open the card statements page")
+    if any(not _clean(h) for h in heard):
+        raise ListStopped("an answer the page had for its card statements could not be read, "
+                          "or came back with an error")
+    # The statements of one card account are read. An answer naming more
+    # than one is a list this cannot tell apart, never one account's alone.
+    if any(_card_accounts(h["body"]) > 1 for h in heard):
+        raise ListStopped("the page names more than one card account")
+    lists = [h for h in heard if _statements_of(h["body"]) is not None]
+    if not lists:
+        if any(_has_no_card(h["body"]) for h in heard) and not rows:
+            log.info("the Credit Card tab answers that this account has no card")
+            return None
+        raise ListStopped("the page's own list of card statements was not heard")
+    if len(lists) > 1:
+        raise ListStopped("the page answered its list of card statements more than once")
+    edges = _card_edges(lists[0])
+    try:
+        if page.locator(_LOAD_MORE).count():
+            raise ListStopped("the card statements page shows a Load more this does not read")
+    except ListStopped:
+        raise
+    except Exception as e:
+        raise ListStopped("the card statements page could not be read (%s)" % type(e).__name__)
+    rows = _card_rows(page)
+    if len(rows) != len(edges):
+        raise ListStopped("the page shows %d card statements and its own list names %d"
+                          % (len(rows), len(edges)))
+    labels = [r.get("label") or "" for r in rows]
+    if not all(month_to_iso(lab) for lab in labels) or len(set(labels)) != len(labels):
+        raise ListStopped("a card statement row has no month this can read, or shares one")
+    if set(labels) != {_card_label(d) for _s, d in edges}:
+        raise ListStopped("the card statement rows and the page's own list name different months")
+    return CardList(edges=edges, rows=rows)
+
+
+def _collect_card(page) -> List[RawDoc]:
+    """One RawDoc per Coinbase One Card statement, newest first, titled by
+    its row's month and dated by its closing day. Nothing about it that is
+    the account's own, its id or the statement's, is kept. A list that
+    cannot be read whole raises CardListUnread, which leaves the card
+    statements alone and never the other families."""
+    try:
+        found = open_card_list(page)
+    except ListStopped as stop:
+        raise CardListUnread(str(stop))
+    if found is None:
+        log.info("no card statements are listed, since the page shows no card")
+        return []
+    docs = []
+    for _sid, iso in sorted(found.edges, key=lambda e: e[1], reverse=True):
+        label = _card_label(iso)
+        docs.append(RawDoc(title=f"Coinbase One Card Statement {label}", date_text=iso,
+                           text=f"Coinbase One Card Statement {label}",
+                           row_index=len(docs), kind="card"))
+    log.info("card statements listed: %d", len(docs))
+    return docs
+
+
+def _card_pdf_ok(body: bytes, iso: str) -> str:
+    """"" for a PDF that is this card statement, and otherwise why not. It
+    has to be a PDF, say "Coinbase One Card" and print the closing day."""
+    if not body or body[:5] != b"%PDF-":
+        return "the answer is not a PDF"
+    try:
+        import io
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(body))
+        text = "\n".join((pg.extract_text() or "") for pg in reader.pages)
+    except Exception:
+        text = ""
+    flat = re.sub(r"\s+", " ", text)
+    if not flat.strip():
+        return "the PDF's text could not be read"
+    if not re.search(r"\bCoinbase One Card\b", flat):
+        return "the PDF does not say Coinbase One Card"
+    if not closing_date_re(iso).search(flat):
+        return "the PDF does not print the statement's closing day"
+    return ""
+
+
+def _press_card_pdf(page, label: str, trace: Optional[list], brought=None):
+    """Press the PDF button of the card row that reads `label`, once,
+    through press_once. The press as press_once says it went, or None when
+    nothing was pressed, a button turned off or gone, or a row that reads
+    another month by the press, which leaves the statement for review and
+    the next run."""
+    def note(what: str) -> None:
+        if trace is not None:
+            trace.append({"note": what})
+
+    idx, btn_label = row_index_for(_card_rows(page), label)
+    if idx < 0:
+        note("no single card row reads this month")
+        return None
+    if not is_card_pdf_label(btn_label):
+        note("the card row's button is not its PDF button")
+        return None
+    try:
+        el = page.locator("button").nth(idx).element_handle(timeout=3000)
+    except Exception:
+        el = None
+    if el is None:
+        note("the card row's PDF button could not be read")
+        return None
+
+    def row_changed() -> str:
+        try:
+            now = el.evaluate(_CARD_LABEL_OF_JS)
+        except Exception:
+            return "its row could not be read"
+        return "" if now == label else "its row reads another month"
+
+    try:
+        if row_changed():
+            note("the card PDF button's row reads another month now")
+            return None
+        try:
+            outcome = pressing.press_once(
+                page, el, what="the PDF button of this month's card statement", words=_words(),
+                guard=is_card_pdf_label, check=row_changed, brought=brought,
+                step="press a card statement's PDF button")
+        except pressing.TurnedOff:
+            note("the card PDF button is turned off on the page, so nothing was pressed")
+            return None
+        if outcome.how == pressing.GONE:
+            note("the card PDF button left the page before it was pressed")
+            return None
+        note("clicked" if outcome.error is None else "click raised, not made again")
+        return outcome
+    finally:
+        try:
+            el.dispose()
+        except Exception:
+            pass
+
+
+def _back_to_card_list(page, count: int, trace: Optional[list]) -> bool:
+    """Take the tab back to the card list, and require it to show its
+    `count` rows again. A list that does not come back has the statements
+    page loaded by its address, so the tab is never left at the statement's
+    signed address."""
+    try:
+        if _no_fragment(page.url) != CARD_LIST_URL:
+            page.go_back(wait_until="domcontentloaded", timeout=30000)
+    except Exception as e:
+        if trace is not None:
+            trace.append({"note": "going back raised", "error": type(e).__name__})
+    waited = 0
+    while True:
+        if _no_fragment(page.url) == CARD_LIST_URL and len(_card_rows(page)) == count:
+            return True
+        if waited >= CARD_BACK_WAIT_MS:
+            break
+        page.wait_for_timeout(500)
+        waited += 500
+    if trace is not None:
+        trace.append({"note": "the card list did not show again, so the statements page was loaded"})
+    reload_statements(page)
+    return False
+
+
+def _take_card_statement(page, label: str, iso: str, out_path: Path, trace: Optional[list]) -> bool:
+    """Take the card statement of the month `label` closing on `iso`, on
+    the statements page as it was just loaded. See the module's docstring
+    for the whole path. Anything the press brings that it should not, a
+    popup, a download, the tab arriving anywhere but the address the page
+    named, or an answer that names another statement or another date,
+    stops the run. A statement whose PDF does not prove itself is left for
+    review, since by then its address was bound to its row."""
+    def note(what: str, **more) -> None:
+        if trace is not None:
+            trace.append(dict({"note": what}, **more))
+
+    step = "take a card statement"
+    # The list was read whole at discovery, and is read again for this
+    # statement. One that is not whole now, or no longer names this
+    # statement once, stops the run, before anything is pressed for it.
+    try:
+        found = open_card_list(page)
+    except ListStopped as stop:
+        note("the card list could not be read", why=str(stop)[:120])
+        raise _list_changed(step, "the list of card statements could not be read again")
+    if found is None:
+        raise _list_changed(step, "the page shows no card statements now")
+    sids = [s for s, d in found.edges if d == iso]
+    if len(sids) != 1 or _card_label(iso) != label:
+        raise _list_changed(step, "the list of card statements does not name this one once now")
+    sid = sids[0]
+    popups: list = []
+    downloads: list = []
+
+    def on_popup(p):
+        popups.append(p)
+
+    def on_download(dl):
+        downloads.append(dl)
+    heard, on_response = _listen(page)
+    listeners = (("popup", on_popup), ("download", on_download), ("response", on_response))
+    for ev, fn in listeners:
+        page.on(ev, fn)
+
+    def answers() -> list:
+        return [h for h in heard if h["op"] == CARD_ROW_QUERY]
+
+    pressed = False
+    try:
+        outcome = _press_card_pdf(page, label, trace,
+                                  brought=lambda: bool(answers() or popups or downloads))
+        if outcome is None:
+            return False
+        pressed = True
+        waited = 0
+        while not popups and not downloads:
+            if answers() and _no_fragment(page.url) != CARD_LIST_URL:
+                break
+            if waited >= CARD_LAND_WAIT_MS:
+                break
+            page.wait_for_timeout(500)
+            waited += 500
+        if popups or downloads:
+            for dl in downloads:
+                try:
+                    dl.cancel()
+                except Exception:
+                    pass
+            raise _left_the_list(step, "a popup or a download came" if popups and downloads
+                                 else ("a popup came" if popups else "a download came"))
+        # From the press on, a statement whose address cannot be bound to
+        # its row stops the run, so no second row is pressed after it.
+        got = answers()
+        if not got:
+            raise _left_the_list(step, "the page did not answer with the address of the statement")
+        if len(got) != 1:
+            raise _left_the_list(step, "the page answered one press more than once")
+        answer = got[0]
+        if answer["statement_id"] != sid:
+            raise _left_the_list(step, "the press asked for another statement than its row")
+        card = _card_of(answer["body"]) if _clean(answer) else None
+        url = card.get("statementUrl") if isinstance(card, dict) else None
+        if url is None and answer["body"] is None and answer.get("status") == 200:
+            # On the live page the tab's own move to the statement's address
+            # evicts the answer's body before it can be read. The address the
+            # page was handed is then where the tab landed, bound to the row's
+            # date exactly as a heard one is, and the request that brought it
+            # has already been held to the row's statementId above. An answer
+            # that was read but names no address still stops the run.
+            landed = _no_fragment(page.url)
+            if is_card_statement_url(landed, iso):
+                note("the statement's address was read from the tab")
+                url = landed
+        if not isinstance(url, str):
+            raise _left_the_list(step, "the page answer naming the statement could not be read")
+        if not is_card_statement_url(url, iso):
+            host = ""
+            try:
+                host = urlsplit(url).hostname or ""
+            except ValueError:
+                pass
+            if host != CARD_STATEMENT_HOST:
+                note("the statement's address is refused", host=host[:60])
+                raise _left_the_list(step, "the address of the statement is on another host")
+            raise _left_the_list(step, "the address of the statement names another date")
+        if _no_fragment(page.url) != url:
+            raise _left_the_list(step, "the tab is not at the address of the statement")
+        try:
+            resp = page.context.request.get(url, max_redirects=0, timeout=60000)
+        except Exception as e:
+            note("the statement could not be fetched", error=type(e).__name__)
+            return False
+        status = getattr(resp, "status", 0)
+        if status != 200:
+            note("the statement's address answered", status=status)
+            return False
+        try:
+            body = resp.body()
+        except Exception as e:
+            note("the statement's answer could not be read", error=type(e).__name__)
+            return False
+        why = _card_pdf_ok(body, iso)
+        if why:
+            note(why)
+            return False
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(body)
+        note("card statement taken")
+        return True
+    finally:
+        for ev, fn in listeners:
+            try:
+                page.remove_listener(ev, fn)
+            except Exception:
+                pass
+        if pressed or _no_fragment(page.url) != CARD_LIST_URL:
+            _back_to_card_list(page, len(found.edges), trace)
+
+
+def load_statements_for_card(page) -> bool:
+    """The statements page loaded by its address, waiting for its Credit
+    Card tab rather than for the Transactions list, so an account whose
+    Transactions list draws late or not at all still reaches its card."""
+    try:
+        page.goto(STATEMENTS_URL, wait_until="domcontentloaded", timeout=60000)
+    except Exception as e:
+        log.info("could not load the statements page (%s)", type(e).__name__)
+        return False
+    if looks_signed_out(page):
+        return False
+    try:
+        page.wait_for_selector(CARD_LINK_CSS, timeout=30000)
+        return True
+    except Exception:
+        return False
+
+
+def where_landed(page) -> str:
+    """Where the tab is, for a file a tester may send, the redacted address
+    on Coinbase's own hosts, and only the host anywhere else, since the
+    card statement's address is signed."""
+    url = getattr(page, "url", "") or ""
+    if is_safe_url(url):
+        return redact(url)
+    try:
+        return (urlsplit(url).hostname or "")[:60]
+    except ValueError:
+        return ""
 
 
 # ---------------------------------------------------------------------------
