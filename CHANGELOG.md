@@ -7,6 +7,25 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Fixed
+
+- **Wells Fargo no longer signs you out looking for your statements (#27).**
+  When the page it was on showed no statement, the app typed the
+  statements address into the signed-in window, and Wells Fargo answered
+  by ending the session. It now reaches Statements & Documents only by the
+  page's own link, and a window that is not on your signed-in accounts
+  stops the run and asks you to open the page yourself. On the page it
+  opens the Statements and Disclosures section, where a checking account's
+  statements are, and goes through every account in the account picker,
+  so each account's statements are listed and the file names say which
+  account when there is more than one. With one account the names and
+  records stay as they were. The sign-in window now opens on
+  www.wellsfargo.com, whose own sign-on form worked on PaperPull Server
+  where the statements address came up blank. Thanks to crazyhorse90210
+  for the surveys and the recording.
+
 ## [0.53.0] - 2026-10-15
 
 Bilt Card statements arrive, there is a Mac package for Intel, and Wells

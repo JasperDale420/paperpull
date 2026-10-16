@@ -53,7 +53,6 @@ from paperpull_core import browser as browser_launcher
 import wellsfargo_site as site
 from paperpull_core.models import State
 from paperpull_core.keys import account_component as _account_component
-from paperpull_core.keys import migrate_account_keys as _migrate_account_keys
 from paperpull_core.words import Fixed, shape_tree, words_for, write_shaped
 from storage import (CsvFile, DOCUMENT_INDEX_COLUMNS, JsonStore, Paths,
                      atomic_write_text, build_pdf_filename, load_config,
@@ -110,16 +109,19 @@ class Document:
 
     @property
     def key(self) -> str:
-        """Stable identity. Category, date and title. The list is read from
-        the page, so there is no document id to store, and a document's date
-        and kind are what tell one from the next."""
+        """Stable identity. Category, date, title and account. The list is
+        read from the page, so there is no document id to store, and a
+        document's date and kind are what tell one from the next, and its
+        account one account's statement of the day from another's (#27).
+
+        The account part is the masked last four the picker's label ends
+        with, since the words before it are a nickname a person can change.
+        A label showing none is kept whole, short enough for a key. A sign-in
+        of one account has no account here, as every record had before #27."""
         if self.document_id:
             return f"id:{self.document_id}"
-        # Keep the last four. Cutting to forty characters made two cards
-        # of the same product collide, because the masked digits that say
-        # which one it is sit at the end, and the second card's whole
-        # history was then read as already downloaded and dropped.
-        acct = _account_component(sanitize_component(self.account or ""))
+        acct = site.account_tail(self.account or "") or \
+            _account_component(sanitize_component(self.account or ""))
         return f"{self.category}:{self.date}:{sanitize_component(self.title)[:60]}:{acct}"
 
     def to_dict(self) -> dict:
@@ -128,16 +130,6 @@ class Document:
     @classmethod
     def from_dict(cls, d: dict) -> "Document":
         return cls(**d)
-
-
-def migrate_legacy_keys(records: dict) -> int:
-    """Move records written while the account was cut to forty characters.
-
-    Only a record whose key is exactly the new one with the last four taken
-    off is moved, so nothing is guessed. An archive whose account names were
-    short enough to fit has no such records and nothing happens.
-    """
-    return _migrate_account_keys(records, lambda r: Document.from_dict(r).key)
 
 
 class App:
@@ -163,9 +155,9 @@ class App:
         self.discovery = JsonStore(self.paths.discovery_json, self.paths.backups)
         self.progress.load()
         self.discovery.load()
-        for store in (self.progress, self.discovery):
-            if migrate_legacy_keys(store.data):
-                store.save(backup=True)
+        # No record here was ever kept under an account cut to forty
+        # characters, since none held an account before #27, so there is
+        # no older key to move a record from.
         self.index_csv = CsvFile(self.paths.document_index_csv,
                                  DOCUMENT_INDEX_COLUMNS, self.paths.backups)
         self.rules = doc_types.load_rules()
@@ -421,9 +413,15 @@ class App:
             self.stats["skipped_out_of_scope"] += 1
             return 0
         rows = getattr(r, "rows", 1)
+        # The site names the account only for a sign-in of several, and
+        # then the file name names it too, so one account's statement of
+        # the day is told from another's on disk as well (#27).
+        account = (getattr(r, "account", "") or "").strip()
+        if account:
+            summary = f"{summary} - {account}"
         doc = Document(title=title, category=category, summary=summary,
                        date=date, confidence=confidence, source_url=source_url,
-                       rows=rows)
+                       rows=rows, account=account)
         if self.discovery.get(doc.key) is None:
             rec = doc.to_dict()
             rec["state"] = State.DISCOVERED.value
@@ -580,7 +578,8 @@ class App:
             site.goto_documents(page)
         trace: list = []
         saved = site.download_bill(page, self._dl_dir, doc.date, out_path,
-                                   title=doc.title, trace=trace, rows=doc.rows)
+                                   title=doc.title, trace=trace, rows=doc.rows,
+                                   account=doc.account)
         # A capture that failed must not leave a convincing empty file behind.
         # A ZIP the capture took stays, for the branch below that opens it.
         if out_path.exists() and not (saved and receipt_pdf.is_zip(out_path)) and (

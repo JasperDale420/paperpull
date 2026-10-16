@@ -105,6 +105,18 @@ STOPS = {
         "the 1099 or Return, each a plain server-drawn link that is never turned off. One "
         "that is would be a page this app does not know, and every later document is "
         "reached through the same tabs"),
+    ("wellsfargo", "goto_documents", "click", "open the statements page"): (1,
+        "the page's own Statements & Documents link reaches the page every document is "
+        "taken from, so a turned off link there would leave every document"),
+    ("wellsfargo", "open_statements", "click", "open the statements section"): (1,
+        "the heading of the section every statement is listed in, pressed only when it "
+        "says it is closed, so a turned off heading would leave every statement"),
+    ("wellsfargo", "_open_picker", "click", "open the account picker"): (1,
+        "the account picker every account's statements are chosen through, so a turned "
+        "off picker would leave every statement of the other accounts"),
+    ("wellsfargo", "choose_account", "click", "choose the account"): (1,
+        "an account's entry in the picker, a step to that account's list and every "
+        "statement in it"),
     ("vanguard", "dismiss_timeout", "click", "continue the session"): (1,
         "keeps the session open for every document"),
     ("vanguard", "show_more", "click", "show more of the list"): (1,

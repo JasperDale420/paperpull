@@ -26,8 +26,9 @@ On a first run it is deliberately cautious.
 
 The guesses that most need confirming from a survey are marked GUESS. The
 one most likely to matter: Wells Fargo lists statements one account at a
-time behind an account picker. The first survey shows what that picker
-looks like, and the second round drives it.
+time behind an account picker. A tester's recording on a checking account
+of four showed that picker and the section it sits in (#27), and the app
+now drives both, see "Statements & Documents" below.
 
 SAFETY (this is a bank account that can move money):
   This module is strictly READ-ONLY. It opens Statements & Documents,
@@ -47,6 +48,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
+from urllib.parse import urlsplit
 
 from paperpull_core.controls import SETTINGS_CONTROL_RE, AUTH_CONTROL_RE
 from paperpull_core.controls import dismiss_overlays as _dismiss_overlays
@@ -91,16 +93,12 @@ def _words():
 
 
 BASE = "https://connect.secure.wellsfargo.com"
-# GUESS. Wells Fargo Online's signed-in pages live on connect.secure. The
-# Statements & Documents area is under /edocs/. The accounts summary is
-# the fallback, since it links to the documents area from a control the
-# survey will name.
-BILLING_CANDIDATES = [
-    f"{BASE}/edocs/statements",
-    f"{BASE}/edocs/documents",
-    f"{BASE}/accounts/start",
-]
-BILLING_URL = BILLING_CANDIDATES[0]
+# Wells Fargo Online's signed-in pages live on connect.secure, and the
+# Statements & Documents area under /edocs/ (both measured, #27). The page
+# is reached by its own link, never by this address, see goto_documents.
+# The address is kept as where a record says its document was listed.
+SIGNED_IN_HOST = "connect.secure.wellsfargo.com"
+BILLING_URL = f"{BASE}/edocs/statements"
 URLS = {
     "home": f"{BASE}/accounts/start",
     # The sign-in opens on the public home page, which has the sign-on form.
@@ -112,8 +110,10 @@ URLS = {
     "statements": BILLING_URL,
 }
 
+# "session_timeout" is where Wells Fargo sent a tester's tab when it ended
+# the session, on its way to the sign-off page (#27).
 LOGIN_URL_MARKERS = ["/login", "/signin", "/sign-in", "/auth/", "/mfa",
-                     "/verification", "/challenge", "/authenticate"]
+                     "/verification", "/challenge", "/authenticate", "session_timeout"]
 
 # ---------------------------------------------------------------------------
 # HARD SAFETY GUARD. Tuned for a bank. Never move money, never open or
@@ -350,42 +350,352 @@ def _bill_controls(page):
     return _controls_named(page, BILL_CONTROL_RE)
 
 
-def _looks_like_billing(page) -> bool:
+def _shows_documents(page) -> bool:
     try:
-        if _bill_controls(page).count() > 0:
-            return True
-    except Exception:
-        pass
-    try:
-        body = page.locator("body").inner_text(timeout=5000)
+        return _bill_controls(page).count() > 0
     except Exception:
         return False
-    return bool(re.search(r"statements?\s+(and|&)\s+documents|statement\s+(period|date)|tax\s+documents",
-                          body, re.I))
+
+
+def _shows_dated_documents(page) -> bool:
+    """Whether the page shows a document control that reads with a date,
+    not only one that names documents, "View statements" on the accounts
+    summary say, which is a way to them and not one of them."""
+    try:
+        return _shows_documents(page) and len(_survey(page)) > 0
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Statements & Documents
+#
+# MEASURED on a tester's checking account of four, a recording of
+# 2026-10-15 (#27). The page lives under /edocs/ on connect.secure, and
+# every signed-in address there carries a token of the session in its
+# query. An address typed without one ended the tester's session, a 302 to
+# a session timeout and then the sign-off page, so a signed-in tab is never
+# sent to a typed address. The page is reached by its own Statements &
+# Documents link.
+#
+# The statements sit in a section whose heading is a button, "Statements
+# and Disclosures", pressed only when it says it is closed, since pressing
+# an open one closes it. Inside is an account picker, a combobox whose
+# entries read "<nickname> ...<last four>", the one shown with "Selected"
+# after it. Each statement is a link with no address, "Statement 09/30/26
+# (123K, PDF)", that opens the PDF in this same tab.
+# ---------------------------------------------------------------------------
+DOCUMENTS_LINK_RE = re.compile(r"^\s*statements?\s*(?:&|and)\s*documents\s*$", re.I)
+STATEMENTS_SECTION_RE = re.compile(r"^\s*statements?\s*(?:&|and)\s*disclosures\s*$", re.I)
+
+# An entry of the account picker, the nickname and the masked last four,
+# and "Selected" after the one shown, read from its text, where a word
+# drawn for a screen reader alone can come with no space before it.
+ACCOUNT_OPTION_RE = re.compile(
+    r"^\s*(?P<label>\S.{0,80}?(?:\.{3}|\*{3,4})\s?\d{4}\)?)(?:\s*selected)?\s*$", re.I)
+_ACCOUNT_TAIL_RE = re.compile(r"(?:\.{3}|\*{3,4})\s?(\d{4})\)?\s*$")
+_ACCOUNT_SHAPE_RE = re.compile(r"(?:\.{3}|\*{3,4})\s?\d{4}\b")
+# Choosing an entry of the picker only changes which account's statements
+# the section lists. An entry is still never pressed when it says any of
+# this, though its shape is an account's.
+ACCOUNT_OPTION_FORBIDDEN_RE = re.compile(
+    r"transfer|zelle|\bwire\b|send\s+money|move\s+money|\bpay\b|payment|"
+    r"open\s+(an?\s+)?(new\s+)?account|add\s+(an?\s+)?account|sign\s*(off|out)|log\s*(off|out)", re.I)
+
+# How long the section's statements have to show once the page is open, and
+# an account's once it is chosen, in milliseconds.
+_SHOW_MS = 15000
+# How long an account's list is given to draw once its answer came.
+_SETTLE_MS = 1500
+
+
+def account_label(name: str) -> str:
+    """An entry of the account picker as the records keep it, its nickname
+    and masked last four without "Selected", or "" for words that are not
+    an account's."""
+    m = ACCOUNT_OPTION_RE.match(" ".join((name or "").split()))
+    return m.group("label").strip() if m else ""
+
+
+def account_tail(label: str) -> str:
+    """The masked last four an account's label ends with, or "" for a label
+    that shows none."""
+    m = _ACCOUNT_TAIL_RE.search(label or "")
+    return m.group(1) if m else ""
+
+
+def is_account_option(name: str) -> bool:
+    name = " ".join((name or "").split())
+    if not ACCOUNT_OPTION_RE.match(name):
+        return False
+    return not (ACCOUNT_OPTION_FORBIDDEN_RE.search(name) or AUTH_CONTROL_RE.search(name)
+                or SETTINGS_CONTROL_RE.search(name))
+
+
+def _signed_in_area(url: str) -> bool:
+    return is_safe_url(url) and (urlsplit(url).hostname or "").lower() == SIGNED_IN_HOST
+
+
+def _on_edocs(url: str) -> bool:
+    path = urlsplit(url or "").path.lower()
+    return _signed_in_area(url) and path.startswith("/edocs/") and not path.startswith("/edocs/support/")
+
+
+def _shows_a_pdf(page) -> bool:
+    try:
+        return "pdf" in str(page.evaluate("() => document.contentType || ''") or "").lower()
+    except Exception:
+        return False
+
+
+def _cannot_open(why: str) -> pressing.Stop:
+    return pressing.Stop("open the statements page", why, [
+        "The run could not open Statements & Documents from the page the Wells Fargo window shows.",
+        "Open Statements & Documents in that window yourself, then press Resume here.",
+        "The run never types a Wells Fargo address into a signed-in window, since that "
+        "ended a tester's session (#27)."])
+
+
+def _first_visible(loc, limit: int = 6):
+    try:
+        for i in range(min(loc.count(), limit)):
+            el = loc.nth(i)
+            if el.is_visible():
+                return el
+    except Exception:
+        pass
+    return None
+
+
+def _label_of(el) -> str:
+    try:
+        return " ".join(((el.get_attribute("aria-label", timeout=_READ_MS) or "")
+                         or (el.inner_text(timeout=_READ_MS) or "")).split())
+    except Exception:
+        return ""
+
+
+def open_statements(page, wait_ms: int = _SHOW_MS) -> bool:
+    """Show the statements on the Statements & Documents page, whether
+    any shows. The section's heading is pressed once, only when it says it
+    is closed and only when no statement shows already."""
+    pressed = False
+    for _ in range(max(1, wait_ms // 500)):
+        if _shows_documents(page):
+            return True
+        if not pressed:
+            head = _first_visible(page.get_by_role("button", name=STATEMENTS_SECTION_RE))
+            if head is not None and is_safe_control(_label_of(head)) and \
+                    (head.get_attribute("aria-expanded") or "").lower() == "false":
+                pressing.click(page, head, css=pressing.BUTTONS,
+                               what="the heading of the Statements and Disclosures section",
+                               words=_words(), step="open the statements section")
+                pressed = True
+        page.wait_for_timeout(500)
+    return _shows_documents(page)
 
 
 def goto_documents(page) -> bool:
-    """Open Statements & Documents. The first candidate that is not a
-    sign-in page and shows something statement-shaped wins, and the URL it
-    lands on is remembered so a later call does not walk the list again."""
-    global BILLING_URL
+    """Open Statements & Documents in this tab, False when Wells Fargo
+    shows a signed-out page.
+
+    A statement opened in this tab is left for the list it came from. A
+    signed-in page that shows documents is where they are taken from, as
+    it always was. Otherwise the page's own Statements & Documents link is
+    pressed, and on the page the statements section is opened. A tab that
+    is not on the signed-in site, or a signed-in page with no such link,
+    stops the run with what to do, since the address is never typed."""
     dismiss_overlay(page)
-    if is_safe_url(page.url or "") and not looks_signed_out(page) and _looks_like_billing(page):
-        return True
-    for url in [BILLING_URL] + [u for u in BILLING_CANDIDATES if u != BILLING_URL]:
+    if _signed_in_area(page.url or "") and _shows_a_pdf(page):
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(5000)
+            page.go_back(wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(1500)
         except Exception as e:
-            log.info("goto %s failed: %s", url, e)
-            continue
+            log.info("could not go back from a statement: %s", type(e).__name__)
         dismiss_overlay(page)
-        if looks_signed_out(page):
-            return False
-        if _looks_like_billing(page):
-            BILLING_URL = url
-            return True
-    return False
+    if looks_signed_out(page):
+        return False
+    url = page.url or ""
+    if not _signed_in_area(url):
+        raise _cannot_open("the tab is not on the signed in site")
+    if _on_edocs(url):
+        open_statements(page)
+        return True
+    if _shows_dated_documents(page):
+        return True
+    link = None
+    for role in ("link", "button", "menuitem"):
+        link = _first_visible(page.get_by_role(role, name=DOCUMENTS_LINK_RE))
+        if link is not None:
+            break
+    if link is None or not is_safe_control(_label_of(link)):
+        raise _cannot_open("the page has no statements and documents link")
+    pressing.click(page, link, css="%s, %s, [role=menuitem]" % (pressing.LINKS, pressing.BUTTONS),
+                   what="the Statements & Documents link", words=_words(),
+                   step="open the statements page")
+    for _ in range(40):
+        if _on_edocs(page.url or "") or looks_signed_out(page):
+            break
+        page.wait_for_timeout(500)
+    dismiss_overlay(page)
+    if looks_signed_out(page):
+        return False
+    if not _on_edocs(page.url or ""):
+        raise _cannot_open("the link did not open the statements page")
+    open_statements(page)
+    return True
+
+
+def _picker_words(page, box) -> str:
+    """What an account picker says of itself, its own text and the label
+    it names, for telling it from another picker before it is opened."""
+    try:
+        return " ".join(str(box.evaluate(
+            """(el) => [el.innerText, el.getAttribute('aria-label'),
+                ...(el.getAttribute('aria-labelledby') || '').split(/\\s+/).filter(Boolean)
+                   .map(id => (document.getElementById(id) || {}).innerText)]
+               .filter(Boolean).join(' ')""", timeout=_READ_MS) or "").split())
+    except Exception:
+        return ""
+
+
+def _options(page, box):
+    """The entries of an open picker, its own first, else the list it
+    controls."""
+    own = box.locator("[role=option]")
+    try:
+        if own.count():
+            return own
+    except Exception:
+        pass
+    ids = (box.get_attribute("aria-controls") or "").split()
+    if ids:
+        return page.locator("[id='%s'] [role=option]" % ids[0].replace("'", ""))
+    return page.get_by_role("listbox").get_by_role("option")
+
+
+def _open_picker(page, box):
+    """Open the account picker, or None when its entries did not show."""
+    if (box.get_attribute("aria-expanded") or "").lower() != "true":
+        pressing.click(page, box, css="[role=combobox]", what="the account picker",
+                       words=_words(), step="open the account picker")
+    for _ in range(10):
+        opts = _options(page, box)
+        if _first_visible(opts) is not None:
+            return opts
+        page.wait_for_timeout(300)
+    return None
+
+
+def _shown_account(page, box, labels) -> Optional[str]:
+    """Which of `labels` the closed picker shows as chosen, or None when it
+    is open or shows no one of them. Two labels one inside the other end in
+    the same last four, which discovery refuses before anything is chosen."""
+    try:
+        if (box.get_attribute("aria-expanded") or "").lower() == "true":
+            return None
+    except Exception:
+        return None
+    said = _picker_words(page, box)
+    found = [label for label in labels if label and label in said]
+    return found[0] if len(found) == 1 else None
+
+
+def _close_picker(page, box) -> None:
+    try:
+        if (box.get_attribute("aria-expanded") or "").lower() == "true":
+            box.press("Escape", timeout=2000)
+    except Exception:
+        pass
+
+
+def account_picker(page):
+    """The statements section's account picker and the labels of its
+    entries, in their order, or (None, []) for a page with none. A picker
+    is one that says it is an account's and whose every entry is one, so a
+    picker of periods is never taken for it."""
+    boxes = page.get_by_role("combobox")
+    try:
+        count = boxes.count()
+    except Exception:
+        return None, []
+    for i in range(min(count, 6)):
+        box = boxes.nth(i)
+        try:
+            if not box.is_visible():
+                continue
+        except Exception:
+            continue
+        said = _picker_words(page, box)
+        if FORBIDDEN_CONTROL_RE.search(said) and not _ACCOUNT_SHAPE_RE.search(said):
+            continue
+        if not (_ACCOUNT_SHAPE_RE.search(said) or re.search(r"\baccounts?\b", said, re.I)):
+            continue
+        opts = _open_picker(page, box)
+        if opts is None:
+            continue
+        try:
+            names = [_label_of(opts.nth(j)) for j in range(min(opts.count(), 30))]
+        except Exception:
+            names = []
+        _close_picker(page, box)
+        labels = [account_label(n) for n in names]
+        if labels and all(labels):
+            return box, labels
+        log.info("a picker whose entries are not all accounts was left alone")
+    return None, []
+
+
+def choose_account(page, label: str) -> bool:
+    """Show the statements of the account `label`, True once they came.
+    False when the page has no account picker or no entry of that label,
+    and nothing was pressed then. An entry pressed whose statements did not
+    come stops the run, since a list read then could be another account's."""
+    box, labels = account_picker(page)
+    if box is None or label not in labels:
+        return False
+    if _shown_account(page, box, labels) == label:
+        return True
+    opts = _open_picker(page, box)
+    entry = None
+    if opts is not None:
+        for j in range(min(opts.count(), 30)):
+            if account_label(_label_of(opts.nth(j))) == label:
+                entry = opts.nth(j)
+                break
+    if entry is None or not is_account_option(_label_of(entry)):
+        _close_picker(page, box)
+        return False
+    heard: list = []
+
+    def on_response(res):
+        try:
+            if is_safe_url(res.url or "") and res.request.method == "POST" and \
+                    "/edocs/documents/statement" in urlsplit(res.url).path.lower():
+                heard.append(res.status)
+        except Exception:
+            pass
+
+    page.on("response", on_response)
+    try:
+        pressing.click(page, entry, css="[role=option]", what="an account in the picker",
+                       words=_words(), step="choose the account")
+        for _ in range(_SHOW_MS // 500):
+            if heard:
+                break
+            page.wait_for_timeout(500)
+        page.wait_for_timeout(_SETTLE_MS)
+    finally:
+        try:
+            page.remove_listener("response", on_response)
+        except Exception:
+            pass
+    shown = _shown_account(page, box, labels)
+    if not heard or not all(200 <= s < 300 for s in heard) or (shown is not None and shown != label):
+        raise pressing.no_answer("choose the account", "the account list did not come",
+                                 "Wells Fargo did not show the statements of the account "
+                                 "chosen in the picker.")
+    return True
 
 
 def scroll_full_page(page, rounds: int = 8, delay_ms: int = 600) -> None:
@@ -708,34 +1018,64 @@ def collect_download_docs(page) -> List[RawDoc]:
     download refuses it rather than guess. A control that would not answer
     is counted and left for the next run, and lends no other control its
     date or its kind. So is a control whose two readings disagree on its
-    date or its kind, which is left for a person."""
+    date or its kind, which is left for a person.
+
+    With an account picker of more than one account, each account is
+    chosen in turn and its documents carry its label (#27). With one, or
+    none, they carry no account, as they always did, so the records of a
+    sign-in of one account keep their keys."""
     expand_all(page)
     scroll_full_page(page)
-    survey = _survey(page)
-    by_document: dict = {}
-    for seen in survey:
-        by_document.setdefault((seen.iso, seen.kind), []).append(seen)
+    _box, labels = account_picker(page)
     docs = _Found()
-    docs.unread, docs.unsure = survey.unread, survey.unsure
-    for (iso, kind), controls in by_document.items():
-        first = controls[0]
-        disp = _human_date(iso)
-        kind_title = KIND_TITLES[kind]
-        docs.append(RawDoc(title=f"{kind_title} - {disp}", date_text=iso,
-                           href=first.href if PDF_HREF_RE.search(first.href or "") else "",
-                           text=f"Wells Fargo {kind_title} {disp}", row_index=first.index,
-                           kind=kind, rows=len(_rows_of(controls))))
-    if survey.unread:
+    if len(labels) <= 1:
+        _add_documents(docs, _survey(page), "")
+    else:
+        tails = [account_tail(label) or label for label in labels]
+        if len(set(tails)) < len(tails) or len(set(labels)) < len(labels):
+            raise pressing.Stop("read the accounts", "two accounts end in the same digits", [
+                "Two accounts in the Wells Fargo picker end in the same last four digits, and "
+                "this app tells accounts apart by them, so it lists none of them rather than "
+                "mix one account's statements with the other's.",
+                "Please say so on GitHub issue #27, so that case can be built."])
+        for label in labels:
+            if not choose_account(page, label):
+                raise pressing.Stop("read the accounts", "an account could not be chosen", [
+                    "An account in the Wells Fargo picker could not be chosen, so the list "
+                    "of statements was not read whole.",
+                    pressing.AGAIN])
+            expand_all(page)
+            scroll_full_page(page)
+            _add_documents(docs, _survey(page), label)
+    if docs.unread:
         log.info("%d document controls would not answer, what they hold waits for the next run",
-                 survey.unread)
-    if survey.unsure:
+                 docs.unread)
+    if docs.unsure:
         log.info("%d document controls read two ways disagree on their date or kind, and are left for a person",
-                 survey.unsure)
+                 docs.unsure)
     shared = sum(1 for d in docs if d.rows > 1)
     if shared:
         log.info("%d documents share their date and kind with another row, none of them is guessed at",
                  shared)
     return docs
+
+
+def _add_documents(docs: _Found, survey: _Survey, account: str) -> None:
+    """One account's documents, from a look at its list, one for each date
+    and kind, added to `docs` with what would not be read."""
+    by_document: dict = {}
+    for seen in survey:
+        by_document.setdefault((seen.iso, seen.kind), []).append(seen)
+    docs.unread += survey.unread
+    docs.unsure += survey.unsure
+    for (iso, kind), controls in by_document.items():
+        first = controls[0]
+        disp = _human_date(iso)
+        kind_title = KIND_TITLES[kind]
+        docs.append(RawDoc(title=f"{kind_title} - {disp}", account=account, date_text=iso,
+                           href=first.href if PDF_HREF_RE.search(first.href or "") else "",
+                           text=f"Wells Fargo {kind_title} {disp}", row_index=first.index,
+                           kind=kind, rows=len(_rows_of(controls))))
 
 
 # Why the download pressed nothing, in the only words that may say so.
@@ -746,6 +1086,8 @@ _REFUSALS = (
     "no control of this date is this kind of document",
     "more than one row of this date holds this kind of document",
     "the control was not the same when read again",
+    "the document names no account and the page lists several",
+    "the document's account is not in the picker",
 )
 
 
@@ -1025,13 +1367,33 @@ def _catch_pdf(page, el, label: str, out_path: Path, trace: Optional[list] = Non
             pass
 
 
+def _account_shown(page, account: str, iso: str, trace: Optional[list]) -> bool:
+    """Whether the list shown is the document's account's, choosing it in
+    the picker when the page lists several. A document of no account, kept
+    from a page of one, is taken only from a page of one."""
+    _box, labels = account_picker(page)
+    if not account:
+        if len(labels) > 1:
+            _refuse(trace, "the document names no account and the page lists several", iso)
+            return False
+        return True
+    if account not in labels:
+        _refuse(trace, "the document's account is not in the picker", iso)
+        return False
+    if len(labels) == 1:
+        return True
+    return choose_account(page, account)
+
+
 def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
-                  trace: Optional[list] = None, rows: int = 1) -> bool:
+                  trace: Optional[list] = None, rows: int = 1, account: str = "") -> bool:
     """Save the document dated `iso_date` of the kind its `title` names,
-    the title discovery wrote. A PDF link on the row is fetched from inside
-    the page. Otherwise the row's own control is clicked, once it has
-    passed the guard, and whichever the site produces is caught, a
-    download event or a PDF response, in this tab or one it opens.
+    the title discovery wrote, of the account `account` discovery chose in
+    the picker, "" for a page of one account. A PDF link on the row is
+    fetched from inside the page. Otherwise the row's own control is
+    clicked, once it has passed the guard, and whichever the site produces
+    is caught, a download event or a PDF response, in this tab or one it
+    opens.
 
     `dl_dir` is where the attached browser saves a download, watched
     after every click. `rows` is how many rows of the page discovery found
@@ -1040,6 +1402,8 @@ def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if not goto_documents(page):
         log.info("could not open the documents page for %s", iso_date)
+        return False
+    if not _account_shown(page, account, iso_date, trace):
         return False
     expand_all(page)
 
