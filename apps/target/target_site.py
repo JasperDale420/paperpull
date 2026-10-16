@@ -1288,3 +1288,26 @@ def is_safe_url(url: str) -> bool:
     The check itself lives in the core, so all of them answer the same way.
     This app keeps the hosts, which is the part that really is its own."""
     return _host_allows(url, ALLOWED_HOSTS)
+
+
+# Target's own static servers. Its pages take their scripts and styles from
+# assets.targetimg1.com and their pictures from target.scene7.com, which is
+# Target's on Adobe's image service. The archived www.target.com of
+# 2026-10-15 names 62 scripts and 19 stylesheets on the first and 24
+# pictures on the second, and the other hosts it names outside target.com
+# are advertising, analytics and its bot check. The headless receipt
+# renderer lets these two serve only what a page is drawn with, never a
+# page, and refuses every other host.
+PRINT_ASSET_HOSTS = {"assets.targetimg1.com", "target.scene7.com"}
+
+
+def is_print_asset_url(url: str) -> bool:
+    """True only for an https URL on exactly one of Target's static hosts."""
+    return _host_allows(url, PRINT_ASSET_HOSTS, subdomains=False)
+
+
+# Every host the renderer's browser may find an address for, the ones
+# is_safe_url takes (target.com and every host under it) and the static
+# ones, and no other.
+PRINT_HOSTS = tuple(sorted(ALLOWED_HOSTS)) + tuple(
+    "*." + h for h in sorted(ALLOWED_HOSTS)) + tuple(sorted(PRINT_ASSET_HOSTS))

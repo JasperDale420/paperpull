@@ -40,7 +40,8 @@ KNOWN = {"test_no_app_forces_a_press.sources",
          "test_no_dead_collections.files",
          "test_a_printed_page_goes_back_to_the_screen.python_sources",
          "test_every_app_asks_the_core_whether_a_page_printed.python_files",
-         "test_every_fresh_browser_draws_before_an_app_attaches.files_to_read"}
+         "test_every_fresh_browser_draws_before_an_app_attaches.files_to_read",
+         "test_every_browser_starts_in_its_sandbox.sources"}
 
 
 def _walks_for_python(fn: ast.FunctionDef) -> bool:
