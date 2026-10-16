@@ -451,7 +451,11 @@ def test_a_statement_saved_before_moves_to_the_account_its_pdf_shows(app, prints
     assert _legacy_key(BROKERAGE) not in app.discovery.data
     rec = app.progress.data[_key(BROKERAGE, "1111")]
     assert (rec["downloaded_ok"], rec["state"], rec["pdf_path"]) == (True, "Completed", str(path))
-    assert (rec["account"], rec["guid"], rec["summary"]) == (FIRST, "g1|id-g1", "Account Statement")
+    assert (rec["account"], rec["guid"]) == (FIRST, "g1|id-g1")
+    # The summary the list gives a sign-in of several accounts, so the
+    # record reads as one listed now.
+    assert rec["summary"] == "Account Statement - " + FIRST
+    assert app.discovery.data[_key(BROKERAGE, "1111")]["summary"] == rec["summary"]
     assert app.discovery.data[_key(BROKERAGE, "1111")]["account"] == FIRST
     # Only the second account's statement is left to take, and the file
     # was neither renamed nor moved.
@@ -474,10 +478,14 @@ def test_the_second_accounts_statement_moves_to_the_second_account(app):
     assert not [d for d in app._select() if not app._already_done(d)]
 
 
-def test_a_moved_statement_is_skipped_as_done_and_rename_can_fill_its_account(app, monkeypatch):
+def test_a_moved_statement_is_skipped_as_done_and_renamed_with_its_account(app, monkeypatch):
+    """Discover never renames the file. A Rename with the default pattern
+    then plans the name a statement of that account downloaded now has,
+    and so does one with {account}."""
     path = _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
                          prints=_statement("Account Number: XXXX-1111"))
     _both_on_one_day(app)
+    assert path.exists() and sorted(p.name for p in path.parent.iterdir()) == [path.name]
     first = next(d for d in app._select() if d.account == FIRST)
     pressed: list = []
     app.download_one = lambda page, d, filename: pressed.append(d.account)
@@ -486,14 +494,21 @@ def test_a_moved_statement_is_skipped_as_done_and_rename_can_fill_its_account(ap
     app.stats["skipped_completed"] = 0
     app.process([first])
     assert pressed == [] and app.stats["skipped_completed"] == 1
-    # The default names stay as they were, and a pattern with {account}
-    # gives the file its account.
-    assert renaming.run_for(app, apply_changes=True, say=lambda *_a: None).renamed == 0
+    # The name a download of the first account's statement takes now.
+    labeled = _name(app.discovery.data[_key(BROKERAGE, "1111")])
+    assert labeled == "%s ETRADE Account Statement - %s.pdf" % (DAY, FIRST)
+    said: list = []
+    assert renaming.run_for(app, apply_changes=False, say=said.append).renamed == 0
+    assert "  %s" % path.name in said and "    -> %s" % labeled in said, said
     assert path.exists()
-    monkeypatch.setattr(core_storage, "_FILENAME_PATTERN", "{date} {account} {summary}")
+    with monkeypatch.context() as m:
+        m.setattr(core_storage, "_FILENAME_PATTERN", "{date} {account} {summary}")
+        said.clear()
+        renaming.run_for(app, apply_changes=False, say=said.append)
+        assert "    -> %s %s Account Statement - %s.pdf" % (DAY, FIRST, FIRST) in said, said
     assert renaming.run_for(app, apply_changes=True, say=lambda *_a: None).renamed == 1
-    assert not path.exists()
-    assert (path.parent / ("%s %s Account Statement.pdf" % (DAY, FIRST))).exists()
+    assert not path.exists() and (path.parent / labeled).exists()
+    assert app.progress.data[_key(BROKERAGE, "1111")]["pdf_path"] == str(path.parent / labeled)
 
 
 def test_a_second_discover_moves_nothing_more(app):

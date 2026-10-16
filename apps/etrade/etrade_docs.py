@@ -300,11 +300,15 @@ def relabel_by_statement(progress: dict, discovery: dict, listed, min_bytes: int
     no done record sits under that document's key already.
 
     It then moves to that key the way adopt_account_keys moves one,
-    progress and discovery alike, and takes the document's account, and
-    its guid when it has one, so Rename can fill {account}. Its state,
-    downloaded_ok, pdf_path, summary and everything else go with it, so the
-    statement is never fetched again and its file keeps its name. The file
-    itself is never renamed or moved here. Anything else stays exactly as
+    progress and discovery alike, and takes the document's account, its
+    summary, which for a sign-in of several accounts ends with the account
+    (App._document_of), and its guid when it has one. So the record reads
+    as one the list gives now, and a Rename gives the file the name a
+    statement downloaded now would have, the account in it, under the
+    default pattern as under one with {account}. Its state, downloaded_ok,
+    pdf_path and everything else go with it, so the statement is never
+    fetched again. The file itself is never renamed or moved here, and
+    keeps its name until a Rename. Anything else stays exactly as
     it is, and 0.53.0 takes each account's statement again under a name
     that says the account, as before.
 
@@ -371,7 +375,7 @@ def relabel_by_statement(progress: dict, discovery: dict, listed, min_bytes: int
         if _done_under(progress, doc.key):
             leave(TAKEN_AGAIN)
             continue
-        carried = {"account": doc.account}
+        carried = {"account": doc.account, "summary": doc.summary}
         if doc.guid:
             carried["guid"] = doc.guid
         progress[doc.key] = dict(rec, **carried)

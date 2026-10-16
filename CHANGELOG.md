@@ -114,8 +114,10 @@ All notable changes to PaperPull are recorded here. Versioning follows
   gives its record an account only when the file prints that account's
   last digits as an account number, as in XXXX-1234, 6789-1234, ...1234 or
   "ending in 1234", and no other listed account's digits appear anywhere in
-  it. That statement is not downloaded again, the file keeps its name and
-  folder, and a naming pattern with `{account}` can now name it. A
+  it. That statement is not downloaded again, and its file keeps its name
+  and folder until you run Rename, which now names it with its account
+  like the statements downloaded since, under the default pattern or one
+  with `{account}`. A
   statement whose file is gone, does not open, or shows no account, more
   than one account, or digits two of your accounts share stays as it was,
   and its account's copy downloads once more as in 0.53.0. A year, an
