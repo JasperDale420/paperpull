@@ -24,7 +24,9 @@ exported, with the difference shown, so you know which rows to doubt.
 
 Amounts are the effect on the balance. Money in is positive, money out is
 negative, for a bank account and a card alike (a card payment is negative,
-a purchase positive, which is how the card prints them).
+a purchase positive, which is how the card prints them). Descriptions and
+every other text are written as text, never as a formula, since a merchant
+chooses the name a statement prints (paperpull_core.sheets).
 
 Reading a PDF takes a moment, and an archive can hold hundreds, so every
 reading is cached beside the installs by file size and modification time.
@@ -47,6 +49,16 @@ from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+# The core beside this tool comes first, as tools/migrate.py takes it, so
+# the rule for what a cell may hold is the one shipped with this copy.
+_CORE = Path(__file__).resolve().parents[1] / "core"
+if (_CORE / "paperpull_core").is_dir() and str(_CORE) not in sys.path:
+    sys.path.insert(0, str(_CORE))
+try:
+    from paperpull_core.sheets import csv_value, keep_text  # noqa: E402
+except ImportError as e:
+    raise ImportError("export_transactions.py needs PaperPull's core folder beside its tools folder") from e
 
 INDEX_SUFFIX = " Document Index.csv"
 CACHE_NAME = ".transactions-cache.json"
@@ -990,11 +1002,13 @@ def export(root: Path, out: Optional[Path] = None, provider: Optional[str] = Non
 
 
 def _write_csv(path: Path, rows: List[dict]) -> None:
+    """Descriptions, accounts and the rest are written as text a spreadsheet
+    will not take for a formula (paperpull_core.sheets). Amounts are numbers."""
     with open(path, "w", encoding="utf-8-sig", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=TXN_COLUMNS)
         w.writeheader()
         for r in rows:
-            w.writerow({k: ("" if v is None else v) for k, v in r.items()})
+            w.writerow({k: csv_value(v) for k, v in r.items()})
 
 
 def _write_xlsx(path: Path, txns: List[dict], stmts: List[dict]) -> None:
@@ -1010,6 +1024,10 @@ def _write_xlsx(path: Path, txns: List[dict], stmts: List[dict]) -> None:
             c.font = Font(bold=True)
         for r in rows:
             ws.append([r.get(c) for c in columns])
+        # Every text cell a string cell, never a formula, on every sheet.
+        for line in ws.iter_rows():
+            for cell in line:
+                keep_text(cell)
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = ws.dimensions
         for i, col in enumerate(columns, start=1):

