@@ -89,6 +89,22 @@ All notable changes to PaperPull are recorded here. Versioning follows
   such row has been seen on the real page. Diagnose now writes the bill
   table's header, so a list that stops for want of that column can be
   repaired.
+- **American Express finds the statements on pages that spell their test ids
+  data-test-id (#107).** A German account's PDF statements page writes each
+  Download button's test id as data-test-id, and the app read data-testid
+  alone, so Discover reported no statements on a page listing all of them.
+  Every test id is now read under both names, the dialog's Download among
+  them. Where a page's links and headings are in another language, the
+  links are found by where they point and the older statements' section by
+  the part it opens, so a run that starts on the dashboard reaches the PDF
+  statements and the older ones are listed and saved. A link found by where
+  it points is taken only when it shows and leads to the activity page or
+  the PDF statements, and where such links name two cards, nothing is
+  pressed and the run says to open the card's statements. Each link on the
+  way is pressed once, and one whose page does not come stops the run
+  rather than being pressed again. An English page is reached the way it
+  always was, its Older Statements heading included. Thanks to Weyoun for
+  finding it all and the fix.
 
 ### Security
 - **PaperPull Server's sign-in cookie stays off plain HTTP behind an HTTPS
