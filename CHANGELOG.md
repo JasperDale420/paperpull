@@ -21,7 +21,10 @@ All notable changes to PaperPull are recorded here. Versioning follows
   statements are, and goes through every account in the account picker,
   so each account's statements are listed and the file names say which
   account when there is more than one. With one account the names and
-  records stay as they were. The sign-in window now opens on
+  records stay as they were. With more than one, a statement an earlier
+  version saved with no account downloads once more, under its account's
+  name, and the earlier copy stays where it is. The sign-in window now
+  opens on
   www.wellsfargo.com, whose own sign-on form worked on PaperPull Server
   where the statements address came up blank. Thanks to crazyhorse90210
   for the surveys and the recording.

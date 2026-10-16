@@ -132,6 +132,32 @@ class Document:
         return cls(**d)
 
 
+def drop_unaccounted(records: dict, listed, done) -> int:
+    """For a sign-in of several accounts, drop discovery's records of no
+    account that are not done, where the list now gives their category,
+    date and title an account (#27). Each account's own record lists that
+    statement now, and the old one would be refused on every run, since a
+    page of several accounts cannot say which account it was. A record
+    that is done stays, and the run's progress is never touched, so
+    nothing saved before is credited to an account. `listed` holds the
+    listed documents as Documents, and `done(record)` says whether a record
+    is done. Returns how many records were dropped."""
+    named = {(d.category, d.date, d.title) for d in listed if d.account}
+    if not named:
+        return 0
+    dropped = 0
+    for key, rec in list(records.items()):
+        if not isinstance(rec, dict) or rec.get("account") or rec.get("document_id"):
+            continue
+        if (rec.get("category"), rec.get("date"), rec.get("title")) not in named:
+            continue
+        if done(rec):
+            continue
+        del records[key]
+        dropped += 1
+    return dropped
+
+
 class App:
     _journal = None
     _requests = None
@@ -422,6 +448,9 @@ class App:
         doc = Document(title=title, category=category, summary=summary,
                        date=date, confidence=confidence, source_url=source_url,
                        rows=rows, account=account)
+        # What this listing listed, for drop_unaccounted.
+        if isinstance(getattr(self, "_listed", None), list):
+            self._listed.append(doc)
         if self.discovery.get(doc.key) is None:
             rec = doc.to_dict()
             rec["state"] = State.DISCOVERED.value
@@ -445,8 +474,15 @@ class App:
             site.goto_documents(page)
         self.check_session(page)
         docs = site.collect_download_docs(page)
+        self._listed = []
         for r in docs:
             n_new += self._record_rawdoc(r, site.BILLING_URL)
+        listed = [d for d in getattr(self, "_listed", []) if d.account]
+        dropped = drop_unaccounted(self.discovery.data, listed,
+                                   lambda rec: self._already_done(Document.from_dict(rec)))
+        if dropped:
+            log.info("%d documents listed before with no account are each account's own now",
+                     dropped)
         self.discovery.save()
         log.info("Statements & Documents page: %d documents, %d new", len(docs), n_new)
 
@@ -512,19 +548,12 @@ class App:
 
     def _on_its_site(self):
         """The tab the next document is taken in, on Wells Fargo's own site and
-        never a tab of another site. Wells Fargo keeps its session in a
-        cookie a new tab shares, so with no tab of the person's on the site
-        the documents page is opened in a tab of this run's own
-        (tabs.on_its_site)."""
-        return tabs.on_its_site(self, site.is_safe_url, "Wells Fargo",
-                                self._open_documents)
-
-    def _open_documents(self, page):
-        """Wells Fargo's documents page, opened by its address the way
-        discovery opens it."""
-        if not site.goto_documents(page):
-            self.check_session(page)
-            site.goto_documents(page)
+        never a tab of another site. Every signed-in Wells Fargo address
+        carries a token of the session that only the person's own tab holds,
+        and an address typed without it ended a tester's session (#27), so
+        a tab of this run's own is never sent there. With no tab of the
+        person's on the site the run stops and says so (tabs.on_its_site)."""
+        return tabs.on_its_site(self, site.is_safe_url, "Wells Fargo")
 
     def process(self, docs: List[Document], dry_run: bool = False):
         for i, doc in enumerate(docs, 1):

@@ -37,6 +37,10 @@ import wellsfargo_docs as app_mod
 import wellsfargo_site as site
 from paperpull_core import pressing
 
+# The real scroll, which ends by pressing End, kept before the fixture
+# below stands in for it.
+REAL_SCROLL = site.scroll_full_page
+
 SIGNED_IN = "https://connect.secure.wellsfargo.com"
 SUMMARY = SIGNED_IN + "/accounts/start?_x=T0K3N"
 EDOCS = SIGNED_IN + "/edocs/documents?_x=T0K3N"
@@ -109,7 +113,12 @@ box.addEventListener('click', async (e) => {
   }
   setOpen(box.getAttribute('aria-expanded') !== 'true');
 });
-box.addEventListener('keydown', e => { if (e.key === 'Escape') setOpen(false); });
+box.addEventListener('keydown', e => {
+  if (e.key === 'Escape') setOpen(false);
+  // End in a closed picker chooses its last account, as it does in a select.
+  if (e.key === 'End' && CFG.endChooses && box.getAttribute('aria-expanded') !== 'true') {
+    current = CFG.accounts.length - 1; render(); }
+});
 document.getElementById('docs').addEventListener('click', e => {
   const a = e.target.closest('a[role=link]');
   if (a) { e.preventDefault(); window.pressed.push(a.dataset.doc); }
@@ -131,8 +140,9 @@ class Site:
     """Wells Fargo's addresses, served from here. Every address the tab is
     sent to is kept, so a typed one would show."""
 
-    def __init__(self, accounts, expanded=False, silent=(), link=True):
-        self.cfg = {"accounts": accounts, "expanded": expanded, "silent": list(silent)}
+    def __init__(self, accounts, expanded=False, silent=(), link=True, end_chooses=False):
+        self.cfg = {"accounts": accounts, "expanded": expanded, "silent": list(silent),
+                    "endChooses": end_chooses}
         self.link = link
         self.navigations = []
         self.posts = []
@@ -337,6 +347,56 @@ def test_an_account_whose_list_never_comes_stops_the_run(open_site):
     assert site.goto_documents(pg)
     with pytest.raises(pressing.NoAnswer):
         site.collect_download_docs(pg)
+
+
+def test_the_end_key_never_reaches_the_picker_while_an_account_is_read(open_site, monkeypatch):
+    """The scroll to the foot of the page ends with End, and the picker
+    held the focus its entry's press left. In a picker where End chooses
+    the last account, as a select does, that account's statements were
+    read under the account just chosen (a review of the first build)."""
+    monkeypatch.setattr(site, "scroll_full_page",
+                        lambda pg, *a, **k: REAL_SCROLL(pg, rounds=1, delay_ms=100))
+    fake = Site([_account(MAIN, ["09/30/26"]), _account(SAVINGS, ["08/31/26"]),
+                 _account(CARD, ["07/15/26"])], end_chooses=True)
+    pg = open_site(fake, EDOCS)
+    assert site.goto_documents(pg)
+    docs = site.collect_download_docs(pg)
+    assert sorted((d.account, d.date_text) for d in docs) == sorted(
+        [(MAIN, "2026-09-30"), (SAVINGS, "2026-08-31"), (CARD, "2026-07-15")])
+
+
+def test_a_picker_that_moved_to_another_account_stops_the_list(open_site, monkeypatch):
+    """Should the focus stay on the picker after all, the account it shows
+    is read again before its statements are taken."""
+    monkeypatch.setattr(site, "_let_go_of_focus", lambda pg: None)
+    monkeypatch.setattr(site, "scroll_full_page",
+                        lambda pg, *a, **k: REAL_SCROLL(pg, rounds=1, delay_ms=100))
+    fake = Site([_account(MAIN, ["09/30/26"]), _account(SAVINGS, ["08/31/26"]),
+                 _account(CARD, ["07/15/26"])], end_chooses=True)
+    pg = open_site(fake, EDOCS)
+    assert site.goto_documents(pg)
+    with pytest.raises(pressing.Stop) as stop:
+        site.collect_download_docs(pg)
+    assert stop.value.reason == "the picker moved to another account"
+
+
+def test_records_of_no_account_a_listing_of_several_replaces_are_dropped_unless_done():
+    """Old records of no account would be refused on every run once the
+    page lists several accounts. Those not done go, those done stay, and a
+    statement of another day is not touched."""
+    title = "Account Statement - September 30, 2026"
+    old = {"category": "Statement", "date": "2026-09-30", "title": title, "account": ""}
+    records = {
+        "Statement:2026-09-30:%s:Unnamed" % title: dict(old),
+        "kept-done": dict(old, downloaded_ok=True),
+        "other-day": dict(old, date="2026-08-31"),
+    }
+    listed = [app_mod.Document(category="Statement", date="2026-09-30", title=title,
+                               account=MAIN)]
+    dropped = app_mod.drop_unaccounted(records, listed, lambda rec: bool(rec.get("downloaded_ok")))
+    assert dropped == 1
+    assert sorted(records) == ["kept-done", "other-day"]
+    assert app_mod.drop_unaccounted(dict(records), [], lambda rec: False) == 0
 
 
 def test_the_key_keeps_the_last_four_so_a_new_nickname_finds_its_records():

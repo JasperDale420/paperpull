@@ -601,12 +601,34 @@ def _shown_account(page, box, labels) -> Optional[str]:
     return found[0] if len(found) == 1 else None
 
 
+def _let_go_of_focus(page) -> None:
+    """Take the keyboard's focus off the picker, so a key the run sends
+    later, End to reach the foot of the page, never moves the account a
+    picker chooses, as End does in a select."""
+    try:
+        page.evaluate("() => { const el = document.activeElement;"
+                      " if (el && el !== document.body && el.blur) el.blur(); }")
+    except Exception:
+        pass
+
+
 def _close_picker(page, box) -> None:
     try:
         if (box.get_attribute("aria-expanded") or "").lower() == "true":
             box.press("Escape", timeout=2000)
     except Exception:
         pass
+    _let_go_of_focus(page)
+
+
+def _still_shows(page, box, labels, label: str) -> bool:
+    """Whether the picker still shows `label` as chosen, or shows no
+    account's words to tell by, when the answer that came for it is what
+    was waited on."""
+    if box is None:
+        return True
+    shown = _shown_account(page, box, labels)
+    return shown is None or shown == label
 
 
 def account_picker(page):
@@ -666,33 +688,54 @@ def choose_account(page, label: str) -> bool:
     if entry is None or not is_account_option(_label_of(entry)):
         _close_picker(page, box)
         return False
-    heard: list = []
+    # The list's answers, by their request, and which requests have been
+    # read to their end. A response is heard once its headers come, before
+    # the list it carries, so the list is waited for until its request ends.
+    statuses: dict = {}
+    ended: list = []
+
+    def _is_list(req) -> bool:
+        return is_safe_url(req.url or "") and req.method == "POST" and \
+            "/edocs/documents/statement" in urlsplit(req.url).path.lower()
 
     def on_response(res):
         try:
-            if is_safe_url(res.url or "") and res.request.method == "POST" and \
-                    "/edocs/documents/statement" in urlsplit(res.url).path.lower():
-                heard.append(res.status)
+            if _is_list(res.request):
+                statuses[id(res.request)] = res.status
         except Exception:
             pass
 
+    def on_finished(req):
+        try:
+            if _is_list(req):
+                ended.append(id(req))
+        except Exception:
+            pass
+
+    def came() -> bool:
+        return bool(ended) and all(i in statuses for i in ended)
+
     page.on("response", on_response)
+    page.on("requestfinished", on_finished)
     try:
         pressing.click(page, entry, css="[role=option]", what="an account in the picker",
                        words=_words(), step="choose the account")
         for _ in range(_SHOW_MS // 500):
-            if heard:
+            if came():
                 break
             page.wait_for_timeout(500)
         page.wait_for_timeout(_SETTLE_MS)
     finally:
-        try:
-            page.remove_listener("response", on_response)
-        except Exception:
-            pass
+        for event, handler in (("response", on_response), ("requestfinished", on_finished)):
+            try:
+                page.remove_listener(event, handler)
+            except Exception:
+                pass
+    _let_go_of_focus(page)
     shown = _shown_account(page, box, labels)
-    if not heard or not all(200 <= s < 300 for s in heard) or (shown is not None and shown != label):
-        raise pressing.no_answer("choose the account", "the account list did not come",
+    if not came() or not all(200 <= s < 300 for s in statuses.values()) or \
+            (shown is not None and shown != label):
+        raise pressing.no_answer("choose the account", "the account list had no answer",
                                  "Wells Fargo did not show the statements of the account "
                                  "chosen in the picker.")
     return True
@@ -1033,7 +1076,7 @@ def collect_download_docs(page) -> List[RawDoc]:
     else:
         tails = [account_tail(label) or label for label in labels]
         if len(set(tails)) < len(tails) or len(set(labels)) < len(labels):
-            raise pressing.Stop("read the accounts", "two accounts end in the same digits", [
+            raise pressing.Stop("read the accounts", "two accounts end in the same last four", [
                 "Two accounts in the Wells Fargo picker end in the same last four digits, and "
                 "this app tells accounts apart by them, so it lists none of them rather than "
                 "mix one account's statements with the other's.",
@@ -1046,6 +1089,11 @@ def collect_download_docs(page) -> List[RawDoc]:
                     pressing.AGAIN])
             expand_all(page)
             scroll_full_page(page)
+            if not _still_shows(page, _box, labels, label):
+                raise pressing.Stop("read the accounts", "the picker moved to another account", [
+                    "The Wells Fargo picker showed another account while its statements were "
+                    "being read, so none of them was filed under the wrong account.",
+                    pressing.AGAIN])
             _add_documents(docs, _survey(page), label)
     if docs.unread:
         log.info("%d document controls would not answer, what they hold waits for the next run",
@@ -1088,6 +1136,7 @@ _REFUSALS = (
     "the control was not the same when read again",
     "the document names no account and the page lists several",
     "the document's account is not in the picker",
+    "the picker moved to another account",
 )
 
 
@@ -1367,22 +1416,24 @@ def _catch_pdf(page, el, label: str, out_path: Path, trace: Optional[list] = Non
             pass
 
 
-def _account_shown(page, account: str, iso: str, trace: Optional[list]) -> bool:
+def _account_shown(page, account: str, iso: str, trace: Optional[list]):
     """Whether the list shown is the document's account's, choosing it in
-    the picker when the page lists several. A document of no account, kept
-    from a page of one, is taken only from a page of one."""
-    _box, labels = account_picker(page)
+    the picker when the page lists several, with the picker and its labels
+    for checking it again just before the press, or (False, None, []). A
+    document of no account, kept from a page of one, is taken only from a
+    page of one."""
+    box, labels = account_picker(page)
     if not account:
         if len(labels) > 1:
             _refuse(trace, "the document names no account and the page lists several", iso)
-            return False
-        return True
+            return False, None, []
+        return True, None, []
     if account not in labels:
         _refuse(trace, "the document's account is not in the picker", iso)
-        return False
+        return False, None, []
     if len(labels) == 1:
-        return True
-    return choose_account(page, account)
+        return True, None, []
+    return choose_account(page, account), box, labels
 
 
 def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
@@ -1403,9 +1454,13 @@ def download_bill(page, dl_dir, iso_date: str, out_path, title: str = "",
     if not goto_documents(page):
         log.info("could not open the documents page for %s", iso_date)
         return False
-    if not _account_shown(page, account, iso_date, trace):
+    shown, box, labels = _account_shown(page, account, iso_date, trace)
+    if not shown:
         return False
     expand_all(page)
+    if account and not _still_shows(page, box, labels, account):
+        _refuse(trace, "the picker moved to another account", iso_date)
+        return False
 
     el, label = _control_for(page, iso_date, kind_of_title(title), trace, rows)
     if el is None:
