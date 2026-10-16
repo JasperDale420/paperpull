@@ -893,18 +893,44 @@ def tails_seen(text: str, tails) -> set:
             and re.search(t + r"(?![0-9])", text)}
 
 
+# An account's label as E*TRADE writes it, words, a space and a dash before
+# the digits, "Individual Brokerage -2222", whichever account it is.
+_LABEL_DIGITS_RE = re.compile(r"(?<![0-9A-Za-z])[A-Za-z]{2,} -(?P<digits>[0-9]{3,12})" + _DIGITS_END)
+# Words of an account, which between a tax word and a number say the number
+# is the account's.
+_ACCOUNT_WORDS_RE = re.compile(r"\b(?:account|acct|card)\b", re.I)
+
+
+def _a_tax_id_alone(text: str, m) -> bool:
+    """Whether a match is a tax id's last digits, by its masking marks, or
+    by a tax word before it with no word of an account between, so a
+    number labeled as an account's just after a masked tax id is still an
+    account's."""
+    mask = m.groupdict().get("mask")
+    if mask and _TAX_ID_MASK_RE.fullmatch(mask):
+        return True
+    start = max(0, m.start() - 40)
+    words = list(_TAX_ID_WORDS_RE.finditer(text[start:m.start()]))
+    if not words:
+        return False
+    return not _ACCOUNT_WORDS_RE.search(text[start + words[-1].end():m.end()])
+
+
 def account_numbers_printed(text: str) -> set:
     """The last digits of every account number the text prints in one of
-    the shapes above, whichever account it is, listed or not. A statement
-    of an account the lists no longer name, a closed one, printing its own
-    number and another account's in a transfer, shows only that other
-    account among the listed ones, and was moved to it (review of the
-    relabel). Nothing of the text is kept or written anywhere."""
+    the shapes above, or in a label's shape, whichever account it is,
+    listed or not. A statement of an account the lists no longer name, a
+    closed one, printing its own number and another account's in a
+    transfer, shows only that other account among the listed ones, and was
+    moved to it (review of the relabel). Every number found only refuses a
+    move, so a tax word does not hide a number labeled as an account's, and
+    a closed account's label counts as much as a listed one's (the second
+    review). Nothing of the text is kept or written anywhere."""
     text = re.sub(r"\s+", " ", text or "")
     found = set()
-    for pattern in _printed_shapes(_ANY_DIGITS):
+    for pattern in _printed_shapes(_ANY_DIGITS) + [_LABEL_DIGITS_RE]:
         for m in pattern.finditer(text):
-            if not _a_tax_id(text, m) and not _a_year_range(m):
+            if not _a_tax_id_alone(text, m) and not _a_year_range(m):
                 found.add(m.group("digits"))
     return found
 

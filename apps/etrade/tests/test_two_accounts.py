@@ -691,6 +691,24 @@ def test_a_closed_accounts_statement_naming_a_listed_one_in_a_transfer_stays(app
     assert "1 for %s" % etrade_docs.OTHER_NUMBER in said, said
 
 
+@pytest.mark.parametrize("own", [
+    "Invented Closed -2222",
+    "SSN XXX-XX-5555 Account Number: XXXX-2222",
+], ids=["its label's shape", "after a masked tax id"])
+def test_a_closed_accounts_number_in_another_shape_still_keeps_it_where_it_is(app, caplog, own):
+    """The second review's cases. The closed account's own number printed
+    in the shape of a label, or labeled as an account's just after a masked
+    tax id, was not counted, so the transfer to the listed account ending
+    1111 was the only account the statement showed, and it moved there."""
+    _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                  prints=_statement(own, "Transfer to %s $500.00" % FIRST))
+    before = dict(app.progress.data[_legacy_key(BROKERAGE)])
+    caplog.set_level(logging.INFO)
+    app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(RETIREMENT, "Invented Joint -3333", "g3"))
+    assert app.progress.data[_legacy_key(BROKERAGE)] == before
+    assert _key(BROKERAGE, "1111") not in app.progress.data
+
+
 @pytest.mark.parametrize("valid", [True, False], ids=["a review copy", "a file that does not open"])
 def test_a_record_under_its_accounts_key_naming_a_file_keeps_it(app, caplog, valid):
     """The review's case. A Needs Manual Review copy under the account's
@@ -806,6 +824,11 @@ def test_every_account_number_printed_is_found_listed_or_not():
             "SSN XXX-XX-5555, Statement period 2024-2025, Page 1 of 3")
     assert site.account_numbers_printed(text) == {"2222", "1111", "4321"}
     assert site.account_numbers_printed("Account Number: 6789-1111") == {"1111"}
+    # A label's shape, listed or not, and a number labeled as an account's
+    # just after a masked tax id (the second review).
+    assert site.account_numbers_printed("Invented Closed -2222 Transfer") == {"2222"}
+    assert site.account_numbers_printed(
+        "SSN XXX-XX-5555 Account Number: XXXX-2222") == {"2222"}
     assert site.account_numbers_printed("Account Number: 67891111") == {"67891111"}
     assert site.one_account("67891111", "1111") and site.one_account("111", "1111")
     assert not site.one_account("2222", "1111")
