@@ -112,6 +112,30 @@ All notable changes to PaperPull are recorded here. Versioning follows
   rather than being pressed again. An English page is reached the way it
   always was, its Older Statements heading included. Thanks to Weyoun for
   finding it all and the fix.
+- **E*TRADE gives a statement saved before 0.53.0 its account when the
+  file itself says which (#96).** On a sign-in with more than one account,
+  0.53.0 left every statement an earlier version saved where it was, since
+  the list alone cannot say which account it belonged to, and so each
+  account's statements downloaded once more, named with the account,
+  beside the old copies. Discover now reads each of those saved PDFs and
+  gives its record an account only when the file prints that account's
+  last digits as an account number, as in XXXX-1234, 6789-1234, ...1234 or
+  "Account ending in 1234", no other listed account's digits appear
+  anywhere in it, and it prints no other account number at all, so a
+  closed account's statement that names an open one in a transfer is never
+  taken for the open one's. That statement is not downloaded again, and
+  its file keeps its name and folder until you run Rename, which now names
+  it with its account like the statements downloaded since, under the
+  default pattern or one with `{account}`. A statement whose file is gone,
+  does not open, or shows no account, more than one account, or digits two
+  of your accounts share stays as it was, and so does one whose account
+  already has that statement saved or kept for review. Its account's copy
+  then downloads once more as in 0.53.0, if it was not saved already. A
+  year, an amount, a phone number or a tax id number is never taken for an
+  account. The log says how many moved and why the rest stayed, never an
+  account or a word of a file. No E*TRADE PDF has been seen yet, so how one
+  prints its account number is still a guess. Thanks to @appchamp for the
+  report.
 
 ### Security
 - **PaperPull Server's sign-in cookie stays off plain HTTP behind an HTTPS

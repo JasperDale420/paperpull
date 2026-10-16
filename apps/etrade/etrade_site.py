@@ -762,6 +762,185 @@ def accounts_in(docs) -> set:
     return found
 
 
+# --- an account's digits in a statement saved before #96 ---------------------
+#
+# How a saved statement may print the account it is for, read to move a
+# record kept before #96 to its account on a sign-in of several accounts.
+# No E*TRADE PDF has been seen yet, so each of these is a guess, and each is
+# a shape an account number takes, never a number on its own. The last
+# digits after masking marks, "XXXX-1111", "XXXX1111", "**** 1111",
+# "####1111", "...1111", "(...1111)" or "--1111", after an account's
+# "ending in", after an "Account Number", "Account No.", "Acct #" or
+# "Account:" label, as the end of a number written "6789-1111", or after
+# the words of the account's own label as the list shows it, "Invented
+# Brokerage -1111". A year, an amount, a date, a time or a Social Security
+# or tax id number is none of them (tails_printed).
+
+_MARKS = "Xx*#•●∗"
+_MARK = "[" + _MARKS + "]"
+# The digits end the number. Not followed by another digit, or by a
+# decimal point, comma, slash, colon or dash and a digit, as an amount, a
+# date, a time or the first part of a longer number is.
+_DIGITS_END = r"(?![0-9])(?![.,/:\-][0-9])"
+# A Social Security, tax id or employer id number masked to its last four,
+# "XXX-XX-1111" or "XX-XXX1111", by the marks before the digits.
+_TAX_ID_MASK_RE = re.compile(r"%s{3}-%s{2}|%s{2}-%s{3}" % ((_MARK,) * 4))
+# Words that say a number nearby is a tax id, not an account.
+_TAX_ID_WORDS_RE = re.compile(
+    r"\b(?:ssn|tin|ein|social security|taxpayer|tax id|identification)\b", re.I)
+_YEAR_RE = re.compile(r"(?:19|20)[0-9]{2}")
+
+
+# Any account number's last digits, for account_numbers_printed, in place
+# of one tail. Up to twelve, so a number printed whole still ends them.
+_ANY_DIGITS = r"(?P<digits>[0-9]{3,12})"
+
+
+def _printed_shapes(tail: str) -> List["re.Pattern"]:
+    """The shapes of an account number ending in `tail` that
+    tails_printed accepts, beside the account's own label. `tail` is the
+    digits, or _ANY_DIGITS for any account number at all."""
+    t = tail + _DIGITS_END
+    return [re.compile(p, re.I) for p in (
+        # masking marks, "XXXX-1111", "XXXX1111", "XX-XXXX-1111"
+        r"(?<![0-9A-Za-z])(?P<mask>%s{2,}(?:-%s+)*)-?%s" % (_MARK, _MARK, t),
+        # four or more marks and a space, "**** 1111", "XXXX XXXX 1111"
+        r"(?<![0-9A-Za-z])(?P<mask>%s{4,}(?: %s{4,})*) %s" % (_MARK, _MARK, t),
+        # a short run of dots or an ellipsis, "...1111", "(...1111)", never a
+        # dot leader's long run before a page number or a year
+        r"(?<![0-9.])\.{2,4}%s" % t,
+        r"… ?%s" % t,
+        # a run of dashes, "--1111"
+        r"(?<![0-9\-])-{2,4}%s" % t,
+        # "Account ending in 1111", "card number ends with 1111", the words
+        # of an account before it, since "the year ending 2024" is a year
+        r"\b(?:account|acct|card|number)\b[^0-9]{0,30}?\bend(?:ing|s) (?:in|with) ?[:#]? ?"
+        r"(?:[%s.…\-]+ ?)?%s" % (_MARKS, t),
+        # a label, "Account Number: 6789-1111", "Account No. XXXX1111",
+        # "Acct #1111", "Account: ****1111", the digits ending the number
+        # that follows it
+        r"\b(?:account|acct)\b\.? ?(?:(?:number|no\b\.?|num\b\.?) ?(?:\(s\) ?)?[:#.]?|[:#]{1,2})"
+        r" ?(?:[0-9%s]+-)*[0-9%s]*?%s" % (_MARKS, _MARKS, t),
+        # a number written in E*TRADE's own shape, "6789-1111"
+        r"(?<![0-9\-])(?P<head>[0-9]{4})-%s" % t,
+    )]
+
+
+def _label_shape(label: str) -> Optional["re.Pattern"]:
+    """The account's own label as the list shows it, its words and its
+    masked tail, in any spacing, capitals or masking, or None for a label
+    without the one tail."""
+    found = list(_ACCOUNT_TAIL_RE.finditer(re.sub(r"\s+", " ", label or "").strip()))
+    if len(found) != 1:
+        return None
+    m = found[0]
+    words = re.sub(r"\s+", " ", label or "").strip()[:m.start()].strip()
+    if not re.search(r"[A-Za-z]", words):
+        return None
+    name = r" ?".join(re.escape(w) for w in words.split(" "))
+    return re.compile(r"%s ?(?:-|\.{2,}|\*{2,}|[xX•]{2,}) ?\(?%s%s"
+                      % (name, m.group(1), _DIGITS_END), re.I)
+
+
+def _a_tax_id(text: str, m) -> bool:
+    """Whether a match is a tax id's last digits, by its masking marks or
+    by words just before it."""
+    mask = m.groupdict().get("mask")
+    if mask and _TAX_ID_MASK_RE.fullmatch(mask):
+        return True
+    return bool(_TAX_ID_WORDS_RE.search(text[max(0, m.start() - 40):m.end()]))
+
+
+def _a_year_range(m) -> bool:
+    """Whether "2024-2025" was taken for a number ending in 2025."""
+    head = m.groupdict().get("head")
+    last = m.groupdict().get("digits") or m.group(0)[-4:]
+    return bool(head and _YEAR_RE.fullmatch(head) and _YEAR_RE.fullmatch(last))
+
+
+def tails_printed(text: str, labels) -> set:
+    """The masked tails of the listed accounts, `labels` as the list shows
+    them, that a statement's text prints as the end of an account number
+    (the shapes above). A tail printed only as a number of its own, a year
+    or an amount, is not printed here. Only the tails the labels carry are
+    looked for, and nothing of the text is kept or written anywhere."""
+    text = re.sub(r"\s+", " ", text or "")
+    shapes: dict = {}
+    for label in sorted(set(labels or [])):
+        for tail in account_tails(label):
+            shapes.setdefault(tail, _printed_shapes(tail))
+        own = _label_shape(label)
+        if own is not None:
+            shapes.setdefault(account_tails(label)[0], []).append(own)
+    found = set()
+    for tail, patterns in shapes.items():
+        for pattern in patterns:
+            if any(not _a_tax_id(text, m) and not _a_year_range(m)
+                   for m in pattern.finditer(text)):
+                found.add(tail)
+                break
+    return found
+
+
+def tails_seen(text: str, tails) -> set:
+    """The tails that end any run of digits in the text however it is
+    printed, a year, an amount or another account's number in a line about
+    a transfer included. Looser than tails_printed on purpose, since a
+    statement is moved to one account only when no other listed account's
+    digits show in it at all."""
+    text = text or ""
+    return {t for t in tails or [] if re.fullmatch(r"[0-9]+", t)
+            and re.search(t + r"(?![0-9])", text)}
+
+
+# An account's label as E*TRADE writes it, words, a space and a dash before
+# the digits, "Individual Brokerage -2222", whichever account it is.
+_LABEL_DIGITS_RE = re.compile(r"(?<![0-9A-Za-z])[A-Za-z]{2,} -(?P<digits>[0-9]{3,12})" + _DIGITS_END)
+# Words of an account, which between a tax word and a number say the number
+# is the account's.
+_ACCOUNT_WORDS_RE = re.compile(r"\b(?:account|acct|card)\b", re.I)
+
+
+def _a_tax_id_alone(text: str, m) -> bool:
+    """Whether a match is a tax id's last digits, by its masking marks, or
+    by a tax word before it with no word of an account between, so a
+    number labeled as an account's just after a masked tax id is still an
+    account's."""
+    mask = m.groupdict().get("mask")
+    if mask and _TAX_ID_MASK_RE.fullmatch(mask):
+        return True
+    start = max(0, m.start() - 40)
+    words = list(_TAX_ID_WORDS_RE.finditer(text[start:m.start()]))
+    if not words:
+        return False
+    return not _ACCOUNT_WORDS_RE.search(text[start + words[-1].end():m.end()])
+
+
+def account_numbers_printed(text: str) -> set:
+    """The last digits of every account number the text prints in one of
+    the shapes above, or in a label's shape, whichever account it is,
+    listed or not. A statement of an account the lists no longer name, a
+    closed one, printing its own number and another account's in a
+    transfer, shows only that other account among the listed ones, and was
+    moved to it (review of the relabel). Every number found only refuses a
+    move, so a tax word does not hide a number labeled as an account's, and
+    a closed account's label counts as much as a listed one's (the second
+    review). Nothing of the text is kept or written anywhere."""
+    text = re.sub(r"\s+", " ", text or "")
+    found = set()
+    for pattern in _printed_shapes(_ANY_DIGITS) + [_LABEL_DIGITS_RE]:
+        for m in pattern.finditer(text):
+            if not _a_tax_id_alone(text, m) and not _a_year_range(m):
+                found.add(m.group("digits"))
+    return found
+
+
+def one_account(digits: str, tail: str) -> bool:
+    """Whether a number printed ending in `digits` may be the account whose
+    masked tail is `tail`, one of the two ending the other."""
+    return bool(digits and tail) and (digits.endswith(tail) or tail.endswith(digits))
+
+
 def goto_docs_capturing(page, capture: list) -> bool:
     """Open the Documents page while catching the searchItems answer that
     fills it, so discovery never has to know how the page asks."""
