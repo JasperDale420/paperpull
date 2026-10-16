@@ -56,7 +56,7 @@ _CORE = Path(__file__).resolve().parents[1] / "core"
 if (_CORE / "paperpull_core").is_dir() and str(_CORE) not in sys.path:
     sys.path.insert(0, str(_CORE))
 try:
-    from paperpull_core.sheets import csv_value, keep_text, read_stored_row  # noqa: E402
+    from paperpull_core.sheets import csv_value, keep_text, read_stored_row, xlsx_value  # noqa: E402
 except ImportError as e:
     raise ImportError("export_transactions.py needs PaperPull's core folder beside its tools folder") from e
 
@@ -1026,7 +1026,7 @@ def _write_xlsx(path: Path, txns: List[dict], stmts: List[dict]) -> None:
         for c in ws[1]:
             c.font = Font(bold=True)
         for r in rows:
-            ws.append([r.get(c) for c in columns])
+            ws.append([xlsx_value(r.get(c)) for c in columns])
         # Every text cell a string cell, never a formula, on every sheet.
         for line in ws.iter_rows():
             for cell in line:

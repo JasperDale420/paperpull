@@ -977,3 +977,127 @@ def test_an_index_the_app_wrote_finds_its_statement_and_gives_the_words_it_was_g
         sheets[root.name] = {ws.title: [[(c.value, c.data_type, c.quotePrefix) for c in row]
                                         for row in ws.iter_rows()] for ws in wb}
     assert sheets["old"] == sheets["new"]
+
+
+# -- what an xlsx cell cannot hold ---------------------------------------------------
+
+# Every character XML 1.0 has no place for, so an xlsx cannot hold it. The
+# control characters are the 29 openpyxl refuses, and the last two and the
+# surrogates it wrote into a workbook Excel would not open.
+CONTROLS = [chr(n) for n in range(0x20) if n not in (0x9, 0xA, 0xD)]
+IN_A_FILE = CONTROLS + [chr(0xFFFE), chr(0xFFFF)]
+CANNOT_HOLD = IN_A_FILE + [chr(n) for n in range(0xD800, 0xE000)]
+_CANNOT = frozenset(CANNOT_HOLD)
+# The six Python counts as blank space, which become a space in a cell.
+BLANK = frozenset(chr(n) for n in (0x0B, 0x0C, 0x1C, 0x1D, 0x1E, 0x1F))
+
+
+def _held(text: str) -> str:
+    return "".join(" " if c in BLANK else "" if c in _CANNOT else c for c in text)
+
+
+def _excel_reads(text: str) -> str:
+    """What Excel shows for an xlsx string, _x and four hex digits and _ as
+    one character (measured 2026-10-16, see test_sheets.py)."""
+    import re
+    return re.sub(r"_x([0-9A-Fa-f]{4})_", lambda m: chr(int(m.group(1), 16)), text)
+
+
+def _no_cell_holds_what_an_xlsx_cannot(path):
+    openpyxl = pytest.importorskip("openpyxl")
+    import zipfile
+    wb = openpyxl.load_workbook(path)
+    for ws in wb:
+        for c in _cells(ws):
+            assert not (isinstance(c.value, str) and not _CANNOT.isdisjoint(c.value)), c.coordinate
+    with zipfile.ZipFile(path) as z:
+        sheets = [n for n in z.namelist() if n.startswith("xl/worksheets/")]
+        assert not any(b"<f>" in z.read(n) or b"<f " in z.read(n) for n in sheets)
+    return wb
+
+
+def _bank_with_every_character(chars) -> tuple:
+    """A made-up statement, one $1.00 debit described SHOP, the character,
+    NAME for each character, and a last one whose description Excel would
+    read as its escape for =. Its lines, and the balance after that last."""
+    begin = 1000.0 + len(chars)
+    bal, lines = begin, []
+    for i, what in enumerate(["SHOP " + c + "NAME" for c in chars] + ["_x003D_1+1"]):
+        bal -= 1
+        lines.append("06/%02d %s $1.00 0 $%s" % (i % 28 + 1, what, format(bal, ",.2f")))
+    return (["Statement Period: 06/01/2026to 06/30/2026",
+             "Beginning Balance $%s" % format(begin, ",.2f"),
+             "Ending Balance $%s" % format(bal, ",.2f"),
+             "Date Description Debits Credits Balance",
+             "06/01 Beginning Balance 0 0 $%s" % format(begin, ",.2f")]
+            + lines + ["06/30 Ending Balance - - $%s" % format(bal, ",.2f")]), bal
+
+
+def _bank_folder(root: Path, holder: str, title: str) -> Path:
+    """The statement's folder, its index written as the app writes it,
+    through core storage's CsvFile."""
+    from paperpull_core.storage import CsvFile
+    folder = root / "Plus Bank"
+    folder.mkdir()
+    (folder / "June Statement.pdf").write_bytes(b"%PDF")
+    index = CsvFile(folder / "Bank Document Index.csv", INDEX_COLUMNS)
+    index.append_rows([{"Account Holder": holder, "Document Date": "2026-06-30",
+                        "Document Title": title, "PDF Filename": "June Statement.pdf",
+                        "PDF Full Path": "June Statement.pdf"}])
+    return index.path
+
+
+def test_an_index_and_a_statement_holding_a_character_an_xlsx_cannot_hold_make_both_spreadsheets(
+        tmp_path, monkeypatch):
+    """A provider's JSON can carry a NUL or another control character in a
+    document title, and a statement's text in a description. openpyxl
+    refused the row holding one and the whole workbook was lost. Now the
+    character is taken out of the cell, a space standing in for one that is
+    blank space, the text around it stays, one in front of =1+1 leaves =1+1
+    with the quote prefix, and the CSV keeps every character the statement
+    gave."""
+    pytest.importorskip("pdfplumber")
+    assert len(CONTROLS) == 29
+    index = _bank_folder(tmp_path, chr(0) + "=1+1", "Checking " + "".join(IN_A_FILE))
+    assert chr(0) in index.read_text(encoding="utf-8-sig")
+    lines, last = _bank_with_every_character(IN_A_FILE)
+    monkeypatch.setattr(xt, "pdf_lines", lambda p: lines)
+    r = xt.export(tmp_path, log=lambda *_: None)
+    assert (r["statements"], r["transactions"], r["reconciled"]) == (1, len(IN_A_FILE) + 1, 1)
+    wb = _no_cell_holds_what_an_xlsx_cannot(r["path"])
+    txns, stmts = wb["Transactions"], wb["Statements"]
+    for c in _column(txns, "Account") + _column(stmts, "Account"):
+        assert (c.value, c.data_type, c.quotePrefix) == ("=1+1, Checking " + " " * 6, "s", True)
+    shown = {b.value: d for b, d in zip(_column(txns, "Balance"), _column(txns, "Description"))}
+    escaped = shown.pop(last)
+    assert _excel_reads(escaped.value) == "_x003D_1+1" and not escaped.quotePrefix
+    assert {d.value for d in shown.values()} == {"SHOP NAME"}
+    assert all(c.data_type == "n" for c in _column(txns, "Amount"))
+    with open(xt.export(tmp_path, as_csv=True, log=lambda *_: None)["path"],
+              encoding="utf-8-sig", newline="") as fh:
+        written = {float(x["Balance"]): x["Description"] for x in csv.DictReader(fh)}
+    assert {c for c in IN_A_FILE if not c.isspace()} <= set("".join(written.values()))
+    for balance, d in shown.items():
+        assert d.value == _held(written[balance]), balance
+
+
+def test_a_statement_holding_a_surrogate_makes_the_xlsx_from_the_pdf_and_from_the_cache(
+        tmp_path, monkeypatch):
+    """A statement's text reaches the export from the PDF, and on a later
+    export from the cache, which is JSON and holds half of a surrogate pair
+    as an escape. So every character an xlsx cannot hold is tried here, the
+    2,048 surrogates too, both ways."""
+    pytest.importorskip("pdfplumber")
+    _bank_folder(tmp_path, "Jane", "Checking")
+    lines, last = _bank_with_every_character(CANNOT_HOLD)
+    monkeypatch.setattr(xt, "pdf_lines", lambda p: lines)
+    for way in ("from the PDF", "from the cache"):
+        r = xt.export(tmp_path, log=lambda *_: None)
+        assert (r["transactions"], r["reconciled"]) == (len(CANNOT_HOLD) + 1, 1), way
+        txns = _no_cell_holds_what_an_xlsx_cannot(r["path"])["Transactions"]
+        shown = {b.value: d.value for b, d in zip(_column(txns, "Balance"), _column(txns, "Description"))}
+        assert _excel_reads(shown.pop(last)) == "_x003D_1+1", way
+        assert set(shown.values()) == {"SHOP NAME"} and len(shown) == len(CANNOT_HOLD), way
+        assert all(c.data_type == "n" for c in _column(txns, "Amount")), way
+        monkeypatch.setattr(xt, "pdf_lines", lambda p: pytest.fail("read the PDF again"))
+    assert chr(92) + "ud800" in (tmp_path / xt.CACHE_NAME).read_text(encoding="utf-8")

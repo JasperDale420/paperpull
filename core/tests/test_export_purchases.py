@@ -417,3 +417,103 @@ def test_a_name_that_really_starts_with_a_quote_keeps_it(tmp_path):
     cells = {v: (t, q) for sheet in _sheets(xp.export(tmp_path)["path"]).values()
              for row in sheet for v, t, q in row}
     assert cells["'=1+1 kettle"] == ("s", False)
+
+
+# -- what an xlsx cell cannot hold ---------------------------------------------------
+
+# Every character XML 1.0 has no place for, so an xlsx cannot hold it. The
+# control characters are the 29 openpyxl refuses, and the last two and the
+# surrogates it wrote into a workbook Excel would not open.
+CONTROLS = [chr(n) for n in range(0x20) if n not in (0x9, 0xA, 0xD)]
+IN_A_FILE = CONTROLS + [chr(0xFFFE), chr(0xFFFF)]
+CANNOT_HOLD = IN_A_FILE + [chr(n) for n in range(0xD800, 0xE000)]
+_CANNOT = frozenset(CANNOT_HOLD)
+# The six Python counts as blank space, which become a space in a cell.
+BLANK = frozenset(chr(n) for n in (0x0B, 0x0C, 0x1C, 0x1D, 0x1E, 0x1F))
+
+
+def _excel_reads(text: str) -> str:
+    """What Excel shows for an xlsx string, _x and four hex digits and _ as
+    one character (measured 2026-10-16, see test_sheets.py)."""
+    import re
+    return re.sub(r"_x([0-9A-Fa-f]{4})_", lambda m: chr(int(m.group(1), 16)), text)
+
+
+def _no_cell_holds_what_an_xlsx_cannot(path):
+    openpyxl = pytest.importorskip("openpyxl")
+    import zipfile
+    wb = openpyxl.load_workbook(path)
+    for ws in wb:
+        for c in _cells(ws):
+            assert not (isinstance(c.value, str) and not _CANNOT.isdisjoint(c.value)), c.coordinate
+    with zipfile.ZipFile(path) as z:
+        sheets = [n for n in z.namelist() if n.startswith("xl/worksheets/")]
+        assert not any(b"<f>" in z.read(n) or b"<f " in z.read(n) for n in sheets)
+    return wb
+
+
+def test_a_history_holding_a_character_an_xlsx_cannot_hold_still_makes_both_spreadsheets(tmp_path):
+    """A provider's JSON can carry a NUL or another control character in an
+    item name, Uber's for one, and the app keeps it in its history as it
+    came. openpyxl refused the row holding it and the whole workbook was
+    lost. Now the character is taken out of the cell, a space standing in
+    for one that is blank space, the text around it stays, one in front of
+    =1+1 leaves =1+1 with the quote prefix, and the CSV keeps every
+    character as the history holds it."""
+    assert len(CONTROLS) == 29
+    rows = []
+    for i, c in enumerate(IN_A_FILE):
+        rows.append(dict(FORMULA_ROW, **{
+            "Account Holder": c + "=1+1", "Purchase Date": "2026-05-01",
+            "Order or Receipt Number": "C-%02d" % i, "Item Name": "Kettle" + c + "lid",
+            "Fulfillment Method": "Ship", "Return Status": "", "Order Status": "Delivered",
+            "Purchase Type": "Online", "Purchase Summary": "Home " + c,
+            "PDF Filename": "C-%02d.pdf" % i, "Processing Status": "Completed",
+            "Notes": "a" + c + "b"}))
+    rows.append(dict(rows[0], **{"Order or Receipt Number": "C-x", "Item Name": "_x003D_1+1",
+                                 "Account Holder": "Jane", "Notes": "a_x0041_b"}))
+    held = _written_by_the_app(tmp_path / "Shop Receipts", "Shop", rows)
+    assert chr(0) in held.read_text(encoding="utf-8-sig")
+    wb = _no_cell_holds_what_an_xlsx_cannot(xp.export(tmp_path)["path"])
+    purchases = wb["Purchases"]
+    by_order = {row[3].value: dict(zip([h.value for h in purchases[1]], row))
+                for row in purchases.iter_rows(min_row=2)}
+    assert len(by_order) == len(rows)
+    for i, c in enumerate(IN_A_FILE):
+        line, s = by_order["C-%02d" % i], " " if c in BLANK else ""
+        assert (line["Item"].value, line["Notes"].value) == ("Kettle" + s + "lid", "a" + s + "b"), i
+        assert (line["Account"].value, line["Account"].data_type, line["Account"].quotePrefix) == \
+            ("=1+1", "s", True), i
+        assert line["Category"].value.rstrip() == "Home", i
+        assert (line["Line Total"].value, line["Line Total"].data_type) == (10, "n")
+    escaped = by_order["C-x"]
+    assert _excel_reads(escaped["Item"].value) == "_x003D_1+1" and not escaped["Item"].quotePrefix
+    assert _excel_reads(escaped["Notes"].value) == "a_x0041_b"
+    orders = {o[3].value: o for o in wb["Orders"].iter_rows(min_row=2)}
+    assert len(orders) == len(rows) and all(o[1].value in ("=1+1", "Jane") for o in orders.values())
+    with open(xp.export(tmp_path, as_csv=True)["path"], encoding="utf-8-sig", newline="") as fh:
+        out = {x["Order Number"]: x for x in csv.DictReader(fh)}
+    for i, c in enumerate(IN_A_FILE):
+        assert (out["C-%02d" % i]["Item"], out["C-%02d" % i]["Notes"]) == ("Kettle" + c + "lid", "a" + c + "b")
+
+
+def test_the_writer_takes_out_a_surrogate_no_history_could_hold(tmp_path):
+    """A UTF-8 file cannot hold half of a surrogate pair, so this goes to the
+    writer directly, with every character an xlsx cannot hold."""
+    purchases = []
+    for i, c in enumerate(CANNOT_HOLD):
+        p = {col: "" for col, _ in xp.COLUMNS}
+        p.update({"Provider": "Shop", "Account": c + "=1+1", "Date": "2026-05-01",
+                  "Order Number": "S-%04d" % i, "Item": "Kettle" + c + "lid", "Line Total": -1.5,
+                  "Order Total": -1.5, "Quantity": 1})
+        purchases.append(p)
+    orders = xp.orders_from(purchases)
+    xp.write_xlsx(tmp_path / "p.xlsx", purchases, orders, xp.summary_from(orders))
+    wb = _no_cell_holds_what_an_xlsx_cannot(tmp_path / "p.xlsx")
+    ws = wb["Purchases"]
+    spaces = [" " if c in BLANK else "" for c in CANNOT_HOLD]
+    assert [c.value for c in _column(ws, "Item")] == ["Kettle" + s + "lid" for s in spaces]
+    assert [(c.value, c.quotePrefix) for c in _column(ws, "Account")] == [(s + "=1+1", True) for s in spaces]
+    assert all((c.value, c.data_type) == (-1.5, "n") for c in _column(ws, "Line Total"))
+    assert [(r[0].value, r[2].value) for r in wb["Summary"].iter_rows(min_row=2)] == \
+        [("Shop", len(CANNOT_HOLD))]
