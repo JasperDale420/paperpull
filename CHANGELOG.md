@@ -9,6 +9,30 @@ All notable changes to PaperPull are recorded here. Versioning follows
 
 ## [Unreleased]
 
+### Added
+- **Simmons Bank loan documents.** A new app saves the statements, notices
+  and tax forms of a Simmons Bank loan from the bank's online banking
+  (Banno, by Jack Henry) at `login.simmonsbank.com/documents`. The list is
+  the page's own answer, read whole. It has to be one answer of one account,
+  asked from the bank's own first day of documents, and the rows drawn have
+  to name exactly its titles and types, or the list stops. Only a document
+  row's own button is pressed, never Accept, Enroll, OK, Notify, the filter
+  menu, the navigation links or Sign out, and the PDF is kept only when the
+  press made the page ask that one document's PDF and brought one browser
+  download named with the document's own file name. With no download, that
+  exact address is asked once more with no redirect followed. A PDF whose
+  text does not name its document goes to Manual Review. Files are named
+  `<date> Simmons Bank Loan Statement.pdf`, `<date> Simmons Bank Notice -
+  <title>.pdf` and `<date> Simmons Bank Tax Reporting <year>.pdf`. The user
+  id, document ids, account number and last four, your name and email stay
+  out of every log, record and diagnostic file. A paid-off loan's documents
+  stay online only until a date the bank names, and Discover prints it.
+  Built from a live survey of one paid-off mortgage and run live on it the
+  same day, all 27 documents saved. A PDF names its document by its date,
+  its title's month, or a date printed within a few days of the list's date
+  in that month, since the bank's PDFs date themselves a day or three after
+  the list does.
+
 ### Fixed
 - **Wells Fargo no longer signs you out looking for your statements (#27).**
   When the page it was on showed no statement, the app typed the

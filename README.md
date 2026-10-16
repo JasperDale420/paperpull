@@ -56,7 +56,7 @@ signed installer and automatic updates. Or download it free from the
 [Releases page](https://github.com/rheeloaded/paperpull/releases). Nothing
 is held back from the free build. See [Support](#support).
 
-Sixty-nine providers are supported today, all built on the same pattern.
+Seventy providers are supported today, all built on the same pattern.
 Six more, SBA, Verizon Mobile,
 Meijer, American Family, Stripe and FedEx, are built and waiting for someone with an account to
 test them ([#28](https://github.com/rheeloaded/paperpull/issues/28),
@@ -123,6 +123,7 @@ test them ([#28](https://github.com/rheeloaded/paperpull/issues/28),
 | [`schwab`](apps/schwab) | Charles Schwab | Statements, tax forms, letters, trade confirmations | Ported by [@davidrudnick](https://github.com/davidrudnick); fresh live pilot pending |
 | [`sdge`](apps/sdge) | SDG&E (San Diego Gas & Electric) | Monthly bills, about two years online | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 8 bills saved on a full run.** Each bill fetched by its own address from Billing History, nothing clicked. One account per run, the one selected on the site |
 | [`shelbycounty`](apps/shelbycounty) | Shelby County Trustee (Memphis, TN) | Property tax receipts, one per payment, and the current tax notice while a balance is due | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 17 receipts across 16 tax years saved on a full run.** A public lookup with no sign-in, the parcel ID goes in config.json. The page builds each PDF itself and the app keeps it, one guarded press per document |
+| [`simmons`](apps/simmons) | Simmons Bank (Banno online banking) | Loan statements, notices, tax forms | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 27 documents saved on a full run.** Only a document row's own button is pressed, and the download taken only when it is that document's own. One loan so far, so a sign-in with a second account stops the list. A paid-off loan's documents stay online only until a date the bank names |
 | [`smud`](apps/smud) | SMUD (Sacramento Municipal Utility District) | Monthly bills | **Confirmed by [@watling777](https://github.com/watling777)**, whose Pilot took the newest five and whose full run took the rest of the history ([#34](https://github.com/rheeloaded/paperpull/issues/34)) |
 | [`spectrum`](apps/spectrum) | Spectrum (Internet and Mobile) | Internet statements, about a year online, and Mobile statements printed from their pages | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 11 Internet statements saved on a full run.** Mobile statements listed live, a whole Mobile run still to come. Each statement chosen by its own row. Two statements of one date, after an account transfer, are left for you to save by hand |
 | [`stripe`](apps/stripe) | Stripe (merchant Dashboard) | Fee invoices, tax forms such as the 1099-K | **Untested, built on an account with no documents yet. Have Stripe invoices or tax forms? [Help test it](apps/stripe/README.md#help-test-it-no-programming-needed)** Requested in [#53](https://github.com/rheeloaded/paperpull/issues/53) |
@@ -785,7 +786,7 @@ Every contribution keeps the **read-only, local, no-credentials** design, see
 
 ## Status & roadmap
 
-- ✅ All **seventy-five** apps pass their tests, the sixty-nine that are
+- ✅ All **seventy-six** apps pass their tests, the seventy that are
   supported and the six still waiting for a tester, 24,655 of them
   across the repo. Most are in regular use by the author. The rest were built or
   confirmed by people who hold those accounts, named in the table above
@@ -875,8 +876,9 @@ found a bug and diagnosed it to the line.
   app, run whole against a Live brokerage account, the First Horizon,
   Chase Business, TreasuryDirect, Venmo, IRS and Spectrum apps, each
   run on their own accounts, the Bilt Card app, run against a new card's
-  first eight statements, and NetBenefits for a sign-in with several
-  plans.
+  first eight statements, the Simmons Bank app, run against a paid-off
+  mortgage's statements, notices and tax forms, and NetBenefits for a
+  sign-in with several plans.
 - [@marecabo](https://github.com/marecabo), Amazon's legal invoice PDFs on
   the German store.
 - [@watling777](https://github.com/watling777), the tester behind AT&T,

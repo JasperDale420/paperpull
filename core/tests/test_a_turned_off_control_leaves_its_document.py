@@ -133,7 +133,8 @@ LEAVES = {
     ("chasebusiness", "_press_row"), ("coinbase", "_catch_statement"), ("firsthorizon", "_press"),
     ("etrade", "_catch_pdf"), ("golden1", "_catch_pdf"), ("nelnet", "_catch_pdf"),
     ("newrez", "_catch_pdf"), ("pge", "_press_once"), ("sba", "_catch_pdf"),
-    ("smud", "_catch_pdf"), ("statefarm", "_catch_pdf"), ("vanguard", "download_document"),
+    ("simmons", "_catch_document"), ("smud", "_catch_pdf"), ("statefarm", "_catch_pdf"),
+    ("vanguard", "download_document"),
     ("venmo", "show_all"), ("verizonmobile", "_catch_pdf"), ("wellsfargo", "_catch_pdf")}
 
 
@@ -661,6 +662,23 @@ def _bilt_button(off: bool) -> str:
             'June 30, 2026</button>' % (" disabled" if off else ""))
 
 
+SIMMONS_ROW = "Loan Periodic Statement June 2026 Statement, RE ARM 00000000 (x0000)"
+
+
+def _simmons(site, page, out, staging, trace):
+    """Simmons Bank's capture on the bound row, the only document row on the
+    page, its button inside its list item as Banno draws it."""
+    target = site.Target(SIMMONS_ROW, "11111111-aaaa-4bbb-8ccc-000000000001", "statement.pdf",
+                         "0a1b2c3d-1111-4222-8333-944455556666")
+    return site._catch_document(page, site.Run(), staging, target, out, trace)
+
+
+def _simmons_row(off: bool) -> str:
+    return ('<jha-list-item role="listitem"><button id="get" type="button" class="ctl"%s '
+            'onclick="window.presses++; fetch(\'/statement.pdf\');">%s</button></jha-list-item>'
+            % (" disabled" if off else "", SIMMONS_ROW))
+
+
 VENMO_PROFILE = "1234567890123456"
 
 
@@ -713,6 +731,8 @@ def _how(app: str, function: str, monkeypatch):
         return "firsthorizon_site", _firsthorizon, _firsthorizon_card, "06/30/2026"
     if (app, function) == ("pge", "_press_once"):
         return "pge_site", _pge, _pge_link, "June 30, 2026"
+    if (app, function) == ("simmons", "_catch_document"):
+        return "simmons_site", _simmons, _simmons_row, "June 30, 2026"
     if (app, function) == ("shelbycounty", "_press_for_blob"):
         return "shelbycounty_site", _shelbycounty, _shelbycounty_link, "06/30/2026"
     if (app, function) == ("spectrum", "_press_for_statement"):

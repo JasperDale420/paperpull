@@ -1,0 +1,17 @@
+{
+  "_comment": "Editable rules mapping Simmons Bank document titles to filename summaries, checked in order: tax, then insurance (unused), then statement. The category of each document comes from the documentType the page's own list names (statement, notice, tax), and simmons_site.summary_for names each file: '<date> Simmons Bank Loan Statement.pdf', '<date> Simmons Bank Notice - <title without its month and year>.pdf', '<date> Simmons Bank Tax Reporting <year>.pdf'. These rules say the same for the tools that read rules files.",
+  "tax_rules": [
+    {
+      "pattern": "\\btax\\s+reporting\\b",
+      "summary": "Tax Reporting"
+    }
+  ],
+  "insurance_rules": [],
+  "statement_rules": [
+    {
+      "pattern": "\\bloan\\s+periodic\\s+statement\\b",
+      "summary": "Loan Statement"
+    }
+  ],
+  "skip_patterns": []
+}
