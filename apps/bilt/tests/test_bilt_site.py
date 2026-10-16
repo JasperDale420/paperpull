@@ -720,6 +720,26 @@ def test_a_signed_out_discover_asks_to_sign_in_again(tmp_path, monkeypatch):
     assert w.presses == []
 
 
+def test_a_sign_in_drawn_for_a_moment_while_the_wallet_loads_is_not_signed_out():
+    """A page that draws its sign-in in place can draw it while a signed-in
+    wallet is still finding its session. Only a sign-in that stays is a
+    sign-out (#105)."""
+    w = signed_out_wallet()
+
+    def found_its_session():
+        w.sign_in_drawn = False
+        w.state_override.clear()
+    w.schedule(site.SIGN_IN_HOLD_MS // 2, found_its_session)
+    assert len(site.collect_download_docs(w, run_on(w))) == 3
+
+
+def test_a_sign_in_that_stays_is_signed_out_after_its_hold():
+    w = signed_out_wallet()
+    start = w.time
+    assert site.looks_signed_out(w)
+    assert w.time - start >= site.SIGN_IN_HOLD_MS
+
+
 def test_a_wallet_that_shows_its_card_and_no_sign_in_is_read():
     w = Wallet()
     assert not site.looks_signed_out(w)

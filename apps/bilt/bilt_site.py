@@ -418,9 +418,35 @@ def shows_sign_in(state: dict) -> bool:
     return bool(state.get("signin")) and not buttons
 
 
+# How long the drawn sign-in has to stay, with no balance summary button,
+# before it is read as signed out. The signed-out wallet draws its sign-in
+# in place, and a page that does that can draw it for a moment while a
+# signed-in wallet is still finding its session, so one look never says a
+# run is signed out (#105).
+SIGN_IN_HOLD_MS = 4000
+
+
+def _sign_in_holds(page) -> bool:
+    """Whether the page draws Bilt's sign-in (shows_sign_in) on every look
+    for SIGN_IN_HOLD_MS. A look that cannot be made says no."""
+    waited = 0
+    while True:
+        try:
+            state = page.evaluate(_SIGNIN_JS)
+        except Exception:
+            return False
+        if not (isinstance(state, dict) and shows_sign_in(state)):
+            return False
+        if waited >= SIGN_IN_HOLD_MS:
+            return True
+        _pause(page, POLL_MS)
+        waited += POLL_MS
+
+
 def looks_signed_out(page) -> bool:
     """A sign-in or signed-out address (LOGIN_PATHS), a password field, or
-    the sign-in drawn in place on the wallet (shows_sign_in). A page whose
+    the sign-in drawn in place on the wallet for SIGN_IN_HOLD_MS
+    (shows_sign_in, _sign_in_holds). A page whose
     address cannot be read raises, and is never called signed in. A page
     that cannot be asked about its fields, as one mid-navigation, is not
     called signed out for that alone."""
@@ -431,13 +457,7 @@ def looks_signed_out(page) -> bool:
             return True
     except Exception:
         pass
-    try:
-        state = page.evaluate(_SIGNIN_JS)
-        if isinstance(state, dict) and shows_sign_in(state):
-            return True
-    except Exception:
-        pass
-    return False
+    return _sign_in_holds(page)
 
 
 def check_signed_in(page) -> None:
@@ -1060,7 +1080,7 @@ def _wait_for(page, run: Run, ready: Callable[[dict], bool], timeout_ms: int) ->
         check_signed_in(page)
         run.watch.raise_if_signed_out(page)
         state = _read(page)
-        if shows_sign_in(state):
+        if shows_sign_in(state) and _sign_in_holds(page):
             raise SessionExpired("Bilt drew its sign-in on the wallet")
         if ready(state):
             return state
