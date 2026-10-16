@@ -53,7 +53,6 @@ All notable changes to PaperPull are recorded here. Versioning follows
   statements and tax documents.
 
 ### Fixed
-
 - **A U.S. Bank failure file says which part of the statement list was
   missing (#106).** A Pilot gave up on its first statement before pressing
   anything, and the file it wrote counted only general selectors, which all
