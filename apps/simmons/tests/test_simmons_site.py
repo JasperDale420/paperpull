@@ -543,9 +543,11 @@ def test_an_empty_list_is_a_whole_list_of_nothing():
 
 @pytest.mark.parametrize("status, location", [
     (401, None), (403, None), (302, "/login"), (301, BASE + "/login?next=documents"),
-    (303, "/"), (307, "https://sso.example.test/signin"), (308, "/dashboard")],
+    (303, "/"), (307, "https://sso.example.test/signin"), (308, "/dashboard"), (302, None),
+    (307, "/a/consumer/api/v0/users/%s/documents/all?startDate=%s" % (USER, START))],
     ids=["401", "403", "302 to sign-in", "301 to sign-in", "303 off the API",
-         "307 to another host", "308 to the dashboard"])
+         "307 to another host", "308 to the dashboard", "redirect that says nowhere",
+         "redirect inside the documents API"])
 def test_a_signed_out_list_answer_ends_the_session(status, location):
     page = Page()
     page.list_status, page.list_location = status, location
@@ -553,11 +555,8 @@ def test_a_signed_out_list_answer_ends_the_session(status, location):
         listing_of(page)
 
 
-@pytest.mark.parametrize("status, location", [
-    (304, None), (302, None), (307, "/a/consumer/api/v0/users/%s/documents/all?startDate=%s"
-                                % (USER, START)), (300, None)],
-    ids=["304 from a cache", "redirect that says nowhere", "redirect inside the documents API",
-         "300"])
+@pytest.mark.parametrize("status, location", [(304, None), (300, None)],
+                         ids=["304 from a cache", "300"])
 def test_a_list_answer_that_is_no_sign_out_stops_the_list_and_never_says_signed_out(status,
                                                                                     location):
     """A 304 a cache revalidation brings is no sign-out. It carries no list

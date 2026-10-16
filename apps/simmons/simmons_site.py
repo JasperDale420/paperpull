@@ -112,7 +112,7 @@ from datetime import date as _date
 from datetime import timedelta as _timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple
-from urllib.parse import parse_qsl, urljoin, urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from paperpull_core import pressing
 from paperpull_core import redirects
@@ -682,57 +682,20 @@ def _status(response) -> int:
         return 0
 
 
-# The bank's documents API, where the list, a document's PDF and the
-# documents settings live. A redirect that stays inside it is not a sign-out.
-_DOCUMENTS_API_RE = re.compile(r"/a/consumer/api/(?:v0/)?users/" + _UUID + r"/documents(?:/.*)?")
-
-
-def _location(response) -> str:
-    """Where a redirect answer says to go, read against the answer's own
-    address, or "" when it says nowhere."""
-    try:
-        where = ((response.headers or {}).get("location") or "").strip()
-    except Exception:
-        return ""
-    if not where:
-        return ""
-    try:
-        return urljoin(response.url or "", where)
-    except Exception:
-        return ""
-
-
-def _leads_to_sign_in(response) -> bool:
-    """A redirect (301, 302, 303, 307 or 308) whose Location is a sign-in
-    address of the bank, or any address off the documents API, another host
-    included. A redirect that says nowhere, or stays inside the documents
-    API, is not one."""
-    if _status(response) not in redirects.REDIRECTS:
-        return False
-    where = _location(response)
-    if not where:
-        return False
-    if _host_of(where) != HOST or _first_part(where) in LOGIN_PATHS:
-        return True
-    try:
-        path = urlsplit(where).path
-    except ValueError:
-        return True
-    return not _DOCUMENTS_API_RE.fullmatch(path)
-
-
 def _signed_out_status(response) -> bool:
     """The bank saying the session has ended, a 401 or 403, or a redirect
-    that leads to a sign-in (_leads_to_sign_in). Any other 3xx, a 304 from a
-    cache among them, is an answer this cannot read (_unread_status), never
-    a sign-out."""
-    return _status(response) in (401, 403) or _leads_to_sign_in(response)
+    (301, 302, 303, 307 or 308), since the documents API answers a signed-in
+    page with its JSON and never sends it elsewhere. Where a redirect points
+    is read by the core's redirects alone, so any redirect here is one. Any
+    other 3xx, a 304 from a cache among them, is an answer this cannot read
+    (_unread_status), never a sign-out."""
+    status = _status(response)
+    return status in (401, 403) or status in redirects.REDIRECTS
 
 
 def _unread_status(response) -> bool:
-    """A 3xx that is no sign-out, a 304, a redirect that says nowhere or
-    one that stays inside the documents API. It carries no answer this can
-    read, so the list stops."""
+    """A 3xx that is no redirect, a 304 from a cache revalidation say. It
+    carries no answer this can read, so the list stops."""
     return 300 <= _status(response) < 400 and not _signed_out_status(response)
 
 
@@ -843,8 +806,8 @@ def _body(response):
 
 
 def _json_of(page, response, what: str, ask_again: bool = False):
-    """An answer's JSON. A 401, 403, a redirect to a sign-in or HTML is the
-    bank saying the session has ended. Any other 3xx, a 304 among them, and
+    """An answer's JSON. A 401, 403, a redirect or HTML is the bank saying
+    the session has ended. Any other 3xx, a 304 among them, and
     anything else that is not a 200 JSON answer stops the list. With
     `ask_again`, an answer whose body the browser no longer holds is asked
     once more at its exact address, with the browser's cookies and no
