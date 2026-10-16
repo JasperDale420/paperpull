@@ -56,6 +56,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import time
 from dataclasses import dataclass, field
@@ -678,13 +679,9 @@ def _make_folders(folder: Path, result: Result) -> None:
     """Make a folder a file is moving to when it is not there yet, held
     inside the data folder first on PaperPull Server, as every folder a run
     writes into is, and note in result each folder made, the outermost
-    first, so one left with nothing in it can be taken away (tidy)."""
-    if folder.is_dir():
-        return
-    missing, at = [], folder
-    while not os.path.lexists(at) and at.parent != at:
-        missing.append(at)
-        at = at.parent
+    first, so one left with nothing in it can be taken away (tidy). The
+    folder is held each time, made already or not, since a folder the share
+    holds can be a link."""
     try:
         shared_folder.hold(folder)
     except shared_folder.LeadsOut as e:
@@ -692,6 +689,12 @@ def _make_folders(folder: Path, result: Result) -> None:
         # moved before it are still written down where they went. Stopping
         # the run here would leave them moved and the ledgers not.
         raise PermissionError(13, str(e), str(folder)) from e
+    if folder.is_dir():
+        return
+    missing, at = [], folder
+    while not os.path.lexists(at) and at.parent != at:
+        missing.append(at)
+        at = at.parent
     folder.mkdir(parents=True, exist_ok=True)
     result.made.extend(str(m) for m in reversed(missing))
 
@@ -770,33 +773,50 @@ def _moved_across(source: Path, target: Path) -> None:
     try:
         with shared_folder.open_to_write(part, "wb") as out, open(source, "rb") as src:
             shutil.copyfileobj(src, out)
-        shutil.copystat(source, part)
+        # Its times, and never its attributes, so the copy is one this can
+        # take away again, a file marked read-only included.
+        st = os.stat(source)
+        os.utime(part, (st.st_atime, st.st_mtime))
         if os.path.lexists(target):
             raise FileExistsError(17, "a file has that name", str(target))
         part.rename(target)
     except BaseException:
-        try:
-            part.unlink()
-        except OSError:
-            pass
+        _remove_copy(part)
         raise
     try:
         source.unlink()
     except BaseException:
-        try:
-            target.unlink()
-        except OSError:
-            pass
+        # A file marked read-only, or held open, cannot leave where it was,
+        # so the copy goes again and the file stays where its ledgers say.
+        _remove_copy(target)
         raise
+
+
+def _remove_copy(path: Path) -> None:
+    """Take away a copy _moved_across made, writable or not, since it is
+    this program's own."""
+    for attempt in range(2):
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt:
+                return
+            try:
+                os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            except OSError:
+                return
 
 
 def _file_key(path: Path):
     """The file at path, the same for every spelling of its name, or for a
     name nothing is under, the name as _same_file reads it."""
     try:
-        stat = os.stat(path)
-        if stat.st_ino:
-            return (stat.st_dev, stat.st_ino)
+        st = os.stat(path)
+        if st.st_ino:
+            return (st.st_dev, st.st_ino)
     except (OSError, ValueError):
         pass
     return _same_file(str(path)) or str(path)
@@ -958,8 +978,11 @@ def _write_ledgers(app, ledgers, result: Result, numbered: dict, say=print,
                 say("The index and the run state still give each of those the name it had, "
                     "so rename each back to it by hand.")
             for where, old in stuck:
-                say("  %s" % where.name)
-                say("    back to %s" % old.name)
+                # A file in another folder, a documents folder on another
+                # drive included, is said where it is and where it goes.
+                elsewhere = not _same_folder(where.parent, old.parent)
+                say("  %s" % (where if elsewhere else where.name))
+                say("    back to %s" % (old if elsewhere else old.name))
         for csv in unwritten:
             say("%s could not be put back either, so it still names the files by their "
                 "new names." % _name_of(csv))
@@ -1374,9 +1397,20 @@ def run_for(app, apply_changes: bool = False, say=print,
             return ""
         if only is not None and _same_file(raw) not in only:
             return ""
+        if "manual review" in (row.get("Processing Status") or "").lower():
+            return ""
         record = current.record_for(row, saved=True) or {}
         if not (record.get("downloaded_ok") is True
                 or record.get("state") in (State.COMPLETED.value, State.PDF_VERIFIED.value)):
+            return ""
+        # The record has to name this very file. One a purchase keeps by its
+        # order number may speak for an earlier copy, as when Download again
+        # saved a copy that failed its check beside the one that passed.
+        invoices = record.get("invoices")
+        named = [record.get("pdf_path")] + [
+            e.get("file") for e in (invoices if isinstance(invoices, list) else ())
+            if isinstance(e, dict) and e.get("kept", True)]
+        if not any(_text(n) and _one_file(_text(n), raw) for n in named):
             return ""
         try:
             inside = Path(raw).resolve().relative_to(Path(home).resolve())

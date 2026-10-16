@@ -1885,9 +1885,12 @@ async function dcLoad() {
     : 'Documents and records both go to ' + d.output_dir + '.';
   $('dcinput').value = d.documents_dir || '';
   $('dcleft').hidden = !d.left;
-  $('dclefttext').textContent = d.left ? many(d.left, 'document') + (d.left === 1 ? ' is' : ' are') +
-    ' still in ' + d.output_dir + ', saved before. They are found there as they are. Move them to ' +
-    d.documents_dir + ' with a preview first.' : '';
+  $('dclefttext').textContent = !d.left ? ''
+    : d.documents_dir ? many(d.left, 'document') + (d.left === 1 ? ' is' : ' are') + ' not in ' +
+      d.documents_dir + ' yet, saved before in ' + d.output_dir + ' or a documents folder used before. ' +
+      'They are found where they are. Move them there, with a preview first.'
+    : many(d.left, 'document') + (d.left === 1 ? ' is' : ' are') + ' in a documents folder used before. ' +
+      'Move brings them back to ' + d.output_dir + ', with a preview first.';
 }
 async function dcSave(clear) {
   const p = dcPick();

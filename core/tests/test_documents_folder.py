@@ -240,7 +240,8 @@ def test_on_the_server_a_link_out_inside_the_documents_folder_stops_the_run(serv
 # -- Rename and the Move -----------------------------------------------------------------
 
 INDEX_COLUMNS = ["Document Date", "Document Title", "Document Summary", "Account",
-                 "PDF Filename", "PDF Full Path", "Processing Status", "Notes"]
+                 "PDF Filename", "PDF Full Path", "Processing Status", "Notes",
+                 "Order or Receipt Number"]
 
 
 def body_of(key: str) -> bytes:
@@ -553,6 +554,91 @@ def test_every_invoice_of_an_order_split_into_several_moves(tmp_path, monkeypatc
     invoices = office.progress.data["Order 5555"]["invoices"]
     assert [Path(e["file"]).parent for e in invoices[:2]] == [office.docs / "Statements"] * 2
     assert all(Path(e["file"]).is_file() for e in invoices[:2])
+
+
+def test_a_read_only_file_on_its_way_to_another_drive_stays_where_it_was(
+        office, monkeypatch):
+    """Its copy carries none of its attributes, so when the file itself
+    cannot be taken away, the copy can, and there are never two."""
+    import stat as stat_module
+    across(monkeypatch, office.docs)
+    first = office.out / "Statements" / FIRST
+    os.chmod(first, stat_module.S_IREAD)
+    try:
+        moving(monkeypatch)
+        code, said = office.rename()
+        where = office.where()
+        assert where[body_of(ACCOUNTS[0])] == BEFORE[body_of(ACCOUNTS[0])], said
+        assert where[body_of(ACCOUNTS[1])] == "Watched/Statements/" + SECOND
+        assert [p.name for p in office.docs.rglob("*.pdf")] == [SECOND]
+        assert not [p for p in office.docs.rglob("*") if ".moving" in p.name]
+        office.follows()
+    finally:
+        os.chmod(first, stat_module.S_IREAD | stat_module.S_IWRITE)
+
+
+def test_a_copy_that_failed_its_check_beside_one_that_passed_never_moves(
+        office, monkeypatch):
+    """Download again saved a second copy of a purchase that failed its
+    check and could not be put aside. The purchase's record, found by its
+    order number, says it was saved, and kept that from the copy that
+    passed, so it names that copy and not this one. This one stays, even
+    where its row reads Completed."""
+    rows = office.index_csv.read_all()
+    rows[0]["Order or Receipt Number"] = "7001"
+    office.index_csv.rewrite(rows)
+    office.progress.update(ACCOUNTS[0], {"order_number": "7001"})
+    failed = office.out / "Statements" / "2026-09-12 Testco Monthly Statement (3).pdf"
+    failed.write_bytes(body_of("a copy that failed"))
+    office.index_csv.append_rows([{
+        "Document Date": DATE, "Document Title": "Monthly Statement",
+        "Document Summary": "Monthly Statement", "Account": ACCOUNTS[0],
+        "PDF Filename": failed.name, "PDF Full Path": str(failed),
+        "Processing Status": "Completed", "Notes": "", "Order or Receipt Number": "7001"}])
+    moving(monkeypatch)
+    code, said = office.rename()
+    assert code == 0 and "Moved 2 file(s)" in said, said
+    assert failed.is_file(), "a file no record names stays where it is"
+
+
+def test_a_documents_folder_inside_manual_review_or_a_hidden_folder_is_not_used(
+        tmp_path, capsys):
+    out = tmp_path / "out"
+    for inside in ("Manual Review", "Logs", ".chase-downloads"):
+        cfg = storage.load_config(write(tmp_path / "app", {
+            "output_dir": str(out), "documents_dir": str(out / inside / "Docs")}))
+        assert cfg["documents_dir"] == "", inside
+        assert "Manual Review, Logs" in capsys.readouterr().out
+
+
+def test_on_the_server_a_folder_used_before_with_a_link_out_is_not_the_apps(server):
+    """documents-folders.json is in the shared folder. A folder it names
+    whose folder of a kind leads out of the data folder through a link is
+    left out, so nothing in it is held, renamed or moved."""
+    outside = server.parent.parent / "elsewhere"
+    outside.mkdir()
+    (outside / "secret.pdf").write_bytes(b"%PDF- not the app's")
+    watched = server.parent / "Watched"
+    watched.mkdir()
+    link_folder(outside, watched / "Statements")
+    (server / "documents-folders.json").write_text(json.dumps([str(watched)]),
+                                                   encoding="utf-8")
+    cfg = storage.load_config(on_the_server(server))
+    paths = Paths(Path(cfg["output_dir"]))
+    assert paths.documents_roots() == []
+    assert watched / "Statements" not in paths.filing_folders()
+    assert renaming.held_document(str(watched / "Statements" / "secret.pdf"),
+                                  paths.filing_folders()) is None
+
+
+def test_on_the_server_a_move_into_a_folder_that_became_a_link_out_is_refused(server):
+    outside = server.parent.parent / "elsewhere"
+    outside.mkdir()
+    folder = server.parent / "Watched" / "Statements"
+    folder.parent.mkdir()
+    link_folder(outside, folder)
+    with pytest.raises(PermissionError):
+        renaming._make_folders(folder, renaming.Result())
 
 
 # -- what travels and what a second person gets ------------------------------------------

@@ -23,6 +23,7 @@ moved or copied, and the old way of running them keeps working alongside.
 """
 from __future__ import annotations
 
+import csv
 import json
 import os
 from datetime import date, datetime
@@ -269,6 +270,9 @@ ACTIONS = {
 # Diagnose surveys the page. Both are harmless and both are rarely wanted.
 MORE_ACTIONS = ("verify", "diagnose", "record", "rename", "rename_apply",
                 "move_documents", "move_documents_apply")
+# The actions that finish on their own when the page that started them goes,
+# since each moves files and then writes the ledgers that name them (#102).
+FINISHED_WHEN_LEFT = ("rename_apply", "move_documents_apply")
 # An app's own script, never a hidden file. A Mac writing to a network
 # drive or a disk it does not format itself leaves "._ally_docs.py" beside
 # ally_docs.py, a few bytes of its own about the file, and that sorts first,
@@ -3486,31 +3490,51 @@ def _start_run(app: str, account: str, action: str, scope_flags, redownload=Fals
             yield "data: \n\n"
             yield f"event: done\ndata: {code}\n\n"
         finally:
-            if not noted:
-                # The page went away before the run was noted. A run that had
-                # already ended by itself, say while the Paperless copy ran,
-                # is noted with its own code, but only once its output was
-                # read to the end, or its counts were, since a code of 0 with
-                # the counts line still unread could hide a run that stopped.
-                # Any other is stopped by this, and its row says so.
-                ended = proc.poll() if (read_all or result is not None) else None
-                if ended is not None:
-                    note(ended, result)
-                else:
-                    note(None, result, True)
-            _RUNS.pop((app, account), None)
-            # Another person's run of the same app may still be going.
-            if not any(a == app for a, _ in _RUNS):
-                _RUNNING.discard(app)
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-            if proc.stdout:
-                proc.stdout.close()
-            _drop(handed)
+            if not noted and action in FINISHED_WHEN_LEFT and proc.poll() is None:
+                # A Rename or a Move applying its changes moves every file and
+                # only then writes the ledgers, so stopped partway it would
+                # leave files the index no longer names. It finishes on its
+                # own, its output read and dropped, and the account stays
+                # claimed until it has.
+                def finish():
+                    try:
+                        for _line in proc.stdout:
+                            pass
+                        note(proc.wait(), result)
+                    finally:
+                        _RUNS.pop((app, account), None)
+                        if not any(a == app for a, _ in _RUNS):
+                            _RUNNING.discard(app)
+                        if proc.stdout:
+                            proc.stdout.close()
+                        _drop(handed)
+                threading.Thread(target=finish, daemon=True).start()
+            else:
+                if not noted:
+                    # The page went away before the run was noted. A run that
+                    # had already ended by itself, say while the Paperless copy
+                    # ran, is noted with its own code, but only once its output
+                    # was read to the end, or its counts were, since a code of
+                    # 0 with the counts line still unread could hide a run that
+                    # stopped. Any other is stopped by this, and its row says so.
+                    ended = proc.poll() if (read_all or result is not None) else None
+                    if ended is not None:
+                        note(ended, result)
+                    else:
+                        note(None, result, True)
+                _RUNS.pop((app, account), None)
+                # Another person's run of the same app may still be going.
+                if not any(a == app for a, _ in _RUNS):
+                    _RUNNING.discard(app)
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                if proc.stdout:
+                    proc.stdout.close()
+                _drop(handed)
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
@@ -3879,6 +3903,17 @@ def _documents_problem(apps: dict, app_name: str, account: str, folder: str):
             if (name, other) != (app_name, account) and _within(target, root):
                 return ("That folder is inside the folder %s keeps its records in. "
                         "Choose a folder of its own." % who)
+            if (name, other) == (app_name, account) and _within(target, root):
+                # Inside its own folder it may be, but not where a document
+                # that failed its check or a run's own records are kept.
+                try:
+                    first = target.resolve().relative_to(root.resolve()).parts[:1]
+                except (ValueError, OSError, RuntimeError):
+                    first = ()
+                if first and (first[0] in KEPT_FOLDERS or first[0].startswith(".")):
+                    return ("That folder is inside %s, where documents that failed their "
+                            "check or a run's own records are kept. Choose a folder of their "
+                            "own." % first[0])
     return None
 
 
@@ -3888,6 +3923,28 @@ def _documents_roots(root: Path) -> list:
     listed = _read_json(root / DOCUMENTS_FOLDERS)
     return [Path(p) for p in (listed if isinstance(listed, list) else ())
             if isinstance(p, str) and Path(p).is_absolute()]
+
+
+def _file_key_of(raw: str, root: Path) -> str:
+    path = Path(raw.strip())
+    path = path if path.is_absolute() else root / path
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def _indexed_files(root: Path):
+    """Each file an account's index names, by its index of documents or of
+    receipts in its folder, or None when it has no index there."""
+    found = None
+    for index in sorted(root.glob("* Index.csv")):
+        try:
+            with open(index, encoding="utf-8-sig", newline="") as fh:
+                rows = list(csv.DictReader(fh))
+        except (OSError, ValueError, csv.Error):
+            continue
+        found = found if found is not None else set()
+        found |= {_file_key_of(r["PDF Full Path"], root) for r in rows
+                  if isinstance(r.get("PDF Full Path"), str) and r["PDF Full Path"].strip()}
+    return found
 
 
 def _documents_left(meta: dict, account: str) -> int:
@@ -3905,14 +3962,22 @@ def _documents_left(meta: dict, account: str) -> int:
     except (ValueError, OSError, RuntimeError):
         return 0
     data = _read_json(root / "progress.json")
+    indexed = _indexed_files(root)
     seen = set()
     for rec in data.values() if isinstance(data, dict) else ():
         if not isinstance(rec, dict) or not (
                 rec.get("downloaded_ok") is True or rec.get("state") in ("Completed",
                                                                         "PDF Verified")):
             continue
-        files = [rec.get("pdf_path")] + [e.get("file") for e in rec.get("invoices") or ()
-                                         if isinstance(e, dict) and e.get("kept", True)]
+        # The Move takes a file an index row names, and each other invoice
+        # of an order split into several.
+        main = rec.get("pdf_path")
+        if indexed is not None and isinstance(main, str) and \
+                _file_key_of(main, root) not in indexed:
+            main = None
+        invoices = rec.get("invoices")
+        files = [main] + [e.get("file") for e in (invoices if isinstance(invoices, list) else ())
+                          if isinstance(e, dict) and e.get("kept", True)]
         for raw in files:
             if not isinstance(raw, str) or not raw.strip().lower().endswith(".pdf"):
                 continue
@@ -3983,7 +4048,7 @@ def api_documents(app: str, account: str = "primary"):
     _apps, meta, root = _documents_account(app, account)
     folder = _documents_of(meta, account)
     return {"documents_dir": folder, "output_dir": str(root),
-            "left": _documents_left(meta, account) if folder else 0,
+            "left": _documents_left(meta, account),
             "kept": list(KEPT_FOLDERS)}
 
 
@@ -4018,7 +4083,7 @@ async def api_documents_save(request: Request):
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     written = _write_config(cfg_path, DOCUMENTS_KEY, folder, stamp, why="documents")
     return {"written": written, "documents_dir": _documents_of(meta, account),
-            "left": _documents_left(meta, account) if folder else 0}
+            "left": _documents_left(meta, account)}
 
 
 # -- the terms of use ---------------------------------------------------------

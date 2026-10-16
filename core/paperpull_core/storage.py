@@ -131,6 +131,18 @@ def load_config(path: Optional[Path] = None) -> dict:
     return cfg
 
 
+def _in_a_kept_folder(docs: str, out: str) -> bool:
+    """Whether a folder is inside the output folder's Manual Review, Logs,
+    Diagnostics or Backups, or a hidden folder of it, a browser's download
+    folder among them."""
+    try:
+        parts = Path(os.path.realpath(docs)).relative_to(os.path.realpath(out)).parts
+    except ValueError:
+        return False
+    kept = {f.name.lower() for f in INFRASTRUCTURE_FOLDERS}
+    return bool(parts) and (parts[0].lower() in kept or parts[0].startswith("."))
+
+
 def set_documents_dir(cfg: dict, path) -> str:
     """Take the documents folder a config names, for the Paths built from
     its output_dir, and return it, "" for the output folder itself (#102).
@@ -162,6 +174,9 @@ def set_documents_dir(cfg: dict, path) -> str:
         elif _inside(out, docs) and not _inside(docs, out):
             why = ("it holds the output folder, whose records and Manual Review would then "
                    "sit in it")
+        elif _in_a_kept_folder(docs, out):
+            why = ("it is inside the output folder's Manual Review, Logs, Diagnostics, "
+                   "Backups or a hidden folder, which hold no document that passed its check")
     if why:
         print("The documents folder in %s is not used, since %s, so documents go to the "
               "output folder as before." % (name, why), flush=True)
@@ -564,7 +579,10 @@ class Paths:
     def documents_roots(self) -> List[Path]:
         """Each documents folder this account's documents were moved to, as
         the Move wrote them down in documents-folders.json, a full path
-        each, and on PaperPull Server only one inside the data folder."""
+        each. On PaperPull Server, where anybody on the share can edit the
+        file, only one inside the data folder holding no link out of it, in
+        it or in a folder of a kind in it (shared_folder.first_link_out),
+        as the documents folder itself is held when a run starts."""
         try:
             with shared_folder.open_to_read(self.documents_folders_json, "r",
                                             encoding="utf-8") as f:
@@ -575,8 +593,9 @@ class Paths:
         for item in listed if isinstance(listed, list) else ():
             if not (isinstance(item, str) and Path(item).is_absolute()):
                 continue
-            if shared_folder.on_server() and not _in_data(
-                    os.path.realpath(item), shared_folder.data_folder()):
+            if shared_folder.on_server() and (
+                    not _in_data(os.path.realpath(item), shared_folder.data_folder())
+                    or shared_folder.first_link_out(item, [f.name for f in self._routed()])):
                 continue
             roots.append(Path(item))
         return roots

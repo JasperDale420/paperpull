@@ -184,10 +184,17 @@ def test_the_page_counts_the_documents_the_move_would_take(apps, tmp_path):
                "gone": dict(done, pdf_path="Statements/gone.pdf"),
                "elsewhere": dict(done, pdf_path=str(tmp_path / "x.pdf"))}
     (chase / "progress.json").write_text(json.dumps(records), encoding="utf-8")
-    assert app_module.api_documents("Chase Statements")["left"] == 0, "no folder, none left"
+    assert app_module.api_documents("Chase Statements")["left"] == 1, (
+        "with no folder set, the one in the folder used before comes back")
     d = save({"app": "Chase Statements", "folder": str(docs)})
     assert d["left"] == 3
     assert app_module.api_documents("Chase Statements")["left"] == 3
+    # The Move takes what an index row names, so a record with no row is
+    # not counted once there is an index.
+    (chase / "Chase Document Index.csv").write_text(
+        "PDF Filename,PDF Full Path\na.pdf,Statements/Testco/a.pdf\nd.pdf,%s\n"
+        % (earlier / "d.pdf"), encoding="utf-8")
+    assert app_module.api_documents("Chase Statements")["left"] == 2
 
 
 def test_an_unknown_account_is_refused(apps):
@@ -321,6 +328,81 @@ def test_no_move_follows_a_run_with_nothing_of_its_own_to_move(started, download
     finally:
         app_module.subprocess.Popen = real
     assert len(started) == 1, started
+
+
+@pytest.mark.parametrize("inside", ["Manual Review", "Backups", ".chase-downloads"])
+def test_a_folder_inside_the_accounts_manual_review_or_records_is_refused(apps, inside):
+    chase = apps["Chase Statements"]
+    with pytest.raises(HTTPException) as e:
+        save({"app": "Chase Statements", "folder": str(chase / inside / "Docs")})
+    assert "failed their check" in e.value.detail, e.value.detail
+
+
+@pytest.fixture()
+def slow(tmp_path, monkeypatch):
+    """A run that is still going when its page closes, and whether it was
+    stopped."""
+    import io
+    monkeypatch.delenv("PAPERPULL_SERVER", raising=False)
+    monkeypatch.setattr(app_module, "_SAMPLE", None)
+    venv = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv.parent.mkdir(parents=True)
+    venv.write_text("", encoding="utf-8")
+    meta = {"name": "Shop Docs", "dir": str(tmp_path), "script": "shop_docs.py",
+            "python": "py", "login_flag": "--login", "accounts": ["primary"]}
+    monkeypatch.setattr(app_module, "discover_apps", lambda: {"Shop Docs": meta})
+    seen = {"stopped": False, "ended": False}
+
+    class Process:
+        def __init__(self, cmd, **kwargs):
+            self.stdin = io.StringIO()
+            self.stdout = io.StringIO("moving one\nmoving two\n")
+
+        def poll(self):
+            return 0 if (seen["stopped"] or seen["ended"]) else None
+
+        def wait(self, **kwargs):
+            seen["ended"] = True
+            return 0
+
+        def terminate(self):
+            seen["stopped"] = True
+
+        kill = terminate
+
+    monkeypatch.setattr(app_module.subprocess, "Popen", Process)
+    return seen
+
+
+def closed_after_its_first_line(action):
+    """The page closes once the run's first line of output has come."""
+    async def go():
+        response = app_module.api_run(app="Shop Docs", action=action)
+        body = response.body_iterator
+        while "moving one" not in await body.__anext__():
+            pass
+        await body.aclose()
+    asyncio.run(go())
+
+
+def test_a_move_or_rename_applying_finishes_when_its_page_closes(slow):
+    """It moves every file and then writes the ledgers, so stopped partway
+    it would leave files the index no longer names. It goes on to its end,
+    and the account stays claimed until it has."""
+    import time
+    closed_after_its_first_line("move_documents_apply")
+    for _ in range(200):
+        if ("Shop Docs", "primary") not in app_module._RUNS:
+            break
+        time.sleep(0.01)
+    assert not slow["stopped"] and slow["ended"]
+    assert ("Shop Docs", "primary") not in app_module._RUNS
+
+
+def test_any_other_run_is_stopped_when_its_page_closes(slow):
+    closed_after_its_first_line("pilot")
+    assert slow["stopped"]
+    assert ("Shop Docs", "primary") not in app_module._RUNS
 
 
 def test_the_move_is_the_apps_own_rename_with_the_cores_mark():
