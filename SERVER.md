@@ -190,6 +190,12 @@ documents that run saved are copied into it.
   in the environment, each provider's documents go in a folder of that
   provider's name inside the consume folder. Paperless turns those folders
   into tags when `PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS` is on in Paperless.
+- **A documents folder stays inside /data.** The panel's Documents folder
+  setting works on the server for a folder inside the data folder, and a
+  run's checked documents move there once the plug-ins have copied them. A
+  run refuses one anywhere else, or one reached through a link out of
+  /data, before it saves anything, so Paperless gets new documents through
+  the volume above rather than through a documents folder.
 
 What happened is in each run's output, a line such as "Copied 3 new
 documents to Paperless".

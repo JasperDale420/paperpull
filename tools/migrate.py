@@ -32,10 +32,10 @@ done, and anything the target install already knew about it is kept.
 Each person's settings come along too, the ones somebody chose rather than
 the ones that name a computer. That is every key the provider's
 config.example.json lists, the file name patterns, and nothing in
-MACHINE_KEYS, the download folder, the browser profile, the browser and its
-debugging port, which the new machine decides for itself. An import writes
-settings only into a provider or person it sets up, never over one already
-there.
+MACHINE_KEYS, the download folder, the documents folder, the browser profile,
+the browser and its debugging port, which the new machine decides for itself.
+An import writes settings only into a provider or person it sets up, never
+over one already there.
 
 PATHS ARE REWRITTEN
 
@@ -260,7 +260,7 @@ TERMINAL = {"Completed", "PDF Verified", "No Receipt Available", "Canceled"}
 # Settings that name this computer. Another machine has its own folders, its
 # own profiles and its own browser, so these never travel, and an import
 # never writes them, whatever a file says.
-MACHINE_KEYS = ("output_dir", "profile_dir", "cdp_url", "browser")
+MACHINE_KEYS = ("output_dir", "profile_dir", "cdp_url", "browser", "documents_dir")
 # The control panel's File names tab writes these, and no config.example.json
 # lists them.
 NAMING_KEYS = ("filename_pattern", "filename_pattern_receipts",

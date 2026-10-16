@@ -30,11 +30,64 @@ behind.
 | `{date:yyyy-mm-dd}` | a date in that shape, from `yyyy yy mm m dd d` and a month name `mmm` or `mmmm` |
 | `[ ... ]` | an optional section, dropped whole, separators and all, when any field inside it is empty |
 | `{a\|b\|c}` | the first of these that has a value |
+| `/` | a folder, as in `{provider}/{year}/{date} {summary}` |
 
 Everything else is written as it stands. The result is always made safe
 for the file system the way names are today, cut to the path limit, and
 given `.pdf`. A clash with an existing file is still told apart by the
 order number, as it is today.
+
+## Folders from a pattern
+
+A `/` in a pattern puts files in folders (#101). The folders go inside the
+folder each kind of document is already filed in, so with
+`{provider}/{year}/{date:yyyy-mm-dd} {summary}` a Chase statement lands in
+`Statements/Chase/2026/` and a tax form in `Tax Documents/Chase/2026/`.
+Manual Review stays one flat folder whatever the pattern says.
+
+* **Only the pattern's own `/` makes a folder.** A `/` inside a value, an
+  account written `Joint/Savings` or a date written `{date:yyyy/mm}`, stays
+  in that folder's or that file's name and is taken out when the name is
+  made safe, as it always was. Nothing a provider writes can make a folder.
+* **Each folder is made safe the way a file name is.** Characters Windows
+  refuses come out, and so do dots and spaces at either end, so `..` is
+  nothing and a masked account like `...1234` is the folder `1234`. A
+  folder is at most 60 characters.
+* **A folder whose fields are empty is left out.** With
+  `{provider}/[{account}/]{date} {summary}` a document with no account is
+  filed one folder up rather than in a folder with no name.
+* **A pattern goes at most three folders deep, and every folder names a
+  field.** A pattern that starts or ends with `/`, has two `/` in a row,
+  has a folder of plain text such as `Statements/{date}`, or has a name
+  after the last `/` with no field in it is refused with a message saying
+  which, on the settings page and when a run starts.
+* **The folders count toward the path limit.** A name is cut to fit
+  `max_path_length` under its folders. Folders so deep that no name would
+  fit, a folder that cannot be made because a file of that name is in the
+  way, or a folder that would lead outside the folder of its kind through
+  a link all leave the file in the folder of its kind with no folders. A
+  folder never stops a download.
+
+**Rename** moves files into the folders a pattern names and back out of
+them, the same way a download would file them now. Changing back to a
+pattern with no `/` moves every file back to the folder of its kind. The
+index and the run state follow every file, so nothing is downloaded again.
+A folder left empty by a rename is removed, and a folder of a kind, such
+as `Statements`, or a folder that still holds anything, never is. If a
+ledger cannot be written after files moved, every file goes back where it
+was and any folder made for it is removed. **Review Names** files each
+receipt it renames the same way. A file is never moved to another folder
+of a kind, and never over another file. When another file already has
+its name in the folder it moves to, it is told apart as a download tells
+it apart, by its order number or the end of its document id, and by `(2)`
+when it has neither.
+
+The order history carries a file's name and no path. Where a rename gives
+two files of one name in two folders two new names, the order history row
+of that name keeps the name it had rather than take the wrong one. The
+bank transactions spreadsheet reads every statement by its full path and
+names each with its folders, so two statements of one name are told apart
+there.
 
 ## What each app actually knows
 
@@ -237,5 +290,5 @@ All five steps are built.
 
 ## Not in the first version
 
-Folders from a pattern, such as `Statements/{year}/`. Changing case. Any
-logic beyond an optional section and a fallback.
+Changing case. Any logic beyond an optional section and a fallback.
+Folders from a pattern came later, in the section above.

@@ -509,11 +509,48 @@ name ends in a stray dash, and your newest files are shown under the new
 pattern as you change it. The pattern can still be written by hand under
 Edit as text.
 
+A `/` in the pattern puts files in folders, inside the folder each kind of
+document already goes to. `{provider}/{year}/{date:yyyy-mm-dd} {summary}`
+files a Chase statement as
+`Statements/Chase/2026/2026-03-09 Monthly Statement.pdf`. A folder whose
+part is empty is left out, Manual Review stays one folder, and a pattern
+goes at most three folders deep.
+
 One pattern covers every receipts app or every statements app, or any
 single app can have its own. After you save, the page offers to rename
 the files you already have to match, a preview first and then the
-rename, and nothing is downloaded again. The pattern language is in
-[docs/file-naming.md](docs/file-naming.md).
+rename, and nothing is downloaded again. Renaming moves files into the
+folders a pattern names, and back out again if you change your mind. The
+pattern language is in [docs/file-naming.md](docs/file-naming.md).
+
+## A documents folder for each person
+
+Each person on each provider can send their documents to a folder of their
+own, such as one Paperless-ngx watches, one a sync program keeps or a
+share on a NAS. In Settings, under **Documents folder**, pick the provider
+and the person and give the folder's full path. Each download is still
+saved and checked in the provider's own folder, and one that fails its
+check is put aside in its Manual Review there. When a run from the panel
+ends, the documents it saved and checked move into the documents folder,
+into Statements, Tax Documents, Receipts and the other folders of each
+kind, with any folders your naming pattern adds. The provider's records,
+Manual Review, Logs, Diagnostics and Backups never move, so the documents
+folder only ever gets documents that passed their checks.
+
+Saving the setting moves nothing that is already there. Documents saved
+before stay where they are, and PaperPull still finds them, so nothing is
+downloaded again. The page says how many are still in the provider's
+folder and offers **Preview move** and then **Move**, which moves each one
+under the name it has, with its records following it, and puts everything
+back if a record cannot be written. Change the folder or set it back, and
+the same Move brings the documents to where it now points. A browser
+profile, a folder inside or around one, a folder holding a provider's own
+folder and a folder inside or around a person's own folder are refused. By
+hand, `"documents_dir"` in an account's config.json sets the same thing, as
+a full path, and from a terminal the move is a Rename run with
+`PAPERPULL_MOVE_DOCUMENTS=1` in its environment. On PaperPull Server the
+folder has to be inside the data folder, see
+[SERVER.md](SERVER.md#paperless).
 
 ## Moving to another computer
 

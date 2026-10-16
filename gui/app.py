@@ -23,6 +23,7 @@ moved or copied, and the old way of running them keeps working alongside.
 """
 from __future__ import annotations
 
+import csv
 import json
 import os
 from datetime import date, datetime
@@ -255,11 +256,23 @@ ACTIONS = {
     # with one button would show a preview and leave nowhere to go.
     "rename": {"label": "Rename preview", "flags": ["--rename"]},
     "rename_apply": {"label": "Apply renames", "flags": ["--rename", "--apply"]},
+    # Moving the documents an account saved before it had a documents folder
+    # into that folder (#102). The app's own Rename does it, told to by the
+    # environment (core renaming.MOVE_DOCUMENTS_ENV), so it keeps every rule
+    # a rename keeps and every app moves alike. A preview first, as above.
+    "move_documents": {"label": "Preview move", "flags": ["--rename"],
+                       "env": {"PAPERPULL_MOVE_DOCUMENTS": "1"}},
+    "move_documents_apply": {"label": "Move documents", "flags": ["--rename", "--apply"],
+                             "env": {"PAPERPULL_MOVE_DOCUMENTS": "1"}},
 }
 # The actions for when something is off, kept behind a "more" link so the
 # main panel stays the four a normal day needs. Verify re-checks saved PDFs,
 # Diagnose surveys the page. Both are harmless and both are rarely wanted.
-MORE_ACTIONS = ("verify", "diagnose", "record", "rename", "rename_apply")
+MORE_ACTIONS = ("verify", "diagnose", "record", "rename", "rename_apply",
+                "move_documents", "move_documents_apply")
+# The actions that finish on their own when the page that started them goes,
+# since each moves files and then writes the ledgers that name them (#102).
+FINISHED_WHEN_LEFT = ("rename_apply", "move_documents_apply")
 # An app's own script, never a hidden file. A Mac writing to a network
 # drive or a disk it does not format itself leaves "._ally_docs.py" beside
 # ally_docs.py, a few bytes of its own about the file, and that sorts first,
@@ -3335,6 +3348,10 @@ def _start_run(app: str, account: str, action: str, scope_flags, redownload=Fals
         # things that keep code on the image side and data on the /data
         # side. On the desktop it only carries the version through.
         env = _run_env(meta)
+        # What an action tells the app beyond its flags, the Move's mark
+        # (ACTIONS). Review Names carries its own below.
+        if review is None:
+            env.update(ACTIONS.get(action, {}).get("env", {}))
         # When the run began, so that only a list of new files this run
         # wrote is handed to the server's plug-ins afterwards.
         started = time.time()
@@ -3453,6 +3470,14 @@ def _start_run(app: str, account: str, action: str, scope_flags, redownload=Fals
                                                 action, started, code, result)
                 for told in said:
                     yield f"data: {told}\n\n"
+            # Then what a download run saved and checked moves to the
+            # account's documents folder, if it has one (#102), after the
+            # plug-ins have read each file where the run saved it.
+            if action in DOWNLOAD_ACTIONS and root is not None:
+                said = await to_thread.run_sync(_move_new_documents, meta, account, root,
+                                                started, env)
+                for told in said:
+                    yield f"data: {told}\n\n"
             if result is not None:
                 yield f"event: result\ndata: {json.dumps(result)}\n\n"
             # The files this run saved, by name, for the page to list under
@@ -3465,31 +3490,51 @@ def _start_run(app: str, account: str, action: str, scope_flags, redownload=Fals
             yield "data: \n\n"
             yield f"event: done\ndata: {code}\n\n"
         finally:
-            if not noted:
-                # The page went away before the run was noted. A run that had
-                # already ended by itself, say while the Paperless copy ran,
-                # is noted with its own code, but only once its output was
-                # read to the end, or its counts were, since a code of 0 with
-                # the counts line still unread could hide a run that stopped.
-                # Any other is stopped by this, and its row says so.
-                ended = proc.poll() if (read_all or result is not None) else None
-                if ended is not None:
-                    note(ended, result)
-                else:
-                    note(None, result, True)
-            _RUNS.pop((app, account), None)
-            # Another person's run of the same app may still be going.
-            if not any(a == app for a, _ in _RUNS):
-                _RUNNING.discard(app)
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-            if proc.stdout:
-                proc.stdout.close()
-            _drop(handed)
+            if not noted and action in FINISHED_WHEN_LEFT and proc.poll() is None:
+                # A Rename or a Move applying its changes moves every file and
+                # only then writes the ledgers, so stopped partway it would
+                # leave files the index no longer names. It finishes on its
+                # own, its output read and dropped, and the account stays
+                # claimed until it has.
+                def finish():
+                    try:
+                        for _line in proc.stdout:
+                            pass
+                        note(proc.wait(), result)
+                    finally:
+                        _RUNS.pop((app, account), None)
+                        if not any(a == app for a, _ in _RUNS):
+                            _RUNNING.discard(app)
+                        if proc.stdout:
+                            proc.stdout.close()
+                        _drop(handed)
+                threading.Thread(target=finish, daemon=True).start()
+            else:
+                if not noted:
+                    # The page went away before the run was noted. A run that
+                    # had already ended by itself, say while the Paperless copy
+                    # ran, is noted with its own code, but only once its output
+                    # was read to the end, or its counts were, since a code of
+                    # 0 with the counts line still unread could hide a run that
+                    # stopped. Any other is stopped by this, and its row says so.
+                    ended = proc.poll() if (read_all or result is not None) else None
+                    if ended is not None:
+                        note(ended, result)
+                    else:
+                        note(None, result, True)
+                _RUNS.pop((app, account), None)
+                # Another person's run of the same app may still be going.
+                if not any(a == app for a, _ in _RUNS):
+                    _RUNNING.discard(app)
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                if proc.stdout:
+                    proc.stdout.close()
+                _drop(handed)
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
@@ -3560,27 +3605,60 @@ def _config_files(d: Path) -> list:
     return out
 
 
-def _naming_records(d: Path) -> list:
-    """The first person's records, for the preview and the fill rates.
-    Read from the output folder the config names, since that is where a
-    run keeps them, and it is not always the install."""
+def _naming_output(d: Path) -> Optional[Path]:
+    """The first person's output folder, where a run keeps its records and
+    files, and None where it cannot be read. Read from the config, since
+    it is not always the install."""
     if server_mode.enabled():
         # On the server the config is in the shared folder, so only a folder
         # inside the data folder is read, the way a run's own folder is found.
         try:
-            out = server_mode.output_root(d, "primary")
+            return server_mode.output_root(d, "primary")
         except ValueError:
-            return []
-    else:
-        cfg = _read_json(d / "config.json") or {}
-        # The same default load_config gives an absent output_dir.
-        out = Path(cfg.get("output_dir") or (Path.home() / "Downloads" / _provider_name(d)))
-        if not out.is_absolute():
-            out = d / out
+            return None
+    cfg = _read_json(d / "config.json") or {}
+    # The same default load_config gives an absent output_dir.
+    out = Path(cfg.get("output_dir") or (Path.home() / "Downloads" / _provider_name(d)))
+    return out if out.is_absolute() else d / out
+
+
+def _naming_records(d: Path) -> list:
+    """The first person's records, for the preview and the fill rates."""
+    out = _naming_output(d)
+    if out is None:
+        return []
     data = _read_json(out / "progress.json")
     if isinstance(data, dict):
         data = list(data.values())
     return [r for r in (data or []) if isinstance(r, dict)]
+
+
+def _named_where(record: dict, out: Optional[Path], documents: str = "") -> str:
+    """A saved file as the preview shows it, its name, and the folders a
+    naming pattern filed it in before it (#101), "Chase/2026/2026-01-31
+    Chase Statement.pdf", inside the folder its kind is filed in. Read
+    from the record's own path without touching the disk, and the name
+    alone for a path that is in a folder of neither the output folder nor
+    the account's documents folder (#102)."""
+    name = str(record.get("pdf_filename") or "")
+    raw = record.get("pdf_path")
+    if out is None or not isinstance(raw, str) or not raw.strip():
+        return name
+    path = Path(raw.strip())
+    if not path.is_absolute():
+        path = out / path
+    # The deeper first, as a documents folder inside the output folder is.
+    roots = sorted([out] + ([Path(documents)] if documents else []),
+                   key=lambda p: len(str(p)), reverse=True)
+    for root in roots:
+        try:
+            parts = path.relative_to(root).parts
+        except ValueError:
+            continue
+        if len(parts) < 3 or parts[-1] != name or ".." in parts:
+            return name
+        return "/".join(parts[1:])
+    return name
 
 
 def _newest_saved(records, n=3):
@@ -3597,9 +3675,11 @@ def _naming_app(name: str) -> Path:
     return Path(apps[name]["dir"])
 
 
-def _write_config(cfg_path: Path, key: str, value: str, stamp: str) -> bool:
+def _write_config(cfg_path: Path, key: str, value: str, stamp: str,
+                  why: str = "naming") -> bool:
     """Set or clear one key, backed up first and written in one step, so a
-    crash part way leaves the old file whole."""
+    crash part way leaves the old file whole. The copy goes in
+    Backups/<why>-<stamp>."""
     if not server_mode.own_file(cfg_path):
         return False
     current = _read_json(cfg_path)
@@ -3612,7 +3692,7 @@ def _write_config(cfg_path: Path, key: str, value: str, stamp: str) -> bool:
     else:
         current.pop(key, None)
     try:
-        bak = cfg_path.parent / "Backups" / ("naming-" + stamp) / cfg_path.name
+        bak = cfg_path.parent / "Backups" / ("%s-%s" % (why, stamp)) / cfg_path.name
         _make_folder(bak.parent)
         _copy_file(cfg_path, bak)
         _replace_text(cfg_path, json.dumps(current, indent=2) + "\n")
@@ -3658,10 +3738,16 @@ async def api_naming_preview(request: Request):
     kind = _naming_kind(d)
     cfg = _read_json(d / "config.json") or {}
     provider = _provider_name(d)
+    out = _naming_output(d)
     names = []
     for r in _newest_saved(_naming_records(d)):
-        current = str(r.get("pdf_filename") or "")
-        new = current
+        # With the folders a pattern filed it in, as the new name shows the
+        # folders it would be filed in.
+        current = _named_where(r, out, cfg.get(DOCUMENTS_KEY) if isinstance(
+            cfg.get(DOCUMENTS_KEY), str) else "")
+        # The default names no folder, so a file a pattern put in folders
+        # goes back to the folder of its kind, under the name it has.
+        new = current if pattern else str(r.get("pdf_filename") or "")
         if pattern and not problem:
             try:
                 new = naming.preview(
@@ -3722,6 +3808,289 @@ async def api_naming_save(request: Request):
             changed.append(name)
     return {"written": written, "installs": len(targets), "key": key,
             "changed": changed}
+
+
+# -- the documents folder (#102) ----------------------------------------------
+#
+# Each account can send the folders its documents are routed to, Statements,
+# Tax Documents, Receipts and the rest, to a folder of its own, one a program
+# such as Paperless may watch. Its records, Manual Review, Logs, Diagnostics
+# and Backups stay in its own folder, so nothing half checked reaches a
+# watched folder (core storage.Paths). The page writes documents_dir into
+# that account's config, a copy of the config kept first, and setting it
+# moves nothing. Documents saved before stay where they are, still found,
+# until the person moves them, which the app's own Rename does (ACTIONS).
+
+DOCUMENTS_KEY = "documents_dir"
+# The folders that stay in an account's own folder whatever its documents
+# folder says, as core storage keeps them (_KEPT_WITH_RECORDS).
+KEPT_FOLDERS = ("Manual Review", "Logs", "Diagnostics", "Backups")
+# Each documents folder an account's documents were moved to, in its folder.
+DOCUMENTS_FOLDERS = "documents-folders.json"
+# What tells an app's Rename to move documents (core renaming.MOVE_DOCUMENTS_ENV).
+MOVE_DOCUMENTS_ENV = "PAPERPULL_MOVE_DOCUMENTS"
+
+
+def _account_config(meta: dict, account: str) -> Path:
+    return Path(meta["dir"]) / ("config.json" if account == "primary"
+                                else "config.%s.json" % account)
+
+
+def _documents_of(meta: dict, account: str) -> str:
+    """The documents folder an account's config names, or ""."""
+    value = (_read_json(_account_config(meta, account)) or {}).get(DOCUMENTS_KEY)
+    return value if isinstance(value, str) else ""
+
+
+def _within(path, folder) -> bool:
+    """Whether path is folder or inside it, where the links on the way to
+    each lead."""
+    try:
+        where, home = Path(path).resolve(), Path(folder).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return where == home or home in where.parents
+
+
+def _profiles_known(apps: dict) -> list:
+    """Every browser profile the panel can name, each account's profile_dir
+    and, on PaperPull Server, the profiles volume they are all kept on."""
+    out = []
+    if server_mode.enabled():
+        out.append(Path(os.environ.get("PAPERPULL_PROFILES") or "/profiles"))
+    for meta in apps.values():
+        install = Path(meta["dir"])
+        for account in meta["accounts"]:
+            profile = (_read_json(_account_config(meta, account)) or {}).get("profile_dir")
+            if isinstance(profile, str) and profile.strip():
+                path = Path(profile.strip())
+                out.append(path if path.is_absolute() else install / path)
+    return out
+
+
+def _documents_problem(apps: dict, app_name: str, account: str, folder: str):
+    """Why a folder cannot be an account's documents folder, or None. It has
+    to be a full path, never a browser profile or inside or around one,
+    never a folder holding a provider's own folder, and never inside the
+    folder another account keeps its records in. On PaperPull Server it has
+    to be inside the data folder, where its links lead."""
+    if not Path(folder).is_absolute():
+        return "Give the folder's full path, starting with a drive letter or a /."
+    target = Path(os.path.normpath(folder))
+    if server_mode.enabled() and not server_mode.inside_data(target):
+        return ("On PaperPull Server documents are kept inside the data folder, %s. "
+                "Choose a folder in it." % server_mode.data_root())
+    for profile in _profiles_known(apps):
+        if _within(target, profile) or _within(profile, target):
+            return ("That folder is a browser profile, is inside one or holds one, and "
+                    "documents are never kept with a signed-in browser. Choose a folder "
+                    "of their own.")
+    for name, meta in apps.items():
+        if _within(meta["dir"], target):
+            return ("That folder holds %s's own folder, with its settings and records. "
+                    "Choose a folder of their own." % name)
+        for other in meta["accounts"]:
+            try:
+                root = _account_root(meta, other)
+            except ValueError:
+                continue
+            who = name if other == "primary" else "%s, %s" % (name, other)
+            # Around any account's own folder, this one's included, its
+            # records and Manual Review would sit in the watched folder.
+            if _within(root, target):
+                return ("That folder holds the folder %s keeps its records and Manual Review "
+                        "in. Choose a folder of their own." % who)
+            if (name, other) != (app_name, account) and _within(target, root):
+                return ("That folder is inside the folder %s keeps its records in. "
+                        "Choose a folder of its own." % who)
+            if (name, other) == (app_name, account) and _within(target, root):
+                # Inside its own folder it may be, but not where a document
+                # that failed its check or a run's own records are kept.
+                try:
+                    first = target.resolve().relative_to(root.resolve()).parts[:1]
+                except (ValueError, OSError, RuntimeError):
+                    first = ()
+                if first and (first[0] in KEPT_FOLDERS or first[0].startswith(".")):
+                    return ("That folder is inside %s, where documents that failed their "
+                            "check or a run's own records are kept. Choose a folder of their "
+                            "own." % first[0])
+    return None
+
+
+def _documents_roots(root: Path) -> list:
+    """Each documents folder an account's documents were moved to, as the
+    Move wrote them down in its folder (core storage.Paths.documents_roots)."""
+    listed = _read_json(root / DOCUMENTS_FOLDERS)
+    return [Path(p) for p in (listed if isinstance(listed, list) else ())
+            if isinstance(p, str) and Path(p).is_absolute()]
+
+
+def _file_key_of(raw: str, root: Path) -> str:
+    path = Path(raw.strip())
+    path = path if path.is_absolute() else root / path
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def _indexed_files(root: Path):
+    """Each file an account's index names, by its index of documents or of
+    receipts in its folder, or None when it has no index there. Each row is
+    read as the app wrote it, the quote it puts before a value that starts
+    like a formula taken off again (paperpull_core.sheets)."""
+    _naming()          # the core beside the panel, on the path
+    try:
+        from paperpull_core.sheets import read_stored_row
+    except ImportError:
+        return None
+    found = None
+    for index in sorted(root.glob("* Index.csv")):
+        try:
+            with open(index, encoding="utf-8-sig", newline="") as fh:
+                rows = [read_stored_row(r) for r in csv.DictReader(fh)]
+        except (OSError, ValueError, csv.Error):
+            continue
+        found = found if found is not None else set()
+        found |= {_file_key_of(r["PDF Full Path"], root) for r in rows
+                  if isinstance(r.get("PDF Full Path"), str) and r["PDF Full Path"].strip()}
+    return found
+
+
+def _documents_left(meta: dict, account: str) -> int:
+    """How many documents an account's records name that are saved and
+    checked, and are in a folder of their kind in its own folder or in a
+    documents folder it used before, and so not yet in its documents folder,
+    as the Move would count them. Read from its progress.json, each file
+    counted once and only while it is there, never one in Manual Review."""
+    try:
+        root = _account_root(meta, account)
+        home = root.resolve()
+        docs = _documents_of(meta, account)
+        here = Path(docs).resolve() if docs else home
+        roots = [home] + [r.resolve() for r in _documents_roots(root)]
+    except (ValueError, OSError, RuntimeError):
+        return 0
+    data = _read_json(root / "progress.json")
+    indexed = _indexed_files(root)
+    seen = set()
+    for rec in data.values() if isinstance(data, dict) else ():
+        if not isinstance(rec, dict) or not (
+                rec.get("downloaded_ok") is True or rec.get("state") in ("Completed",
+                                                                        "PDF Verified")):
+            continue
+        # The Move takes a file an index row names, and each other invoice
+        # of an order split into several.
+        main = rec.get("pdf_path")
+        if indexed is not None and isinstance(main, str) and \
+                _file_key_of(main, root) not in indexed:
+            main = None
+        invoices = rec.get("invoices")
+        files = [main] + [e.get("file") for e in (invoices if isinstance(invoices, list) else ())
+                          if isinstance(e, dict) and e.get("kept", True)]
+        for raw in files:
+            if not isinstance(raw, str) or not raw.strip().lower().endswith(".pdf"):
+                continue
+            path = Path(raw.strip())
+            path = path if path.is_absolute() else root / path
+            try:
+                where = path.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if here in where.parents or not where.is_file():
+                continue
+            for top in roots:
+                if top == here or top not in where.parents:
+                    continue
+                parts = where.relative_to(top).parts
+                if len(parts) >= 2 and not (top == home and parts[0] in KEPT_FOLDERS):
+                    seen.add(os.path.normcase(str(where)))
+                break
+    return len(seen)
+
+
+def _move_new_documents(meta: dict, account: str, root: Path, started: float,
+                        env: dict) -> list:
+    """Once a download run has ended, move what it saved and checked into the
+    account's documents folder, through the app's own Rename told to move
+    the documents its run listed in new-this-run.txt alone (#102). Nothing
+    for an account with no documents folder, or a run that listed nothing
+    since it started. The lines to show beneath the run's own."""
+    if not _documents_of(meta, account):
+        return []
+    # What the run listed since it started, the same list the page shows.
+    if not _saved_this_run(root, started):
+        return []
+    cmd = _command(meta, account, ["--rename", "--apply"])
+    try:
+        proc = subprocess.Popen(cmd, cwd=meta["dir"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                encoding="utf-8", errors="replace",
+                                env=dict(env, **{MOVE_DOCUMENTS_ENV: "new"}))
+    except Exception as e:
+        return ["", "The new documents could not be moved to the documents folder (%s). "
+                    "Settings, Documents folder, can move them." % type(e).__name__]
+    try:
+        proc.stdin.close()
+    except OSError:
+        pass
+    said = [line.rstrip() for line in proc.stdout if run_result.parse(line) is None]
+    if proc.wait():
+        said.append("Not every new document was moved to the documents folder. Settings, "
+                    "Documents folder, can move them.")
+    return [""] + said
+
+
+def _documents_account(app_name: str, account: str):
+    apps = discover_apps()
+    meta = apps.get(app_name)
+    if meta is None or account not in meta["accounts"]:
+        raise HTTPException(404, "unknown app or account")
+    try:
+        root = _account_root(meta, account)
+    except ValueError:
+        raise HTTPException(404, "that account's config names no folder PaperPull can read")
+    return apps, meta, root
+
+
+@app.get("/api/documents", dependencies=[Depends(_same_origin_only)])
+def api_documents(app: str, account: str = "primary"):
+    _apps, meta, root = _documents_account(app, account)
+    folder = _documents_of(meta, account)
+    return {"documents_dir": folder, "output_dir": str(root),
+            "left": _documents_left(meta, account),
+            "kept": list(KEPT_FOLDERS)}
+
+
+@app.post("/api/documents", dependencies=[Depends(_same_origin_only), Depends(_not_in_sample)])
+async def api_documents_save(request: Request):
+    """Set or clear one account's documents folder, in its own config, a
+    copy kept in Backups first. A folder that is the account's own folder
+    clears it, since documents go there already. Nothing is moved."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "expected a JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected a JSON object")
+    folder = body.get("folder")
+    if not isinstance(folder, str) or len(folder) > 1000:
+        raise HTTPException(400, "folder is the folder's path as text")
+    folder = folder.strip()
+    app_name, account = str(body.get("app") or ""), str(body.get("account") or "primary")
+    apps, meta, root = _documents_account(app_name, account)
+    if folder and Path(folder).is_absolute() and _within(folder, root) and _within(root, folder):
+        # The account's own folder, where its documents go already.
+        folder = ""
+    if folder:
+        problem = _documents_problem(apps, app_name, account, folder)
+        if problem:
+            raise HTTPException(400, problem)
+        folder = os.path.normpath(folder)
+    cfg_path = _account_config(meta, account)
+    if not cfg_path.is_file():
+        raise HTTPException(404, "that account has no settings yet")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    written = _write_config(cfg_path, DOCUMENTS_KEY, folder, stamp, why="documents")
+    return {"written": written, "documents_dir": _documents_of(meta, account),
+            "left": _documents_left(meta, account)}
 
 
 # -- the terms of use ---------------------------------------------------------

@@ -5,6 +5,7 @@ balance column with debit and credit columns, a signed-amount card
 statement with its summary printed up front, and a two-account statement
 with a balance pair per account."""
 import csv
+import json
 import importlib.util
 from pathlib import Path
 
@@ -208,6 +209,56 @@ def test_the_export_caches_each_reading_and_writes_the_sheets(tmp_path, monkeypa
     r2 = xt.export(tmp_path, as_csv=True, log=lambda *_: None)
     assert r2["read"] == 0 and r2["cached"] == 1 and len(calls) == 1     # second build reads nothing
     assert (tmp_path / xt.CACHE_NAME).is_file()
+
+
+def test_two_statements_of_one_name_in_a_patterns_folders_are_told_apart(tmp_path, monkeypatch):
+    """A naming pattern's folders can hold two files of one name, one for
+    each account (#101). Each is read by the full path its index row gives,
+    and the sheet names each with the folders it is in inside the folder of
+    its kind, so the two are told apart. A file in the folder of its kind is
+    named by its name alone, as it always was."""
+    pytest.importorskip("pdfplumber")
+    bank = tmp_path / "A Bank"
+    name = "2026-07-15 A Bank Statement.pdf"
+    files = [bank / "Statements" / "Checking 1111" / name,
+             bank / "Statements" / "Savings 2222" / name,
+             bank / "Statements" / "2026-06-15 A Bank Statement.pdf"]
+    for p in files:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"%PDF " + str(p).encode())
+    with open(bank / "A Bank Document Index.csv", "w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.DictWriter(fh, fieldnames=["Document Date", "Document Title", "PDF Full Path"])
+        w.writeheader()
+        for p in files:
+            w.writerow({"Document Date": "2026-07-15", "Document Title": "Statement",
+                        "PDF Full Path": str(p)})
+    read = []
+    monkeypatch.setattr(xt, "pdf_lines", lambda p: (read.append(p), list(BANK))[1])
+    r = xt.export(tmp_path, as_csv=True, log=lambda *_: None)
+    assert r["statements"] == 3 and sorted(read) == sorted(files)
+    with open(r["path"], encoding="utf-8-sig", newline="") as fh:
+        named = {row["Statement"] for row in csv.DictReader(fh)}
+    assert named == {"Checking 1111/" + name, "Savings 2222/" + name,
+                     "2026-06-15 A Bank Statement.pdf"}
+    index = bank / "A Bank Document Index.csv"
+    assert xt.statement_name(index, tmp_path / "elsewhere" / "x.pdf") == "x.pdf"
+
+
+def test_a_statement_in_the_documents_folder_is_named_with_its_folders(tmp_path):
+    """Moved to the account's documents folder (#102), which is written down
+    beside the index, a statement is named from inside that folder."""
+    bank, docs = tmp_path / "A Bank", tmp_path / "Watched"
+    bank.mkdir()
+    index = bank / "A Bank Document Index.csv"
+    pdf = docs / "Statements" / "Checking 1111" / "2026-07-15 Statement.pdf"
+    assert xt.statement_name(index, pdf) == "2026-07-15 Statement.pdf"
+    (bank / "documents-folders.json").write_text(json.dumps([str(docs)]), encoding="utf-8")
+    assert xt.statement_name(index, pdf) == "Checking 1111/2026-07-15 Statement.pdf"
+    assert xt.statement_name(index, docs / "Statements" / "flat.pdf") == "flat.pdf"
+    nested = bank / "Documents" / "Statements" / "Savings 2222" / "x.pdf"
+    (bank / "documents-folders.json").write_text(json.dumps([str(bank / "Documents")]),
+                                                 encoding="utf-8")
+    assert xt.statement_name(index, nested) == "Savings 2222/x.pdf"
 
 
 def test_with_no_statement_on_disk_nothing_is_written(tmp_path):

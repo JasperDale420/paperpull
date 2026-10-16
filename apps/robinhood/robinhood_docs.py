@@ -42,6 +42,7 @@ from paperpull_core import doc_types, receipt_pdf
 from paperpull_core import browser as browser_launcher
 import robinhood_site as site
 from paperpull_core.models import State
+from paperpull_core.storage import refile
 from paperpull_core.keys import account_component as _account_component
 from paperpull_core.keys import is_done
 from paperpull_core.keys import migrate_account_keys as _migrate_account_keys
@@ -1287,9 +1288,17 @@ class App:
                 return None
             doc.printed_date = f"{year}-12-31"
             doc.period = doc.period or f"Tax Year {year}"
-            final = unique_path(target.parent,
-                                build_pdf_filename(doc.printed_date, doc.summary, "", record=doc),
-                                self.config["max_path_length"], ignoring=path.name)
+            # Filed from the folder its kind routes to, as download_one filed
+            # it, so a naming pattern's folders, a year's among them, follow
+            # the year the form prints (#101).
+            try:
+                return refile(path, self.paths.folder_for(doc.category),
+                              build_pdf_filename(doc.printed_date, doc.summary, "", record=doc),
+                              self.config["max_path_length"])
+            except OSError as e:
+                # The row still carries the date, so Rename can finish this.
+                log.info("could not put %s in place: %s", target.name, e)
+                return path
         else:
             log.info("no tax year could be read from %s", target.name)
         if path == final:

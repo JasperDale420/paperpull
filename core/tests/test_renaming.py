@@ -1090,6 +1090,9 @@ def test_each_purchases_order_history_follows_its_own_file(tmp_path):
     history = [{NAME: name, "Order or Receipt Number": number, "Notes": ""}
                for number in ("A1", "A1", "B2")]
     app = _App(tmp_path, index)
+    # Each a folder the app files in, as a receipt app's Online and In-Store
+    # are. A folder inside one is a naming pattern's (#101).
+    app.paths.filing_folders = lambda: [online, instore]
     app.order_csv = _Csv(tmp_path / "history.csv", history)
     app.order_csv.columns = [NAME, "Order or Receipt Number", "Notes"]
     renaming.run_for(app, apply_changes=True, say=lambda *a: None)
