@@ -2,8 +2,8 @@
 
 No one person has accounts everywhere, so PaperPull grows when people add the
 providers *they* use. This guide walks you through building a new downloader
-app, using the same pattern all 12 existing apps share. Budget a few focused
-hours; most of the work is figuring out how one specific site lays out its
+app, using the same pattern every existing app shares. Budget a few evenings.
+Most of the work is figuring out how one specific site lays out its
 statements.
 
 If you just want a provider to *exist* but can't build it yourself, open a

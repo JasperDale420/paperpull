@@ -230,14 +230,19 @@ second copy beside it.
 ### Read-only by construction
 
 Nothing that buys, sells, transfers, pays, deletes, or changes a setting is
-ever clicked, and all site interaction lives in `provider_site.py` where it can
-be read in one sitting. Every app that clicks enforces this deny-by-default, a
-control must clear a blocklist (`FORBIDDEN_CONTROL_RE`) *and* match a document
-allowlist (`SAFE_DOC_CONTROL_RE`), and the app's host allowlist refuses any
-stored URL that points elsewhere. Sixteen apps click nothing at all (ADP, Affirm, Amazon,
-Anthem, Citi, eBay, Fidelity, Gap, GitHub, Kroger, Meijer, myPay, NetBenefits, Paylocity, TSP, UKG), they read a JSON API or render a
-page they navigated to. A repo-wide test checks every app's guard.
-[SECURITY.md](SECURITY.md) spells out which app does which.
+ever clicked, and all site interaction lives in `provider_site.py` where it
+can be read in one sitting. Every app carries a blocklist
+(`FORBIDDEN_CONTROL_RE`) of the words such a control would use. Most apps that
+press controls also decide which of the page's controls may be pressed with
+`is_safe_control()`, so a control must clear the blocklist *and* match a
+document allowlist (`SAFE_DOC_CONTROL_RE`), deny by default. The rest press
+only controls they find by a selector or by words written in the app, and the
+Target and Walmart apps check every receipt control against the blocklist,
+since a document allowlist would refuse the paging they press. Many apps click
+nothing at all during a run. They read the provider's pages by address, or the
+same data the provider's own page asks for. Each app's host allowlist refuses
+any stored URL that points elsewhere, and a repo-wide test checks every app's
+guard. [SECURITY.md](SECURITY.md) spells out which app does which.
 
 ### One app, more than one person
 
