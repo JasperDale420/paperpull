@@ -7,6 +7,28 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Security
+- **Text from a receipt or a statement no longer becomes a formula in the
+  spreadsheets.** The purchases and transactions spreadsheets write out
+  words other people chose, an item's name from a marketplace seller and a
+  merchant's name from a card statement. A spreadsheet takes a cell that
+  starts with = as a formula, and Excel takes one starting with +, - or @
+  the same way, so an item named like a formula became a working one in
+  the workbook and in the CSV, where a formula can reach an address and
+  take the cells it names along. Every text cell in both workbooks, on
+  every sheet, is now written as text, and one that starts like a formula
+  also carries Excel's quote prefix, so editing it keeps it text too. In
+  both CSVs such a value gets a single quote in front. Amounts, quantities
+  and counts are still numbers, a refund's negative amount among them, and
+  a plain negative number written as text, such as -12.34, is left as it
+  is, since a spreadsheet reads it as that number and nothing more. A
+  receipt or statement file whose name started with = also left a
+  workbook Excel would not open, and it now opens. The rule is in one
+  place, `paperpull_core.sheets`, which both tools take from the core
+  beside them, PaperPull Server's copies included.
+
 ## [0.53.0] - 2026-10-15
 
 Bilt Card statements arrive, there is a Mac package for Intel, and Wells
