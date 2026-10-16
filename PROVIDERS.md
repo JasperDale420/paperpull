@@ -10,7 +10,7 @@ telecoms, payroll systems, and retailers real people actually use.
   [provider request](https://github.com/rheeloaded/paperpull/issues/new/choose)
   so someone with that account can pick it up.
 
-## Supported (69, plus seven built and waiting for a tester)
+## Supported (70, plus six built and waiting for a tester)
 
 | App | Provider | Documents | Category |
 |-----|----------|-----------|----------|
@@ -69,7 +69,7 @@ telecoms, payroll systems, and retailers real people actually use.
 | [`schwab`](apps/schwab) | Charles Schwab | Statements, tax forms, letters, trade confirmations | Brokerage |
 | [`sdge`](apps/sdge) | SDG&E (San Diego Gas & Electric, My Energy Center) | Monthly bills, about two years online, each read from Billing History and fetched by its own address, nothing clicked. One account at a time. With several, only the one selected in the portal is listed. Built and run on a contributor's own account, 8 bills | Utility |
 | [`shelbycounty`](apps/shelbycounty) | Shelby County Trustee (Memphis, TN property tax) | Property tax receipts, one per payment, back to the parcel's first year online, and the current tax notice while a balance is due. A public lookup with no sign-in, the parcel ID goes in config.json. The page builds each PDF in the browser and the app keeps it, opening nothing. Built and run on a contributor's own parcel, 17 receipts | Tax authority |
-| [`simmons`](apps/simmons) | Simmons Bank (Banno online banking, a loan) | Loan statements, notices and tax forms from the Documents page. Run live on one paid-off mortgage on 2026-10-15: Discover, Pilot and Run All saved all 27 documents. Only a document row's own button is pressed, and the download taken only when it is that document's own. A paid-off loan's documents stay online only until the date the bank names | Bank / mortgage |
+| [`simmons`](apps/simmons) | Simmons Bank (Banno online banking, a loan) | Loan statements, notices and tax forms from the Documents page. Only a document row's own button is pressed, and the download taken only when it is that document's own. One account per sign-in, a second account stops the list. A paid-off loan's documents stay online only until the date the bank names. Built and run on a contributor's own paid-off mortgage, 27 documents | Bank / mortgage |
 | [`smud`](apps/smud) | SMUD (Sacramento Municipal Utility District) | Monthly bills. Confirmed by @watling777 on issue #34, whose Pilot took the newest five and whose full run took the rest of the history | Utility |
 | [`spectrum`](apps/spectrum) | Spectrum (Charter) | Internet statements, about a year online. An older statement is chosen by pressing its own row, then one "View Printable Statement" is pressed and the PDF the page makes is kept only when its text prints the statement's date, never a tab. Two statements of one date are left for a manual save. Mobile statements, which the site has no PDF of, are opened by their own row, expanded with Expand All and printed from the page. Internet run on the contributor's own account, 11 statements saved. A whole Mobile run is still to come | Telecom |
 | [`stripe`](apps/stripe) | Stripe (merchant Dashboard) | Fee invoices and tax forms such as the 1099-K. UNTESTED, built on an account with no documents yet. Have some? Run Diagnose and attach the file to issue #53 | Payments |

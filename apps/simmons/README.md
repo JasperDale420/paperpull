@@ -25,7 +25,7 @@ documents on the Documents page (22 monthly loan statements, 3 notices and
 printed the date the bank keeps them until, Pilot took the newest
 statement, Run All took the rest, and Verify found 27 index rows with no
 problem. Every PDF came as the browser's own download. What the survey and
-the run showed:
+the run showed is below.
 
 - Every control on the page is drawn inside open shadow roots of Banno's
   web components. The page's own text reading sees none of it, while the
@@ -50,7 +50,7 @@ the run showed:
   Reporting January 2031", prints "For calendar year 2030". The text check
   now reads those (see "What it does"), and the second run filed all 27.
 
-Not seen yet: a Simmons account with deposit accounts or more than one
+Not seen yet are a Simmons account with deposit accounts or more than one
 loan (the list stops when its documents name two accounts), the bank's
 sign-in page as the app meets it mid-run, and how long an idle session
 lasts.
@@ -112,7 +112,7 @@ comes, that exact address is asked once more with the browser's own
 cookies and no redirect followed, and the trace says which way the PDF
 came. A tab, a second download, a request for another document, a download
 named for another file, or a file landing with no download event, and
-nothing is kept. Then the PDF's own text has to name the document: the
+nothing is kept. Then the PDF's own text has to name the document, by the
 document's date, or the month its title names, or a date printed as a
 number of its own within three days before to ten days after the list's
 date and inside the title's month (a statement prints its own "Statement
@@ -125,7 +125,7 @@ next run and the run goes on.
 If the bank answers as signed out, the run stops and keeps what it saved.
 Sign in again and run Resume.
 
-Files are named after the document's date and its kind:
+Files are named after the document's date and its kind.
 
 - `YYYY-MM-DD Simmons Bank Loan Statement.pdf`, in Statements
 - `YYYY-MM-DD Simmons Bank Notice - Prime Rate Notice.pdf`, the notice's
@@ -153,7 +153,7 @@ record keeps a one-way hash of the document id, never the id.
 - The bank's sign-in page as the app meets it mid-run, and how long an idle
   session lasts.
 
-The first run settled the rest: all 27 rows are drawn at once, the core's
+The first run settled the rest. All 27 rows are drawn at once, the core's
 press reaches a row's button through Banno's shadow roots, each press makes
 the page ask the PDF's address once and the download lands under the
 document's own file name, and the PDFs print their dates as numbers a day

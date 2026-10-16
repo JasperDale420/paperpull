@@ -326,7 +326,7 @@ _MONTH_RE = "(%s)" % "|".join(_MONTH_NAMES)
 # A title's own month and year at its end, "Prime Rate Notice August 2026".
 _TITLE_MONTH_RE = re.compile(r"^(?P<words>.+?) " + _MONTH_RE + r" (?P<year>(?:19|20)[0-9]{2})$")
 STATEMENT_TITLE_RE = re.compile(r"^Loan Periodic Statement " + _MONTH_RE + r" ((?:19|20)[0-9]{2})$")
-# Live the title begins with the form, "1098 Tax Reporting January 2026"; a
+# Live the title begins with the form, "1098 Tax Reporting January 2026". A
 # title may also begin with the tax year itself.
 TAX_TITLE_RE = re.compile(r"^(1098|(?:19|20)[0-9]{2}) Tax Reporting " + _MONTH_RE + r" ((?:19|20)[0-9]{2})$")
 
@@ -1601,8 +1601,8 @@ def pdf_names_document(data: bytes, kind: str, title: str, iso_date: str) -> Tup
     return offset is not None, report
 
 
-# How far from the list's date a document's own printed date may fall:
-# before it, a little; after it, up to ten days.
+# How far from the list's date a document's own printed date may fall, a
+# little before it and up to ten days after it.
 NEARBY_BEFORE_DAYS = 3
 NEARBY_AFTER_DAYS = 10
 
