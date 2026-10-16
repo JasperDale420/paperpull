@@ -299,16 +299,38 @@ class App:
         # into its own Downloads folder, so the browser is pointed at a
         # folder under the output and the download is taken from there
         # (capture.take_download). A file left there that is an exact copy
-        # of an archived document goes (capture.clear_archived_copies).
-        self._dl_dir = Path(self.config["output_dir"]) / ".simmons-downloads"
+        # of an archived document goes (capture.clear_archived_copies), and
+        # so does every other finished file, since nothing the app keeps
+        # stays there and the bank's file names carry the account number.
+        self._dl_dir = Path(self.config["output_dir"]) / site.DOWNLOAD_FOLDER
         site.set_download_dir(self._work_page, self._dl_dir)
         capture.clear_archived_copies(
             self._dl_dir, [r.get("pdf_path") for r in self.progress.data.values()
                            if isinstance(r, dict)])
+        site.empty_download_folder(self._dl_dir, unfinished=False)
         self.requests
         return self._work_page
 
+    def empty_downloads(self) -> None:
+        """Leave the app's own download folder holding nothing the run did
+        not keep, a download that landed after its capture gave up on it
+        included. Only that folder is touched (site.empty_download_folder),
+        and a command that never opened a page has none. Never raises."""
+        dl_dir = getattr(self, "_dl_dir", None)
+        if dl_dir is None:
+            return
+        try:
+            gone = site.empty_download_folder(dl_dir)
+        except Exception as e:
+            log.info("the download folder could not be emptied (%s)", type(e).__name__)
+            return
+        if gone:
+            log.info("removed %d file(s) the run did not keep from its download folder", gone)
+
     def close(self):
+        # Every command ends here, so the download folder is emptied of what
+        # the run did not keep before the browser is let go of.
+        self.empty_downloads()
         try:
             if self._cdp_mode:
                 # Never close the user's own signed-in tab, only detach.

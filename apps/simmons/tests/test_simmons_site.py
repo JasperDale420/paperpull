@@ -37,6 +37,8 @@ START = "2023-10-15"
 EMAIL = "quentin.w@example.test"
 MEMO = "Zorblax escrow refund"
 INSTITUTION = "%s/a/consumer/api/users/%s/documents/settings/institution" % (BASE, USER)
+# The app's own download folder under the output folder, the one a run uses.
+DL = ".simmons-downloads"
 
 
 def doc(did, kind, title, date, n=1):
@@ -678,7 +680,7 @@ def test_an_accounts_answer_of_no_account_says_so():
 def take(page, tmp_path, d=DOCS[0], **kw):
     out = tmp_path / "out" / "doc.pdf"
     trace = []
-    got = site.download_document(page, site.Run(), tmp_path / "dl", out,
+    got = site.download_document(page, site.Run(), tmp_path / DL, out,
                                  record_id=kw.get("record_id", site.record_hash(d["documentId"])),
                                  iso_date=kw.get("iso", d["date"]), title=d["documentTitle"],
                                  kind=d["documentType"], trace=trace)
@@ -826,14 +828,14 @@ def test_a_file_in_the_folder_with_no_event_is_not_asked_again(tmp_path):
 
     def brings(page, d):
         page.fire("request", Req(pdf_url(d["documentId"])))
-        (tmp_path / "dl").mkdir(exist_ok=True)
-        (tmp_path / "dl" / "landed.pdf").write_bytes(pdf_for(d))
+        (tmp_path / DL).mkdir(exist_ok=True)
+        (tmp_path / DL / "landed.pdf").write_bytes(pdf_for(d))
     page.on_press = brings
     got, out, _ = take(page, tmp_path)
     assert got is False and not out.exists()
     assert page.context.request.asked == [], "no second request for a download already come"
-    assert [p.name for p in (tmp_path / "dl").iterdir()] == ["landed.pdf"], \
-        "a file whose download cannot be told is left as it is"
+    assert list((tmp_path / DL).iterdir()) == [], \
+        "a file whose download cannot be told is not taken, and not left behind either"
 
 
 def test_a_download_still_being_written_is_not_asked_again(tmp_path):
@@ -841,11 +843,118 @@ def test_a_download_still_being_written_is_not_asked_again(tmp_path):
 
     def brings(page, d):
         page.fire("request", Req(pdf_url(d["documentId"])))
-        (tmp_path / "dl").mkdir(exist_ok=True)
-        (tmp_path / "dl" / "landed.pdf.crdownload").write_bytes(b"%PDF-1.4 partial")
+        (tmp_path / DL).mkdir(exist_ok=True)
+        (tmp_path / DL / "landed.pdf.crdownload").write_bytes(b"%PDF-1.4 partial")
     page.on_press = brings
     got, out, _ = take(page, tmp_path)
     assert got is False and not out.exists() and page.context.request.asked == []
+
+
+@pytest.mark.parametrize("how", ["another file's name", "two downloads", "not the bank's"])
+def test_a_refused_download_leaves_nothing_in_the_download_folder(tmp_path, how):
+    """A real browser pointed at the folder writes each download there under
+    the bank's own documentFilename, which carries the account number, and
+    canceling or deleting Playwright's download does not remove that file.
+    Refused, it is removed from the app's own folder before the run goes
+    on."""
+    page = Page()
+    folder = tmp_path / DL
+
+    def brings(page, d):
+        page.fire("request", Req(pdf_url(d["documentId"])))
+        name = DOCS[1]["documentFilename"] if how == "another file's name" else d["documentFilename"]
+        url = "https://evil.test/x.pdf" if how == "not the bank's" else BLOB
+        for n in range(2 if how == "two downloads" else 1):
+            folder.mkdir(exist_ok=True)
+            (folder / (name if n == 0 else name.replace(".pdf", " (1).pdf"))).write_bytes(pdf_for(d))
+            page.fire("download", Download(url, name, pdf_for(d)))
+    page.on_press = brings
+    got, out, _ = take(page, tmp_path)
+    assert got is False and not out.exists()
+    assert list(folder.iterdir()) == [], "a refused download stayed under the bank's file name"
+
+
+def test_a_download_kept_from_the_event_leaves_no_copy_in_the_folder(tmp_path):
+    page = Page()
+    folder = tmp_path / DL
+
+    def brings(page, d):
+        page.fire("request", Req(pdf_url(d["documentId"])))
+        folder.mkdir(exist_ok=True)
+        # The browser's own copy, still being written when the event is taken.
+        (folder / (d["documentFilename"] + ".crdownload")).write_bytes(b"%PDF-1.4 part")
+        page.fire("download", Download(BLOB, d["documentFilename"], pdf_for(d)))
+    page.on_press = brings
+    got, out, _ = take(page, tmp_path)
+    assert got is True and out.read_bytes() == pdf_for(DOCS[0])
+    assert list(folder.iterdir()) == []
+
+
+def test_a_download_landing_after_its_capture_is_gone_before_the_next_and_at_the_end(
+        tmp_path, monkeypatch):
+    """With no download, the PDF is asked once more and saved, and the
+    browser's own download of it may still land afterwards, under the bank's
+    file name. It is gone before the next press, and the run ends with the
+    folder holding nothing it did not keep."""
+    cfg = json.loads((HERE / "config.example.json").read_text(encoding="utf-8"))
+    cfg.update(output_dir=str(tmp_path / "out"), owner="Example Owner", delay_min_seconds=0,
+               delay_max_seconds=0)
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    page = Page()
+    folder = tmp_path / "out" / DL
+    seen_at_press = []
+
+    def brings(page, d):
+        seen_at_press.append(sorted(p.name for p in folder.iterdir()))
+        page.fire("request", Req(pdf_url(d["documentId"])))
+    page.on_press = brings
+
+    def own_page(self):
+        self._dl_dir = folder
+        folder.mkdir(parents=True, exist_ok=True)
+        self._work_page = page
+        return page
+    landed = []
+
+    def late(self, factor=1.0):
+        # The browser finishes the download its capture gave up on.
+        name = DOCS[len(landed) % len(DOCS)]["documentFilename"]
+        (folder / name).write_bytes(b"%PDF-1.4 late")
+        landed.append(name)
+    monkeypatch.setattr(docs.App, "page", own_page)
+    monkeypatch.setattr(docs.App, "_on_its_site", lambda self: page)
+    monkeypatch.setattr(docs.App, "check_session", lambda self, page: None)
+    monkeypatch.setattr(docs.App, "_delay", late)
+    with redirect_stdout(io.StringIO()):
+        docs.main(["--config", str(path), "--all", "--yes"])
+    assert len(page.presses) == 4 and len(landed) == 4
+    assert seen_at_press == [[]] * 4, "a late download was still there at the next press"
+    assert list(folder.iterdir()) == [], "the run ended with a download it did not keep"
+    assert len(list((tmp_path / "out" / "Statements").glob("*.pdf"))) == 1
+
+
+def test_nothing_outside_the_download_folder_is_ever_removed(tmp_path):
+    assert site.DOWNLOAD_FOLDER == DL
+    out = tmp_path / "out"
+    folder = out / DL
+    (folder / "inside").mkdir(parents=True)
+    (folder / "left.pdf").write_bytes(b"%PDF-1.4 x")
+    (folder / "arriving.pdf.crdownload").write_bytes(b"%PDF-1.4 x")
+    (folder / "inside" / "deeper.pdf").write_bytes(b"%PDF-1.4 x")
+    (out / "beside.pdf").write_bytes(b"%PDF-1.4 x")
+    other = tmp_path / "Downloads"
+    other.mkdir()
+    (other / "mine.pdf").write_bytes(b"%PDF-1.4 x")
+    assert site.empty_download_folder(other) == 0 and (other / "mine.pdf").exists()
+    assert site.empty_download_folder(out) == 0 and (out / "beside.pdf").exists()
+    assert site.empty_download_folder(None) == 0
+    assert site.empty_download_folder(folder, unfinished=False) == 1
+    assert sorted(p.name for p in folder.iterdir()) == ["arriving.pdf.crdownload", "inside"]
+    assert site.empty_download_folder(folder) == 1
+    assert [p.name for p in folder.iterdir()] == ["inside"]
+    assert (folder / "inside" / "deeper.pdf").exists() and (out / "beside.pdf").exists()
+    assert site.clear_what_came(other, set()) == 0 and (other / "mine.pdf").exists()
 
 
 def test_a_row_whose_visibility_cannot_be_read_stops_the_list():

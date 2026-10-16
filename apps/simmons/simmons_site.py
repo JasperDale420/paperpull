@@ -1381,16 +1381,107 @@ def _fetch_asked(page, url: str, out_path: Path, trace) -> bool:
     return True
 
 
-def _new_in_folder(dl_dir, before) -> int:
-    """How many files the download folder holds that it did not at `before`,
-    finished ones and ones the browser is still writing alike."""
+def _came_since(dl_dir, before) -> list:
+    """The names in the download folder that were not there at `before`, or
+    have been written again since, finished ones and ones the browser is
+    still writing alike."""
     if not dl_dir:
-        return 0
+        return []
     try:
         now = set(os.listdir(dl_dir))
     except OSError:
+        return []
+    return sorted({n for n in now if n not in before} | set(_arrived(dl_dir, before)))
+
+
+def _new_in_folder(dl_dir, before) -> int:
+    """How many files came into the download folder since `before`."""
+    return len(_came_since(dl_dir, before))
+
+
+# The app's own download folder, under the output folder. The browser saves
+# each download there under the bank's own documentFilename, which can carry
+# the account number, so nothing the app did not keep is left in it. Files
+# are only ever removed from directly inside a folder of this name.
+DOWNLOAD_FOLDER = ".simmons-downloads"
+_UNFINISHED = (".crdownload", ".part", ".partial", ".tmp", ".download")
+
+
+def _own_folder(dl_dir) -> Optional[Path]:
+    """The app's own download folder, resolved, or None for any other
+    folder, a link to one or a folder that is not there."""
+    if not dl_dir:
+        return None
+    try:
+        folder = Path(dl_dir)
+        if folder.name != DOWNLOAD_FOLDER or folder.is_symlink() or not folder.is_dir():
+            return None
+        real = folder.resolve()
+        # A junction or link in its place resolves somewhere else.
+        if real.name != DOWNLOAD_FOLDER or real.parent != folder.absolute().parent.resolve():
+            return None
+        return real
+    except (OSError, RuntimeError):
+        return None
+
+
+def _same_file(a: Path, b) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _remove(folder: Path, names, keep=None, unfinished: bool = True) -> int:
+    """Remove each of `names` that is a plain file directly in `folder`,
+    never a link, a folder or the file `keep`, and with `unfinished` False
+    never one the browser is still writing. Says how many went."""
+    gone = 0
+    for name in names:
+        if not name or name in (".", "..") or "/" in name or "\\" in name:
+            continue
+        if not unfinished and name.lower().endswith(_UNFINISHED):
+            continue
+        path = folder / name
+        try:
+            if path.is_symlink() or not path.is_file() or path.resolve().parent != folder:
+                continue
+            if keep is not None and _same_file(path, keep):
+                continue
+            path.unlink()
+            gone += 1
+        except OSError:
+            continue
+    return gone
+
+
+def clear_what_came(dl_dir, before, keep=None) -> int:
+    """Remove from the app's own download folder every file that came, or
+    was written again, since `before`, finished or still arriving, except
+    `keep`. A capture asks this as it ends, kept or refused, so a download
+    it refused or gave up on does not stay under the bank's file name.
+    Nothing is removed from any other folder. Says how many went."""
+    folder = _own_folder(dl_dir)
+    if folder is None:
         return 0
-    return len({n for n in now if n not in before} | set(_arrived(dl_dir, before)))
+    return _remove(folder, _came_since(folder, before), keep)
+
+
+def empty_download_folder(dl_dir, unfinished: bool = True) -> int:
+    """Remove every plain file directly in the app's own download folder,
+    and with `unfinished` False leave one the browser is still writing.
+    Everything the app keeps has been moved to the archive by then, so what
+    is left there is a download it refused or gave up on, or a copy. Asked
+    before each press and as a run starts and ends. Nothing is removed from
+    any other folder. Says how many went."""
+    folder = _own_folder(dl_dir)
+    if folder is None:
+        return 0
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return 0
+    return _remove(folder, names, unfinished=unfinished)
 
 
 def _row_button(page, label: str):
@@ -1469,6 +1560,10 @@ def _catch_document(page, run: Run, dl_dir, target: Target, out_path,
         except Exception:
             pass
 
+    # A download an earlier press gave up on that finished since goes before
+    # this press, so it is neither left under the bank's file name nor taken
+    # for this one. One the browser is still writing is left to the end.
+    empty_download_folder(dl_dir, unfinished=False)
     before = _snapshot(dl_dir)
     where = page.url or ""
     try:
@@ -1526,8 +1621,9 @@ def _catch_document(page, run: Run, dl_dir, target: Target, out_path,
             if came:
                 # A download Playwright did not hand over, finished or still
                 # being written. Whose it is cannot be told, so it is not
-                # taken, not removed, and the document is not asked again,
-                # which would make a second copy.
+                # taken and the document is not asked again, which would make
+                # a second copy. It is removed as the capture ends, with
+                # everything else this press brought (clear_what_came).
                 _note(trace, note="a file came into the download folder with no download event, "
                                   "so nothing was taken or asked again", files=came)
                 return False
@@ -1562,6 +1658,13 @@ def _catch_document(page, run: Run, dl_dir, target: Target, out_path,
                 pass
         try:
             _clear_copies(dl_dir, before, out_path)
+        except Exception:
+            pass
+        # Whatever this press brought into the app's own download folder,
+        # refused, given up on or a copy, goes before the run goes on. The
+        # kept document is in the archive, never in that folder.
+        try:
+            clear_what_came(dl_dir, before, keep=out_path)
         except Exception:
             pass
         try:
