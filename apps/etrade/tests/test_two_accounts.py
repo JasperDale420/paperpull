@@ -14,9 +14,12 @@ it ends with, a sign-in of several accounts puts the label in the file name
 and the index's Document Summary, and the download takes only the link
 naming its own account, by its masked tail. For a sign-in of one account,
 records kept before move to the key the account gives them, so nothing
-saved is fetched again and every name stays. With several, which account
-a record kept before holds cannot be told, so it stays as it is and each
-account's statement is taken again under a name that says the account.
+saved is fetched again and every name stays. With several, the list alone
+cannot tell which account a record kept before holds, so its saved PDF is
+read, and the record moves to its account only when the file shows that
+account's digits as an account number and no other listed account's digits
+at all. Anything else stays as it is, and each account's statement of it
+is taken again under a name that says the account.
 
 Everything here is invented.
 """
@@ -33,7 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import storage  # noqa: F401  binds this provider's AppSpec
 import etrade_docs
 import etrade_site as site
-from paperpull_core import doc_types, naming, pressing, renaming
+from paperpull_core import doc_types, naming, pressing, receipt_pdf, renaming, testkit
+from paperpull_core import storage as core_storage
 from paperpull_core.models import State
 
 DAY = "2025-08-31"
@@ -178,20 +182,27 @@ def _key(title, tail, day=DAY):
     return "Statement:%s:%s:%s" % (day, title, tail)
 
 
-def _saved_before(app, title, name, day=DAY, done=True):
-    """A statement the app listed and saved before #96, under the key with an
-    key with no account, "Unnamed", its file on disk and its index row."""
+def _saved_before(app, title, name, day=DAY, done=True, prints=None):
+    """A statement the app listed and saved before #96, under the key with
+    no account, "Unnamed", its file on disk and its index row. The file is
+    a PDF whose text is the lines `prints` when given, and otherwise one
+    that does not open, which no account can be read from."""
     doc = etrade_docs.Document(title=title, category="Statement", summary="Account Statement",
                                date=day, confidence="High", source_url=site.BILLING_URL)
     assert doc.key == _legacy_key(title, day)
     path = app.paths.folder_for("Statement") / name
+    if prints is not None:
+        path.write_bytes(testkit.text_pdf(prints))
     if done:
-        path.write_bytes(b"%PDF-1.4\n% invented\n" + b"0" * 2100)
+        if prints is None:
+            path.write_bytes(b"%PDF-1.4\n% invented\n" + b"0" * 2100)
         doc.pdf_path, doc.pdf_filename = str(path), path.name
         doc.downloaded_ok = True
         doc.state = State.COMPLETED.value
         app._write_row(doc, "Downloaded", "Completed")
     else:
+        if prints is not None:
+            doc.pdf_path, doc.pdf_filename = str(path), path.name
         doc.state = State.NEEDS_MANUAL_REVIEW.value
     app.progress.data[doc.key] = doc.to_dict()
     app.discovery.data[doc.key] = dict(doc.to_dict(), state=doc.state)
@@ -233,10 +244,11 @@ def test_a_history_moved_with_minimal_moves_the_same(app):
 def test_several_accounts_records_kept_before_stay_and_each_statement_is_taken_again(app):
     """The reporter's case. Two accounts' statements of one day with titles
     of their own were both saved, named alike, " (2)" telling them apart.
-    With more than one account, nothing proves which account a record kept
-    before holds, so each stays done under its old key and its file keeps
-    its name, and each account's statement is taken again under a name
-    that says the account (review of #96)."""
+    With more than one account, the list does not say which account a
+    record kept before holds, and these files do not read, so nothing
+    proves it. Each stays done under its old key and its file keeps its
+    name, and each account's statement is taken again under a name that
+    says the account (review of #96)."""
     brokerage = _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY)
     retirement = _saved_before(app, RETIREMENT, "%s ETRADE Account Statement (2).pdf" % DAY)
     before = json.loads(json.dumps(app.progress.data))
@@ -255,7 +267,8 @@ def test_lists_that_leave_one_accounts_statement_out_credit_nothing_to_another(a
     leave the second account's August and July statements out and show its
     June Retirement Statement. Moved to the first account's key, the record
     kept before would mark the first account's statement saved when it may
-    hold the second's."""
+    hold the second's. These files do not read, so nothing moves (the PDF
+    cases are below)."""
     days = ("2025-08-31", "2025-07-31", "2025-06-30")
     for day in days:
         _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % day, day=day)
@@ -365,8 +378,9 @@ def test_a_label_with_no_digits_beside_an_accounts_own_keeps_it_one_account(app)
 
 @pytest.mark.parametrize("done", [False, True])
 def test_a_title_and_day_two_accounts_share_is_left_where_it_is(app, done):
-    """Which account's statement a record of both kept cannot be told, so
-    it stays, and each account's statement is listed under its own key.
+    """Which account's statement a record of both kept cannot be told from
+    the list, or from a file that does not read, so it stays, and each
+    account's statement is listed under its own key.
     Not done, the listing's own record of both goes, since a download of
     it found two rows naming it and refused on every run."""
     _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY, done=done)
@@ -389,6 +403,343 @@ def test_a_finished_record_wins_a_key_both_want(app, old_done):
     app.listing(_raw(BROKERAGE, FIRST, "g1"))
     assert _legacy_key(BROKERAGE) not in app.progress.data
     assert app.progress.data[new_key]["downloaded_ok"] is True
+
+
+# --- records kept before, moved by what their own PDF shows ----------------------
+#
+# The promise made on #96. For a sign-in of several accounts, each saved
+# PDF is read for its account's last digits, and an old record moves to its
+# account only when the file shows that account and no other.
+
+THIRD = "Invented IRA -2025"
+TWIN = "Invented Roth IRA -1111"
+
+# How a statement might print the first account's number, all accepted.
+SHOWS_FIRST = [
+    ["Account Number: XXXX-1111"],
+    ["Account Number:", "6789-1111"],
+    ["Invented Brokerage ...1111"],
+    ["Account ending in 1111"],
+    ["ACCT # ****1111"],
+]
+
+
+def _statement(*lines):
+    """The lines of an invented statement, around what names its account."""
+    return ["Invented Securities", "Brokerage Statement", "August 1 - 31"] + list(lines) + [
+        "Total value $12,345.67", "Page 1 of 1"]
+
+
+def _both_on_one_day(app):
+    """The reporter's case. Two accounts' Brokerage Statements of one day,
+    which before #96 were one record, saved once."""
+    return app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(BROKERAGE, SECOND, "g2"))
+
+
+def _still_where_it_was(app, before):
+    assert app.progress.data[_legacy_key(BROKERAGE)] == before
+    taken = sorted(d.account for d in app._select() if not app._already_done(d))
+    assert taken == [FIRST, SECOND], taken
+
+
+@pytest.mark.parametrize("prints", SHOWS_FIRST, ids=lambda p: p[-1])
+def test_a_statement_saved_before_moves_to_the_account_its_pdf_shows(app, prints):
+    path = _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                         prints=_statement(*prints))
+    _both_on_one_day(app)
+    assert _legacy_key(BROKERAGE) not in app.progress.data
+    assert _legacy_key(BROKERAGE) not in app.discovery.data
+    rec = app.progress.data[_key(BROKERAGE, "1111")]
+    assert (rec["downloaded_ok"], rec["state"], rec["pdf_path"]) == (True, "Completed", str(path))
+    assert (rec["account"], rec["guid"], rec["summary"]) == (FIRST, "g1|id-g1", "Account Statement")
+    assert app.discovery.data[_key(BROKERAGE, "1111")]["account"] == FIRST
+    # Only the second account's statement is left to take, and the file
+    # was neither renamed nor moved.
+    taken = [d.account for d in app._select() if not app._already_done(d)]
+    assert taken == [SECOND], taken
+    assert path.exists() and sorted(p.name for p in path.parent.iterdir()) == [path.name]
+    backups = sorted(p.name.split(".")[0] for p in app.paths.backups.iterdir())
+    assert "progress" in backups and "discovery" in backups
+
+
+def test_the_second_accounts_statement_moves_to_the_second_account(app):
+    path = _saved_before(app, RETIREMENT, "%s ETRADE Account Statement (2).pdf" % DAY,
+                         prints=_statement("Account Number: XXXX-2222"))
+    _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                  prints=_statement("Account Number: XXXX-1111"))
+    app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(RETIREMENT, SECOND, "g2"))
+    assert app.progress.data[_key(RETIREMENT, "2222")]["pdf_path"] == str(path)
+    assert app.progress.data[_key(RETIREMENT, "2222")]["account"] == SECOND
+    assert app.progress.data[_key(BROKERAGE, "1111")]["account"] == FIRST
+    assert not [d for d in app._select() if not app._already_done(d)]
+
+
+def test_a_moved_statement_is_skipped_as_done_and_rename_can_fill_its_account(app, monkeypatch):
+    path = _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                         prints=_statement("Account Number: XXXX-1111"))
+    _both_on_one_day(app)
+    first = next(d for d in app._select() if d.account == FIRST)
+    pressed: list = []
+    app.download_one = lambda page, d, filename: pressed.append(d.account)
+    app._on_its_site = lambda: None
+    app._delay = lambda *a, **k: None
+    app.stats["skipped_completed"] = 0
+    app.process([first])
+    assert pressed == [] and app.stats["skipped_completed"] == 1
+    # The default names stay as they were, and a pattern with {account}
+    # gives the file its account.
+    assert renaming.run_for(app, apply_changes=True, say=lambda *_a: None).renamed == 0
+    assert path.exists()
+    monkeypatch.setattr(core_storage, "_FILENAME_PATTERN", "{date} {account} {summary}")
+    assert renaming.run_for(app, apply_changes=True, say=lambda *_a: None).renamed == 1
+    assert not path.exists()
+    assert (path.parent / ("%s %s Account Statement.pdf" % (DAY, FIRST))).exists()
+
+
+def test_a_second_discover_moves_nothing_more(app):
+    _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                  prints=_statement("Account Number: XXXX-1111"))
+    _saved_before(app, RETIREMENT, "%s ETRADE Account Statement (2).pdf" % DAY,
+                  prints=_statement("No account printed here"))
+    _both_on_one_day(app)
+    progress, discovery = json.dumps(app.progress.data), json.dumps(app.discovery.data)
+    backups = sorted(p.name for p in app.paths.backups.iterdir())
+    _both_on_one_day(app)
+    assert json.dumps(app.progress.data) == progress
+    assert sorted(p.name for p in app.paths.backups.iterdir()) == backups
+    assert sorted(json.loads(discovery)) == sorted(app.discovery.data)
+
+
+@pytest.mark.parametrize("prints", [
+    ["Account Number: XXXX-1111", "Transfer to Account Number: XXXX-2222"],
+    ["Account Number: XXXX-1111", "Transfer to 2222"],
+    ["Brokerage Statement for 2025", "Interest 1111"],
+    ["Brokerage Statement", "No account number printed"],
+    ["SSN XXX-XX-1111", "Recipient TIN XXXXX1111"],
+    ["Total $1111.00", "1-800-555-1111"],
+], ids=["both accounts", "the other's digits on their own", "bare numbers", "none",
+        "a tax id", "an amount and a phone"])
+def test_a_pdf_that_does_not_show_one_account_alone_stays(app, prints):
+    """Both accounts, the other's digits anywhere at all, no account, or
+    digits only as a number of their own, a year, an amount, a phone number
+    or a tax id, never as an account number."""
+    _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                  prints=_statement(*prints))
+    before = dict(app.progress.data[_legacy_key(BROKERAGE)])
+    _both_on_one_day(app)
+    _still_where_it_was(app, before)
+
+
+def test_a_year_that_is_another_accounts_digits_leaves_it(app):
+    """A third account ends in 2025. A bare year is never taken for its
+    account number, and is still another listed account's digits in the
+    file, so the first account's statement stays where it was."""
+    _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                  prints=_statement("Account Number: XXXX-1111", "Statement period 2025"))
+    before = dict(app.progress.data[_legacy_key(BROKERAGE)])
+    app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(BROKERAGE, SECOND, "g2"),
+                _raw(RETIREMENT, THIRD, "g3", day="2025-07-31"))
+    assert app.progress.data[_legacy_key(BROKERAGE)] == before
+    assert site.tails_printed("Statement period 2025", [THIRD]) == set()
+
+
+@pytest.mark.parametrize("where", ["that day", "another day"])
+def test_two_accounts_sharing_their_digits_are_never_told_apart_by_them(app, where):
+    _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                  prints=_statement("Account Number: XXXX-1111"))
+    before = dict(app.progress.data[_legacy_key(BROKERAGE)])
+    if where == "that day":
+        app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(BROKERAGE, TWIN, "g2"),
+                    _raw(BROKERAGE, SECOND, "g4"))
+    else:
+        app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(BROKERAGE, SECOND, "g4"),
+                    _raw(RETIREMENT, FIRST, "g5", day="2025-07-31"),
+                    _raw(RETIREMENT, TWIN, "g6", day="2025-07-31"))
+    assert app.progress.data[_legacy_key(BROKERAGE)] == before
+
+
+def test_a_statement_of_an_account_beside_two_sharing_digits_still_moves(app):
+    """The twins' digits nowhere in the file, so it is not either twin's,
+    and it shows the third account's alone."""
+    path = _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                         prints=_statement("Account Number: XXXX-2222"))
+    app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(BROKERAGE, TWIN, "g2"),
+                _raw(BROKERAGE, SECOND, "g4"))
+    assert app.progress.data[_key(BROKERAGE, "2222")]["pdf_path"] == str(path)
+
+
+def test_an_unfinished_record_is_never_moved(app):
+    _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY, done=False,
+                  prints=_statement("Account Number: XXXX-1111"))
+    before = dict(app.progress.data[_legacy_key(BROKERAGE)])
+    _both_on_one_day(app)
+    assert app.progress.data[_legacy_key(BROKERAGE)] == before
+    assert _key(BROKERAGE, "1111") not in app.progress.data
+
+
+@pytest.mark.parametrize("damage, why", [
+    ("deleted", etrade_docs.NO_FILE), ("no path", etrade_docs.NO_FILE),
+    ("broken", etrade_docs.UNREADABLE), ("no text", etrade_docs.UNREADABLE),
+    ("too small", etrade_docs.UNREADABLE)])
+def test_a_missing_or_broken_pdf_leaves_the_record(app, caplog, damage, why):
+    path = _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                         prints=_statement("Account Number: XXXX-1111"))
+    if damage == "deleted":
+        path.unlink()
+    elif damage == "no path":
+        app.progress.data[_legacy_key(BROKERAGE)]["pdf_path"] = ""
+    elif damage == "broken":
+        path.write_bytes(b"%PDF-1.4\n" + b"not a pdf at all " * 300)
+    elif damage == "no text":
+        path.write_bytes(testkit.sample_pdf())
+    else:
+        path.write_bytes(path.read_bytes()[:900])
+    before = dict(app.progress.data[_legacy_key(BROKERAGE)])
+    caplog.set_level(logging.INFO)
+    _both_on_one_day(app)
+    _still_where_it_was(app, before)
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "1 left as they were, 1 for %s" % why in said, said
+
+
+def test_digits_of_an_account_the_lists_leave_out_that_day_credit_nobody(app):
+    """The review's case once more, with a PDF. The lists give the day's
+    Brokerage Statement to the first account alone, and the file kept
+    before shows the second account's digits. It is never moved to the
+    first account."""
+    _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                  prints=_statement("Account Number: XXXX-2222"))
+    before = dict(app.progress.data[_legacy_key(BROKERAGE)])
+    app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(RETIREMENT, SECOND, "g2", day="2025-07-31"))
+    assert app.progress.data[_legacy_key(BROKERAGE)] == before
+    assert _key(BROKERAGE, "1111") not in app.progress.data
+
+
+def test_an_account_listed_without_digits_that_day_leaves_it(app):
+    _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                  prints=_statement("Account Number: XXXX-1111"))
+    before = dict(app.progress.data[_legacy_key(BROKERAGE)])
+    app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(BROKERAGE, "Joint Account", "g2"),
+                _raw(RETIREMENT, SECOND, "g3", day="2025-07-31"))
+    assert app.progress.data[_legacy_key(BROKERAGE)] == before
+
+
+def test_a_statement_already_taken_again_stays_and_its_file_is_not_read(app, monkeypatch):
+    """0.53.0 took each account's statement again. The record kept before
+    stays, and its file is not read on every Discover."""
+    _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                  prints=_statement("Account Number: XXXX-1111"))
+    before = dict(app.progress.data[_legacy_key(BROKERAGE)])
+    for account, tail in ((FIRST, "1111"), (SECOND, "2222")):
+        app.progress.data[_key(BROKERAGE, tail)] = {"category": "Statement", "date": DAY,
+                                                    "title": BROKERAGE, "account": account,
+                                                    "state": "Completed", "downloaded_ok": True}
+    read: list = []
+    monkeypatch.setattr(receipt_pdf, "pdf_text", lambda path: read.append(path) or "")
+    _both_on_one_day(app)
+    assert app.progress.data[_legacy_key(BROKERAGE)] == before
+    assert read == []
+
+
+def test_a_finished_record_of_its_account_keeps_its_place(app):
+    """The first account's statement was taken again and the second's was
+    not. The file kept before shows the first, so it stays."""
+    _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                  prints=_statement("Account Number: XXXX-1111"))
+    before = dict(app.progress.data[_legacy_key(BROKERAGE)])
+    again = {"category": "Statement", "date": DAY, "title": BROKERAGE, "account": FIRST,
+             "state": "Completed", "downloaded_ok": True, "pdf_path": "elsewhere.pdf"}
+    app.progress.data[_key(BROKERAGE, "1111")] = dict(again)
+    _both_on_one_day(app)
+    assert app.progress.data[_legacy_key(BROKERAGE)] == before
+    assert app.progress.data[_key(BROKERAGE, "1111")] == again
+
+
+def test_a_failed_attempt_under_its_accounts_key_gives_way(app):
+    """As adopt_account_keys does, a finished record wins a key over one
+    that is not."""
+    path = _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                         prints=_statement("Account Number: XXXX-1111"))
+    app.progress.data[_key(BROKERAGE, "1111")] = {"category": "Statement", "date": DAY,
+                                                  "title": BROKERAGE, "account": FIRST,
+                                                  "state": "Failed", "downloaded_ok": False}
+    _both_on_one_day(app)
+    rec = app.progress.data[_key(BROKERAGE, "1111")]
+    assert (rec["downloaded_ok"], rec["pdf_path"]) == (True, str(path))
+
+
+def test_a_history_moved_with_minimal_moves_by_its_pdf_too(app):
+    """--minimal keeps state, downloaded_ok and pdf_path, which is all this
+    reads off a record."""
+    path = app.paths.folder_for("Statement") / ("%s ETRADE Account Statement.pdf" % DAY)
+    path.write_bytes(testkit.text_pdf(_statement("Account Number: XXXX-2222")))
+    app.progress.data[_legacy_key(BROKERAGE)] = {"state": "Completed", "downloaded_ok": True,
+                                                 "pdf_path": str(path)}
+    _both_on_one_day(app)
+    assert app.progress.data[_key(BROKERAGE, "2222")]["pdf_path"] == str(path)
+    assert [d.account for d in app._select() if not app._already_done(d)] == [FIRST]
+
+
+def test_a_sign_in_of_one_account_still_moves_without_reading(app, monkeypatch):
+    """Unchanged. With one account every record moves by its key, and no
+    PDF is read."""
+    _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                  prints=_statement("Account Number: XXXX-9999"))
+    read: list = []
+    monkeypatch.setattr(receipt_pdf, "pdf_text", lambda path: read.append(path) or "")
+    app.listing(_raw(BROKERAGE, FIRST, "g1"))
+    assert app.progress.data[_key(BROKERAGE, "1111")]["downloaded_ok"] is True
+    assert read == []
+
+
+def test_what_is_logged_is_counts_and_fixed_words(app, caplog):
+    caplog.set_level(logging.INFO)
+    _saved_before(app, BROKERAGE, "%s ETRADE Account Statement.pdf" % DAY,
+                  prints=_statement("Zanzibar Account Number: XXXX-1111"))
+    _saved_before(app, RETIREMENT, "%s ETRADE Account Statement (2).pdf" % DAY,
+                  prints=_statement("Zanzibar Account Number: XXXX-1111 XXXX-2222"))
+    _saved_before(app, BROKERAGE, "2025-07-31 ETRADE Account Statement.pdf", day="2025-07-31",
+                  done=False, prints=_statement("Zanzibar"))
+    app.listing(_raw(BROKERAGE, FIRST, "g1"), _raw(RETIREMENT, SECOND, "g2"),
+                _raw(BROKERAGE, FIRST, "g3", day="2025-07-31"))
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "1 saved record(s) kept before 0.53.0 moved" in said, said
+    assert "2 left as they were" in said and "1 for more than one account's digits" in said, said
+    assert "1 for not done" in said, said
+    for leaked in ("Invented", "1111", "2222", "Roth", "Zanzibar", "XXXX", "Statement.pdf"):
+        assert leaked not in said, (leaked, said)
+
+
+# --- how a statement prints an account -------------------------------------------
+
+LABELS = [FIRST, SECOND, THIRD]
+
+
+@pytest.mark.parametrize("text", [
+    "Account Number: XXXX-1111", "Account Number: 6789-1111", "ACCOUNT NO. 1111", "Acct #1111",
+    "Account: ****1111", "Invented Brokerage ...1111", "INVENTED BROKERAGE - 1111",
+    "account ending in 1111", "ending in XXXX1111", "**** 1111", "####1111", "(...1111)",
+    "…1111", "--1111", "XXXX1111", "•••• 1111", "6789-1111",
+])
+def test_an_account_number_ending_in_the_digits_is_printed(text):
+    assert site.tails_printed("Invented Securities " + text + " Page 1", LABELS) == {"1111"}
+
+
+@pytest.mark.parametrize("text", [
+    "Statement period 01/01/2025 - 12/31/2025", "Total $1,111.00", "Total $1111.00",
+    "SSN XXX-XX-1111", "Recipient TIN: XXXXX1111", "XX-XXX1111", "Account Summary 2024-2025",
+    "1-800-387-1111", "(800) 387-1111", "** 2025 footnote", "Total .......... 2025",
+    "Year End - 2025", "Account Number: 1111.00", "Account Number: 2025-08-31", "Interest 1111",
+    "11112025",
+])
+def test_a_number_of_its_own_is_never_an_account(text):
+    assert site.tails_printed(text, LABELS) == set()
+
+
+def test_a_tail_is_seen_wherever_it_ends_a_number():
+    assert site.tails_seen("Statement period 2025, interest 1111.00, 32222", {"1111", "2222", "2025"}) \
+        == {"1111", "2222", "2025"}
+    assert site.tails_seen("Total $2,222.00, 1111 2", {"2222", "111"}) == {"111"}
 
 
 # --- what is written down --------------------------------------------------------
