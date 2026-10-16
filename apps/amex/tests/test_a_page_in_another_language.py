@@ -370,6 +370,24 @@ def test_links_to_two_cards_are_never_pressed(open_site, quick):
     assert presses(pg) == []
 
 
+def test_a_link_that_cannot_be_read_stops_the_run_with_nothing_pressed(open_site, quick,
+                                                                       monkeypatch):
+    """A link to the statements that does not answer could be another
+    card's, so none is pressed, rather than the one link that did answer
+    being taken as the only one."""
+    from paperpull_core.testkit import stall_reads
+    fake = SPA({"/dashboard": (
+        '<a href="%s">Abrechnung(en) runterladen</a>'
+        '<a data-guid="slow" href="/activity/statements?account_key=ANDERE">'
+        'Abrechnung(en) runterladen</a>' % OUR_CARD)})
+    pg = open_site(fake, "/dashboard")
+    stall_reads(monkeypatch, {"slow"}, locator=("is_visible",))
+    with pytest.raises(pressing.Stop) as stop:
+        site.goto_documents(pg)
+    assert stop.value.reason == "a link to the statements could not be read"
+    assert presses(pg) == []
+
+
 def test_a_link_found_by_its_address_passes_by_pay_sign_out_and_a_hidden_copy(open_site,
                                                                               quick):
     """A hidden copy of the link comes first, as American Express keeps one

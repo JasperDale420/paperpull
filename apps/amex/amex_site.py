@@ -343,7 +343,9 @@ def _link_by_href(page, css: str):
     its account_key, which one this run is for cannot be told, and the run
     stops with nothing pressed. A link that names no card names no other
     one. A hidden copy is never taken, nor a link whose words say it does
-    what this app never does, nor one that says nothing."""
+    what this app never does, nor one that says nothing. A link that could
+    not be read could be another card's, so the run stops then too, with
+    nothing pressed."""
     loc = page.locator(css)
     shown = []
     for i in range(min(_safe_count(loc), 12)):
@@ -352,7 +354,13 @@ def _link_by_href(page, css: str):
             if el.is_visible():
                 shown.append((el, el.get_attribute("href", timeout=2000) or ""))
         except Exception:
-            continue
+            log.info("a link to the statements could not be read, so none is pressed")
+            raise pressing.Stop("open the statements page",
+                                "a link to the statements could not be read", [
+                "A link to the statements could not be read, and it could be another "
+                "card's, so none of them was pressed.",
+                "Open the PDF statements of the card you want in the browser window, then "
+                "press Resume here, or run this again."])
     cards = {_card_of(href) for _, href in shown} - {""}
     if len(cards) > 1:
         log.info("the page links to the statements of %d cards, so none is pressed", len(cards))
