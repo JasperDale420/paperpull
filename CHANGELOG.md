@@ -7,7 +7,16 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
-## [Unreleased]
+## [0.54.0] - 2026-10-16
+
+Simmons Bank loan documents and Coinbase One Card statements arrive, a
+file naming pattern can put files in folders, and each person can have
+the documents sent to a folder of their own. Wells Fargo reads a checking
+account and every account in its picker, and no longer signs you out,
+American Express reads its pages in other languages, E*TRADE gives
+statements saved before 0.53.0 their account, and the security review's
+fixes harden PaperPull Server, the browsers PaperPull starts and every
+spreadsheet it writes.
 
 ### Added
 - **Simmons Bank loan documents.** A new app saves the statements, notices
