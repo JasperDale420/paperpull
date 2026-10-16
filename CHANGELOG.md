@@ -361,6 +361,20 @@ Robinhood.
   run then ends as one that did not finish. Run live on one account on
   2026-10-15, where it saved all 13 card statements beside the account
   statements and tax documents.
+### Fixed
+- **SDG&E lists your bills with no My Energy Center tab open, and dates
+  each bill by its Statement Date alone.** With no tab of yours on My
+  Energy Center, Discover, Pilot and Run All stopped at once, saying the
+  browser tab had left My Energy Center, since the new tab the app opens
+  for itself was checked before Billing History was opened in it. Billing
+  History now opens in that tab first, and a tab of another site is still
+  never read or loaded. A bill's date was the first date in its row, so a
+  blank Statement Date would have dated the bill by the Due Date beside it.
+  The date is now read only from the column headed Statement Date, and a
+  blank one stops the list rather than taking another column's date. No
+  such row has been seen on the real page. Diagnose now writes the bill
+  table's header, so a list that stops for want of that column can be
+  repaired.
 
 ## [0.52.0] - 2026-10-14
 

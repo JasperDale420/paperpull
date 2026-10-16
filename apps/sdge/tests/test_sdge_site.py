@@ -18,8 +18,24 @@ import sdge_docs as docs  # noqa: E402
 HOST = "myenergycenter.com"
 ID1, ID2, ID3 = "ISU000000000101", "ISU000000000102", "ISU000000000103"
 PDF_URL = f"https://{HOST}/portal/BillingHistory/DownloadBillPdf?invoiceId={ID1}"
-ROWS = [{"id": ID1, "date": "Sep 12, 2026"}, {"id": ID2, "date": "Aug 13, 2026"},
-        {"id": ID3, "date": "Jul 14, 2026"}]
+
+
+def laid_out(*texts):
+    """Cells as the page reader returns them, one column and one row each,
+    in order."""
+    return [{"text": t, "at": n, "wide": 1, "tall": 1} for n, t in enumerate(texts)]
+
+
+# The header the bill table draws, a control column first, and each row
+# under it with its Due Date beside the Statement Date.
+HEADS = laid_out("", "Statement Date", "Due Date", "Amount Due", "Status")
+
+
+def row(inv, statement, due="Oct 14, 2026"):
+    return {"id": inv, "cells": laid_out("", statement, due, "$1.00", "Billed")}
+
+
+ROWS = [row(ID1, "Sep 12, 2026"), row(ID2, "Aug 13, 2026"), row(ID3, "Jul 14, 2026")]
 # Invented account details, which must never leave through a log, the
 # console or a diagnostic.
 FAKE_ACCOUNT = "987650001234"
@@ -67,9 +83,9 @@ class Page:
 
     def __init__(self, rows=ROWS, empty="", ready=True, settled=None, password=False,
                  answers=(), accounts=1, start=f"https://{HOST}/portal/Dashboard/index",
-                 api=None, info=""):
+                 api=None, info="", heads=HEADS):
         self.rows, self.empty, self.ready, self.settled = list(rows), empty, ready, settled
-        self.api, self.info = api, info
+        self.api, self.info, self.heads = api, info, heads
         self.password, self.accounts, self.url, self.gotos = password, accounts, start, []
         page = self
 
@@ -105,8 +121,11 @@ class Page:
                 words += [f"{FAKE_ACCOUNT}{i}", f"{FAKE_ACCOUNT}{i}", f"{FAKE_CONTRACT}{i}",
                           f"100 {FAKE_STREET} Ave San Diego CA", f"{FAKE_ACCOUNT}{i} - 100 {FAKE_STREET} Ave"]
             return {"count": self.accounts, "words": words + [FAKE_CONTRACT]}
-        return {"rows": [dict(r) for r in self.rows], "empty": self.empty,
+        return {"rows": [dict(r) for r in self.rows], "heads": self.heads, "empty": self.empty,
                 "api": self.api, "info": self.info}
+
+    def is_closed(self):
+        return False
 
 
 class Dead:
@@ -158,14 +177,72 @@ class Controls(unittest.TestCase):
 
 
 class Rows(unittest.TestCase):
-    def test_the_statement_date_is_the_first_date_cell_after_the_control_column(self):
-        docs = site.bills_of([{"id": ID1, "cells": ["", "Sep 25, 2026", "Oct 14, 2026", "", "-$1.00", "$0.00", "Billed", ""]}])
+    def test_the_statement_date_is_read_from_its_own_column(self):
+        docs = site.bills_of([row(ID1, "Sep 25, 2026", due="Oct 14, 2026")], HEADS)
         self.assertEqual([d.date_text for d in docs], ["2026-09-25"])
+        # Found by its header, wherever the table puts it.
+        heads = laid_out("", "Due Date", "Statement Date", "Amount Due")
+        moved = {"id": ID1, "cells": laid_out("", "Oct 14, 2026", "Sep 25, 2026", "$1.00")}
+        self.assertEqual([d.date_text for d in site.bills_of([moved], heads)], ["2026-09-25"])
+        # The header holds both words, whatever else it holds, since its
+        # whole text on the live page has never been seen.
+        for named in (" statement   DATE ", "Statement Date *", "Statement Date (i) more info",
+                      "Bill Statement Date"):
+            self.assertEqual(site.header_layout(laid_out("", named, "Due Date")), (1, 3), named)
+
+    def test_a_blank_statement_date_is_never_taken_from_the_due_date(self):
+        # The Due Date beside a blank Statement Date used to date the bill.
+        for blank in ("", "   "):
+            with self.assertRaises(site.ListStopped) as stop:
+                site.bills_of(ROWS[:2] + [row(ID3, blank, due="Oct 14, 2026")], HEADS)
+            self.assertIn("Statement Date cell is blank", str(stop.exception))
+            self.assertEqual([d.date_text for d in stop.exception.docs], ["2026-09-12", "2026-08-13"])
         with self.assertRaises(site.ListStopped):
-            site.bills_of([{"id": ID1, "cells": ["", "Billed", ""]}])
+            site.bills_of([{"id": ID1, "cells": laid_out("", "Billed", "Oct 14, 2026")}], HEADS)
+
+    def test_a_table_without_one_statement_date_column_stops(self):
+        # Each header is as wide as the rows, so only its Statement Date
+        # column is in question.
+        spanning = laid_out("", "Statement Date", "Amount Due", "Status")
+        spanning[1]["wide"] = 2
+        spanning[2]["at"], spanning[3]["at"] = 3, 4
+        no_height = laid_out("", "Statement Date", "Due Date", "Amount Due", "Status")
+        no_height[0]["tall"] = 0
+        unread = laid_out("", "Statement Date", "Due Date", "Amount Due", "Status")
+        unread[1]["at"] = "1"
+        for heads in (None, [], laid_out("", "Bill Date", "Due Date", "Amount Due", "Status"),
+                      laid_out("", "Statement Date", "Statement Date", "Amount Due", "Status"),
+                      laid_out("", "Statement Date", "Statement Due Date", "Amount Due", "Status"),
+                      laid_out("", "Statements", "Due Date", "Amount Due", "Status"),
+                      laid_out("", "Statement", "Date", "Amount Due", "Status"),
+                      spanning, no_height, unread):
+            with self.assertRaises(site.ListStopped, msg=repr(heads)) as stop:
+                site.bills_of(ROWS, heads)
+            self.assertEqual(stop.exception.docs, [], repr(heads))
+
+    def test_a_row_that_does_not_line_up_with_the_header_stops(self):
+        short = {"id": ID3, "cells": laid_out("")}
+        across = {"id": ID3, "cells": laid_out("", "Jul 14, 2026", "$1.00", "Billed")}
+        across["cells"][1]["wide"] = 2
+        across["cells"][2]["at"], across["cells"][3]["at"] = 3, 4
+        # A cell taller than its row moves the next row's cells left, so the
+        # Due Date would sit under Statement Date there.
+        tall = row(ID3, "Jul 14, 2026")
+        tall["cells"][0]["tall"] = 2
+        moved_left = {"id": ID3, "cells": laid_out("Jul 14, 2026", "Oct 14, 2026", "$1.00", "Billed")}
+        longer = {"id": ID3, "cells": laid_out("", "Jul 14, 2026", "Oct 14, 2026", "$1.00", "Billed", "x")}
+        odd = {"id": ID3, "cells": laid_out("", "Jul 14, 2026", "Oct 14, 2026", "$1.00", "Billed")}
+        del odd["cells"][0]["tall"]
+        gap = {"id": ID3, "cells": laid_out("", "Jul 14, 2026", "Oct 14, 2026", "$1.00", "Billed")}
+        gap["cells"][2]["at"] = 3
+        for bad in (short, across, tall, moved_left, longer, odd, gap, {"id": ID3},
+                    {"id": ID3, "cells": None}):
+            with self.assertRaises(site.ListStopped, msg=repr(bad)) as stop:
+                site.bills_of(ROWS[:2] + [bad], HEADS)
+            self.assertEqual([d.document_id for d in stop.exception.docs], [ID1, ID2], repr(bad))
 
     def test_good_rows(self):
-        got = site.bills_of(ROWS)
+        got = site.bills_of(ROWS, HEADS)
         self.assertEqual([(d.title, d.date_text, d.document_id, d.kind) for d in got],
                          [("SDG&E Bill 2026-09-12", "2026-09-12", ID1, "statement"),
                           ("SDG&E Bill 2026-08-13", "2026-08-13", ID2, "statement"),
@@ -175,15 +252,15 @@ class Rows(unittest.TestCase):
             self.assertEqual(d.account, "")
 
     def test_unreadable_rows_stop_the_list_with_what_was_read(self):
-        for bad, why in [({"id": "ISU123", "date": "Jun 1, 2026"}, "bad id"),
-                         ({"id": "", "date": "Jun 1, 2026"}, "no id"),
-                         ({"id": ID3, "date": "Feb 30, 2026"}, "no such day"),
-                         ({"id": ID3, "date": "2026-06-01"}, "another shape"),
-                         ({"id": ID3, "date": "Due Jun 1, 2026"}, "a date inside other text"),
-                         ({"id": ID1, "date": "Jun 1, 2026"}, "duplicate id"),
-                         ({"id": ID3, "date": "Sep 12, 2026"}, "two bills one date")]:
+        for bad, why in [(row("ISU123", "Jun 1, 2026"), "bad id"),
+                         (row("", "Jun 1, 2026"), "no id"),
+                         (row(ID3, "Feb 30, 2026"), "no such day"),
+                         (row(ID3, "2026-06-01"), "another shape"),
+                         (row(ID3, "Due Jun 1, 2026"), "a date inside other text"),
+                         (row(ID1, "Jun 1, 2026"), "duplicate id"),
+                         (row(ID3, "Sep 12, 2026"), "two bills one date")]:
             with self.assertRaises(site.ListStopped, msg=why) as stop:
-                site.bills_of(ROWS[:2] + [bad])
+                site.bills_of(ROWS[:2] + [bad], HEADS)
             self.assertEqual([d.document_id for d in stop.exception.docs], [ID1, ID2], why)
             self.assertNotIn("ISU", str(stop.exception), why)
 
@@ -356,7 +433,7 @@ class Orchestrator(unittest.TestCase):
 
     def test_persisted_record_has_no_query_and_is_keyed_by_the_id(self):
         app = make_app(self.tmp, "--discover")
-        for r in site.bills_of(ROWS):
+        for r in site.bills_of(ROWS, HEADS):
             app._record_rawdoc(r, site.BILLING_URL)
         app.discovery.save()
         text = app.paths.discovery_json.read_text()
@@ -369,7 +446,7 @@ class Orchestrator(unittest.TestCase):
 
     def test_an_expired_session_stops_the_run_and_records_nothing(self):
         app = make_app(self.tmp, "--all")
-        for r in site.bills_of(ROWS):
+        for r in site.bills_of(ROWS, HEADS):
             app._record_rawdoc(r, site.BILLING_URL)
         app.check_session = lambda page: None
         app._on_its_site = lambda: Page()
@@ -401,6 +478,30 @@ class Orchestrator(unittest.TestCase):
         self.assertNotIn("Press Enter", out.getvalue())
         self.assertFalse(list((Path(self.tmp) / "out").rglob("*.json")) and
                          any("failure" in p.name.lower() for p in (Path(self.tmp) / "out").rglob("*")))
+
+    def test_a_tab_that_left_the_site_still_stops_the_run_unread(self):
+        """The tab the run works in, moved to another site after it was on
+        My Energy Center, is never read, loaded or prompted about. Discover
+        and the session check stop the run and say so, with nothing
+        listed."""
+        read = []
+
+        class Moved:
+            url = "https://www.elsewhere.example/inbox"
+
+            def __getattr__(self, name):
+                read.append(name)
+                raise AssertionError("the tab off the site was asked for %s" % name)
+
+        app = make_app(self.tmp, "--discover")
+        app._on_its_site = lambda: Moved()
+        for step in (lambda: app.check_session(Moved()), app.cmd_discover):
+            with redirect_stdout(io.StringIO()) as said, self.assertRaises(SystemExit) as end:
+                step()
+            self.assertEqual(end.exception.code, 0)
+            self.assertIn("left My Energy Center", said.getvalue())
+        self.assertEqual(read, [])
+        self.assertEqual(app.discovery.data, {})
 
     def test_pilot_gate(self):
         from paperpull_core.models import State
@@ -440,7 +541,7 @@ class Privacy(unittest.TestCase):
                 app._delay = lambda *a, **k: None
                 app._on_its_site = lambda: Page(accounts=2, answers=[Resp(body=b"%PDF-1.4 " + b"x" * 3000)])
                 app.process(app._select(limit=1))
-                bad = Page(accounts=2, rows=ROWS + [{"id": ID3, "date": "Sep 12, 2026"}])
+                bad = Page(accounts=2, rows=ROWS + [row(ID3, "Sep 12, 2026")])
                 with self.assertRaises(site.ListStopped):
                     site.collect_download_docs(bad)
         finally:
