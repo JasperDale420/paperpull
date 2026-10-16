@@ -19,9 +19,14 @@ All notable changes to PaperPull are recorded here. Versioning follows
   them. Where a page's links and headings are in another language, the
   links are found by where they point and the older statements' section by
   the part it opens, so a run that starts on the dashboard reaches the PDF
-  statements and the older ones are listed and saved. An English page is
-  reached the way it always was. Thanks to Weyoun for finding it all and
-  the fix.
+  statements and the older ones are listed and saved. A link found by where
+  it points is taken only when it shows and leads to the activity page or
+  the PDF statements, and where such links name two cards, nothing is
+  pressed and the run says to open the card's statements. Each link on the
+  way is pressed once, and one whose page does not come stops the run
+  rather than being pressed again. An English page is reached the way it
+  always was, its Older Statements heading included. Thanks to Weyoun for
+  finding it all and the fix.
 
 ## [0.53.0] - 2026-10-15
 
