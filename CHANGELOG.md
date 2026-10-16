@@ -51,6 +51,28 @@ All notable changes to PaperPull are recorded here. Versioning follows
   run then ends as one that did not finish. Run live on one account on
   2026-10-15, where it saved all 13 card statements beside the account
   statements and tax documents.
+- **Folders in the file naming pattern (#101).** A `/` in a File names
+  pattern now puts files in folders, inside the folder each kind of
+  document already goes to, so `{provider}/{year}/{date:yyyy-mm-dd}
+  {summary}` files a statement as `Statements/Chase/2026/2026-03-09
+  Monthly Statement.pdf`. Only a `/` written in the pattern makes a folder,
+  never one inside an account or a summary, and each folder is made safe
+  the way a file name is. A folder whose part is empty is left out, so
+  `{provider}/[{account}/]{date} {summary}` files a document with no
+  account one folder up. A pattern goes at most three folders deep and
+  every folder has to name a part, and the settings page says why when a
+  pattern starts or ends with `/`, has a folder of plain text or goes
+  deeper. The preview shows the folders. Manual Review stays one folder,
+  and a folder that would leave no room for a name under the path limit,
+  or would lead outside its folder through a link, leaves the file where
+  it always went. Rename existing files moves files into the folders and
+  back out again when the pattern changes, with the index and the run
+  history following each file, so nothing downloads again. It removes a
+  folder it leaves empty, never a folder that still holds anything, and
+  puts every file back if it cannot write the index. Review names files
+  each receipt the same way. Before, a `/` was dropped from the name
+  without a word, so `{provider}/{date}` ran the two together. A pattern
+  with no `/` names files exactly as before.
 
 ### Fixed
 - **Wells Fargo no longer signs you out looking for your statements (#27).**
@@ -70,12 +92,6 @@ All notable changes to PaperPull are recorded here. Versioning follows
   www.wellsfargo.com, whose own sign-on form worked on PaperPull Server
   where the statements address came up blank. Thanks to crazyhorse90210
   for the surveys and the recording.
-- **A file naming pattern with a / in it is refused, and says why.** A /
-  would name a folder, which a file name cannot do yet, and it was dropped
-  without a word, so a pattern like `{provider}/{date}` ran the two
-  together. The settings page now says why, and a saved pattern that holds
-  one leaves files their usual names with a warning, as any pattern that
-  cannot be used does (#101).
 - **SDG&E lists your bills with no My Energy Center tab open, and dates
   each bill by its Statement Date alone.** With no tab of yours on My
   Energy Center, Discover, Pilot and Run All stopped at once, saying the

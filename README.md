@@ -509,11 +509,19 @@ name ends in a stray dash, and your newest files are shown under the new
 pattern as you change it. The pattern can still be written by hand under
 Edit as text.
 
+A `/` in the pattern puts files in folders, inside the folder each kind of
+document already goes to. `{provider}/{year}/{date:yyyy-mm-dd} {summary}`
+files a Chase statement as
+`Statements/Chase/2026/2026-03-09 Monthly Statement.pdf`. A folder whose
+part is empty is left out, Manual Review stays one folder, and a pattern
+goes at most three folders deep.
+
 One pattern covers every receipts app or every statements app, or any
 single app can have its own. After you save, the page offers to rename
 the files you already have to match, a preview first and then the
-rename, and nothing is downloaded again. The pattern language is in
-[docs/file-naming.md](docs/file-naming.md).
+rename, and nothing is downloaded again. Renaming moves files into the
+folders a pattern names, and back out again if you change your mind. The
+pattern language is in [docs/file-naming.md](docs/file-naming.md).
 
 ## Moving to another computer
 
