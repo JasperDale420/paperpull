@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+from . import shared_folder
 from .sheets import read_stored_row, store_value
 from .spec import INFRASTRUCTURE_FOLDERS, RECEIPT
 
@@ -76,6 +77,7 @@ def load_config(path: Optional[Path] = None) -> dict:
             "Open it and fix the syntax - a trailing comma is the usual cause.")
     if os.environ.get("PAPERPULL_SERVER") == "1":
         hold_to_the_server(cfg, path)
+        refuse_links_out(cfg["output_dir"], path)
     cfg.setdefault("output_dir", str(Path.home() / "Downloads" / sp.provider))
     cfg.setdefault("min_pdf_bytes", 3000)
     cfg.setdefault("max_path_length", 240)
@@ -221,6 +223,29 @@ def server_profile_dir(config_path) -> str:
     return str(Path(os.environ.get("PAPERPULL_PROFILES") or "/profiles") / folder)
 
 
+def refuse_links_out(output_dir: str, path: Path) -> None:
+    """On PaperPull Server, stop a run before it writes anything when the
+    folder its documents go to holds a link, file or folder, that leads
+    outside the data folder. Logs, Diagnostics, Backups, Manual Review, a
+    year folder or a browser's download folder left as such a link would
+    have every write into it land outside, the container's settings and
+    browser profiles among the places it could reach. A folder that is a
+    link staying in the data folder is looked through as well, and only
+    the folders the app files into are walked below the first level, so a
+    virtual environment's link to the system's Python stops nothing."""
+    found = shared_folder.first_link_out(output_dir, [f.name for f in spec().folders])
+    if found is None:
+        return
+    raise SystemExit(
+        "%s sends this run's documents to %s, and %s, on the way to where it writes, is a "
+        "link that leads to %s, outside %s, the data folder. On PaperPull Server a run writes nothing through a "
+        "link out of the data folder, so this run stopped before writing anything. Someone "
+        "who can write to the shared folder may have left it there. Remove the link, and "
+        "run again."
+        % (Path(path).name, os.path.realpath(output_dir), found, os.path.realpath(found),
+           shared_folder.data_folder()))
+
+
 _FILENAME_OWNER = ""
 
 # The file naming pattern this run uses, or "" for the default of its kind.
@@ -290,7 +315,18 @@ def ensure_owner(config: dict, config_path) -> dict:
     try:
         existing = json.loads(Path(config_path).read_text(encoding="utf-8-sig"))
         existing["owner"] = name
-        Path(config_path).write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        if shared_folder.on_server() and shared_folder.linked(config_path):
+            # Read through a link, so writing it back would copy whatever it
+            # leads to into the shared folder.
+            print("Your name was not saved, since %s is a link in the shared folder."
+                  % Path(config_path).name)
+            return config
+        if shared_folder.on_server():
+            # Replaced rather than written in place, so a link left at
+            # the config's name in the shared folder is never written through.
+            atomic_write_text(Path(config_path), json.dumps(existing, indent=2))
+        else:
+            Path(config_path).write_text(json.dumps(existing, indent=2), encoding="utf-8")
         print(f"Saved. Documents will be associated with: {name}\n")
     except Exception:
         pass
@@ -335,8 +371,16 @@ class Paths:
 
     def ensure(self) -> None:
         for d in self.all_dirs():
+            shared_folder.hold(d)
             d.mkdir(parents=True, exist_ok=True)
         # verify writability
+        if shared_folder.on_server():
+            # A name of its own, made new, since a guessable one in the
+            # shared folder could be a link left there to write through.
+            fd, probe = tempfile.mkstemp(dir=str(self.root), prefix=".write-probe-", suffix=".tmp")
+            os.close(fd)
+            os.unlink(probe)
+            return
         probe = self.root / f".write-probe-{os.getpid()}.tmp"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
@@ -344,7 +388,11 @@ class Paths:
     @staticmethod
     def _ready(folder: Path) -> Path:
         """Create a routed folder on demand, so ensure() only has to
-        pre-create the folders this provider actually fills."""
+        pre-create the folders this provider actually fills. On PaperPull
+        Server the folder is held inside the data folder first, each time,
+        since a link left as it in the shared folder would be followed by
+        every write into it."""
+        shared_folder.hold(folder)
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 
@@ -614,6 +662,9 @@ def atomic_write_text(path: Path, text: str, encoding: str = "utf-8", *,
     wait and nothing said, and PermissionError says the file was held."""
     path = Path(path)
     tries = _LOCKED_TRIES if tries is None else max(1, tries)
+    # The replace below never writes through a link at the name itself,
+    # but a folder on the way that is a link would be followed.
+    shared_folder.hold(path.parent)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     try:
@@ -697,13 +748,27 @@ def backup_file(path: Path, backups_dir: Path) -> Optional[Path]:
     if not path.exists():
         return None
     backups_dir = Path(backups_dir)
+    shared_folder.hold(backups_dir)
     backups_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     dest = backups_dir / f"{path.stem}.{stamp}{path.suffix}.bak"
+    server = shared_folder.on_server()
+    # On the server a link left at the name counts as taken, so the copy is
+    # never written through one, and the copy is made by a write that
+    # refuses a link it finds there all the same.
+    taken = os.path.lexists if server else os.path.exists
     n = 1
-    while dest.exists():
+    while taken(dest):
         n += 1
         dest = backups_dir / f"{path.stem}.{stamp}-{n}{path.suffix}.bak"
+    if server:
+        # Read the way it is written, so a file swapped for a link while the
+        # run goes on is never copied into the share from where it leads.
+        with shared_folder.open_to_read(path, "rb") as src, \
+                shared_folder.open_to_write(dest, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        shutil.copystat(path, dest, follow_symlinks=False)
+        return dest
     shutil.copy2(path, dest)
     return dest
 
@@ -728,12 +793,12 @@ class CsvFile:
 
     def _ensure_header(self) -> None:
         if not self.path.exists() or self.path.stat().st_size == 0:
-            with open(self.path, "w", encoding="utf-8-sig", newline="") as f:
+            with shared_folder.open_to_write(self.path, "w", encoding="utf-8-sig", newline="") as f:
                 csv.DictWriter(f, fieldnames=self.columns, quoting=csv.QUOTE_MINIMAL).writeheader()
 
     def append_rows(self, rows: Iterable[dict]) -> None:
         self._ensure_header()
-        with open(self.path, "a", encoding="utf-8-sig", newline="") as f:
+        with shared_folder.open_to_write(self.path, "a", encoding="utf-8-sig", newline="") as f:
             w = csv.DictWriter(f, fieldnames=self.columns, extrasaction="ignore",
                                quoting=csv.QUOTE_MINIMAL)
             for row in rows:
@@ -742,7 +807,7 @@ class CsvFile:
     def read_all(self) -> List[dict]:
         if not self.path.exists():
             return []
-        with open(self.path, "r", encoding="utf-8-sig", newline="") as f:
+        with shared_folder.open_to_read(self.path, "r", encoding="utf-8-sig", newline="") as f:
             return [read_stored_row(r) for r in csv.DictReader(f)]
 
     def rewrite(self, rows: List[dict], backup: bool = True) -> None:
@@ -786,7 +851,7 @@ class JsonStore:
         if self.path.exists():
             broken = False
             try:
-                with open(self.path, "r", encoding="utf-8") as f:
+                with shared_folder.open_to_read(self.path, "r", encoding="utf-8") as f:
                     raw = json.load(f)
                 if isinstance(raw, dict):
                     self.data = raw
@@ -813,8 +878,12 @@ class JsonStore:
     def _recover_from_backup(self) -> Optional[Dict[str, dict]]:
         if self.backups_dir is None or not Path(self.backups_dir).exists():
             return None
-        candidates = sorted(Path(self.backups_dir).glob(f"{self.path.stem}.*.bak"),
-                            key=lambda p: p.stat().st_mtime, reverse=True)
+        candidates = Path(self.backups_dir).glob(f"{self.path.stem}.*.bak")
+        if shared_folder.on_server():
+            # A backup left as a link is never read on the server, since
+            # what it leads to would be saved into the share as the records.
+            candidates = [c for c in candidates if not shared_folder.linked(c)]
+        candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
         for c in candidates:
             try:
                 with open(c, "r", encoding="utf-8") as f:

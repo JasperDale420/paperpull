@@ -181,11 +181,25 @@ Each refusal says which setting and why, and the one for `base_url` does
 not repeat the address, since it can name your employer. The desktop app
 reads all of them as written, since its folder is yours alone.
 
-This does not make the share safe to open to everyone. Links inside a
-provider's folder, its subfolders and files, are followed as a run writes
-there, and a provider's other settings, such as which documents it fetches
-and how they are named, are read as written. So keep write access to the
-data folder to yourself.
+Some shares also let the people who use them leave a link, a file or folder
+name that leads somewhere else, and the container's user owns the server's
+settings and every browser profile as well as the data folder. So on the
+server a run stops before it writes anything when a folder it writes into
+holds a link that leads outside the data folder, Logs, Diagnostics,
+Backups, Manual Review, a year folder or the browser's download folder
+among them. A folder that is a link to somewhere else inside the data
+folder is allowed, and looked through the same way. Each folder is checked
+again as it is made, the run's records, index, staged downloads, review
+list and backups are never read or written through a link of any kind left
+at their names, and the browser's downloads are never pointed at a folder
+that leads out. The panel does the same with the files it writes there, and
+never reads a file through a link to copy what it read into the share. The
+browser's own saves and each app's log file are checked only where the run
+starts, so a link left among them while a run goes on is not caught.
+
+This does not make the share safe to open to everyone. A provider's other
+settings, such as which documents it fetches and how they are named, are
+read as written. So keep write access to the data folder to yourself.
 
 If you previously edited a provider's scripts on the server, or kept a
 custom Python environment inside a provider's folder, those changes stop

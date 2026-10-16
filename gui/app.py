@@ -1677,12 +1677,14 @@ def _set_profile(config: Path, profile: str) -> None:
     takes the profile from the volume whatever the file says
     (paperpull_core.storage.server_profile_dir), so this keeps the file
     saying what is true."""
+    if not server_mode.own_file(config):
+        return
     try:
         data = json.loads(config.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return
     data["profile_dir"] = profile
-    config.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _write_text(config, json.dumps(data, indent=2))
 
 
 def _set_owner(config: Path, owner: str) -> None:
@@ -1693,14 +1695,54 @@ def _set_owner(config: Path, owner: str) -> None:
     and an empty name is the one thing that stops redaction taking a
     person's name out of a survey or a recording. So it is asked for
     here, where somebody is looking at a screen."""
+    if not server_mode.own_file(config):
+        return
     try:
         data = json.loads(config.read_text(encoding="utf-8-sig"))
         if not isinstance(data, dict):
             return
         data["owner"] = owner[:80]
-        config.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _write_text(config, json.dumps(data, indent=2))
     except (OSError, ValueError):
         pass
+
+
+def _write_text(path: Path, text: str) -> None:
+    """path.write_text, and on PaperPull Server a new file moved into its
+    place in a folder held inside the data folder, so a link left at the
+    name in the shared folder is replaced rather than written through."""
+    if server_mode.enabled():
+        server_mode.write_in_data(path, text)
+    else:
+        path.write_text(text, encoding="utf-8")
+
+
+def _replace_text(path: Path, text: str) -> None:
+    """Written beside itself and moved into place, so a crash part way
+    leaves the old file whole. On the server the file beside it is a new
+    one of its own, never a fixed name a link could be left at."""
+    if server_mode.enabled():
+        server_mode.write_in_data(path, text)
+        return
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _make_folder(folder: Path) -> None:
+    """mkdir, held inside the data folder first on the server."""
+    server_mode.hold_in_data(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+
+
+def _copy_file(src: Path, dst: Path) -> None:
+    """shutil.copy2, and on the server a copy written the way
+    _write_text writes, which never writes through a link at dst."""
+    if not server_mode.enabled():
+        shutil.copy2(src, dst)
+        return
+    server_mode.write_in_data(dst, Path(src).read_bytes())
+    shutil.copystat(src, dst)
 
 
 def _template_files(src: Path):
@@ -1739,17 +1781,21 @@ def refresh_install_code(dst: Path, src: Path) -> list:
     for rel, item in _template_files(src):
         target = dst / rel
         new = item.read_bytes()
+        # On the server a file left as a link in the shared folder is
+        # replaced and never read, so what it leads to is neither compared,
+        # backed up into the share nor written.
+        through_link = server_mode.enabled() and not server_mode.own_file(target)
         try:
-            if target.is_file() and target.read_bytes() == new:
+            if not through_link and target.is_file() and target.read_bytes() == new:
                 continue
         except OSError:
             continue
-        if target.is_file():
+        if not through_link and target.is_file():
             bak = dst / "Backups" / ("code-" + stamp) / rel
-            bak.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(target, bak)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(item, target)
+            _make_folder(bak.parent)
+            _copy_file(target, bak)
+        _make_folder(target.parent)
+        _copy_file(item, target)
         replaced.append(str(rel))
     replaced.extend(ensure_core(dst, stamp))
     replaced.extend("config.json: " + k for k in ensure_settings(dst, stamp))
@@ -1775,6 +1821,8 @@ def ensure_settings(dst: Path, stamp: str = "") -> list:
     example, live = dst / "config.example.json", dst / "config.json"
     if not (example.is_file() and live.is_file()):
         return []
+    if not (server_mode.own_file(live) and server_mode.own_file(example)):
+        return []
     try:
         template = json.loads(example.read_text(encoding="utf-8-sig"))
         current = json.loads(live.read_text(encoding="utf-8-sig"))
@@ -1792,9 +1840,9 @@ def ensure_settings(dst: Path, stamp: str = "") -> list:
         merged[key] = template[key]
     try:
         bak = dst / "Backups" / ("code-" + (stamp or "settings")) / "config.json"
-        bak.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(live, bak)
-        live.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+        _make_folder(bak.parent)
+        _copy_file(live, bak)
+        _write_text(live, json.dumps(merged, indent=2) + "\n")
     except OSError:
         return []
     return added
@@ -1835,6 +1883,11 @@ def ensure_core(dst: Path, stamp: str = "") -> list:
     passes over the checkout's own apps, so every core change after the
     day it was made missed that app. So nothing is copied there, and a copy
     an earlier panel left is taken out."""
+    if server_mode.enabled():
+        # The server runs every app with the image's own core, and never an
+        # install's venv, so a .venv in the shared folder is only something
+        # a copy could be written through.
+        return []
     core_src = HERE.parent / "core" / "paperpull_core"
     venv = dst / ".venv"
     if not core_src.is_dir() or not venv.is_dir():
@@ -2170,6 +2223,21 @@ def _make_account(app_dir: Path, label: str, owner: str) -> Path:
     if not (app_dir / "config.json").is_file():
         raise HTTPException(409, "%s has no config.json yet. Run Login once for the first account, "
                                  "then add the second." % app_dir.name)
+    if server_mode.enabled():
+        # make_config copies the first person's config into the new one and
+        # makes the new person's folder, so a config left as a link in the
+        # shared folder would have what it leads to copied into the share,
+        # and a folder that leads out would be made outside.
+        base = app_dir / "config.json"
+        if not server_mode.own_file(base):
+            raise HTTPException(409, "%s's config.json is a link in the shared folder, so no "
+                                     "person was added." % app_dir.name)
+        try:
+            first = json.loads(base.read_text(encoding="utf-8-sig"))
+            server_mode.hold_in_data(app_dir / mod.output_dir_for(app_dir, first, label))
+        except (OSError, ValueError, TypeError, AttributeError):
+            raise HTTPException(409, "%s's folder for a second person would be outside the data "
+                                     "folder, so no person was added." % app_dir.name)
     try:
         dest = mod.make_config(app_dir, label, owner=owner)
     except Exception as e:
@@ -2223,8 +2291,13 @@ def _migrate_module():
 def _history_keep():
     """Which folders a history export or import may read and write. On
     PaperPull Server only those inside the data folder, wherever a config in
-    the shared folder points, and on the desktop every one, as before."""
-    return server_mode.inside_data if server_mode.enabled() else None
+    the shared folder points, and only where progress.json is no link,
+    since what was read through one would be exported or written back into
+    the share. On the desktop every one, as before."""
+    if not server_mode.enabled():
+        return None
+    return lambda where: (server_mode.inside_data(where)
+                          and not server_mode.linked(Path(where) / "progress.json"))
 
 
 def _history_outside(where: Path) -> bool:
@@ -2304,6 +2377,8 @@ def _apply_settings(mod, cfg_path: Path, install: Path, settings: dict) -> None:
     what tools/migrate.py allows for this install, a file name pattern only
     when it passes the same check the File names tab makes, and never the
     folders, profile, browser or port, which belong to this computer."""
+    if not server_mode.own_file(cfg_path):
+        return
     cfg = _read_json(cfg_path)
     if not isinstance(cfg, dict):
         return
@@ -2313,9 +2388,7 @@ def _apply_settings(mod, cfg_path: Path, install: Path, settings: dict) -> None:
     if not take:
         return
     cfg.update(take)
-    tmp = cfg_path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, cfg_path)
+    _replace_text(cfg_path, json.dumps(cfg, indent=2) + "\n")
 
 
 def _template_for(entry: dict, providers: list):
@@ -2439,7 +2512,11 @@ def _history_walk(mod, manifest: dict, root: Path, apply: bool) -> list:
         row.update(new=added, marked=updated, known=len(place["records"]))
         if apply and (added or updated):
             try:
-                mod.write_history(place["path"], records, stamp)
+                if server_mode.enabled():
+                    mod.write_history(place["path"], records, stamp,
+                                      write=server_mode.write_in_data)
+                else:
+                    mod.write_history(place["path"], records, stamp)
             except OSError as e:
                 row.update(failed="its history could not be written, %s" % e)
                 continue
@@ -2842,8 +2919,8 @@ async def api_record_stop(request: Request):
     except ValueError:
         raise HTTPException(404, "that account's config names no folder PaperPull can read")
     try:
-        target.mkdir(parents=True, exist_ok=True)
-        (target / ".stop-recording").write_text("stop\n", encoding="utf-8")
+        _make_folder(target)
+        _write_text(target / ".stop-recording", "stop\n")
     except OSError as e:
         raise HTTPException(500, "could not signal the recording: %s" % e)
     return {"app": name, "stopping": True}
@@ -2900,10 +2977,14 @@ async def api_remove(request: Request):
     summary = _removal_summary(src)
     dest_dir = root / REMOVED_DIR
     dest = dest_dir / name
-    if dest.exists():
+    # On the server a link left at the name counts as taken, and Removed is
+    # held inside the data folder, since a move to another disk copies the
+    # whole install to wherever a link would lead.
+    taken = os.path.lexists if server_mode.enabled() else os.path.exists
+    if taken(dest):
         dest = dest_dir / ("%s (%s)" % (name, datetime.now().strftime("%Y%m%d-%H%M%S")))
     try:
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        _make_folder(dest_dir)
         shutil.move(str(src), str(dest))
     except OSError as e:
         raise HTTPException(500, "could not move the folder: %s. Is a file in it "
@@ -3519,6 +3600,8 @@ def _naming_app(name: str) -> Path:
 def _write_config(cfg_path: Path, key: str, value: str, stamp: str) -> bool:
     """Set or clear one key, backed up first and written in one step, so a
     crash part way leaves the old file whole."""
+    if not server_mode.own_file(cfg_path):
+        return False
     current = _read_json(cfg_path)
     if not isinstance(current, dict):
         return False
@@ -3530,11 +3613,9 @@ def _write_config(cfg_path: Path, key: str, value: str, stamp: str) -> bool:
         current.pop(key, None)
     try:
         bak = cfg_path.parent / "Backups" / ("naming-" + stamp) / cfg_path.name
-        bak.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(cfg_path, bak)
-        tmp = cfg_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, cfg_path)
+        _make_folder(bak.parent)
+        _copy_file(cfg_path, bak)
+        _replace_text(cfg_path, json.dumps(current, indent=2) + "\n")
     except OSError:
         return False
     return True
