@@ -12,6 +12,7 @@ throwaway folder for each computer.
 """
 import asyncio
 import base64
+import io
 import json
 import sys
 import zipfile
@@ -410,6 +411,33 @@ def test_on_the_server_it_goes_into_the_data_folder_and_profiles_into_their_volu
         profiles / "Shop Receipts - spouse"
     assert (tmp_path / "data" / "Shop Receipts - spouse" / "progress.json").is_file()
     assert not (tmp_path / "anything the page sent").exists()
+
+
+def test_on_the_server_no_history_is_read_or_written_outside_the_data_folder(
+        panel, tmp_path, monkeypatch):
+    """A config in the shared folder can name any folder. On the server an
+    export reads no history from one outside the data folder, and an import
+    writes none there."""
+    old_computer(tmp_path)
+    data = export()
+    monkeypatch.setenv("PAPERPULL_SERVER", "1")
+    root = tmp_path / "data"
+    monkeypatch.setenv("APPS_ROOT", str(root))
+    bring(data)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _write(outside / "progress.json", _done(7, "x"))
+    before = (outside / "progress.json").read_bytes()
+    bank = root / "Bank Statements"
+    _write(bank / "config.json", dict(_config(bank), output_dir=str(outside)))
+
+    with zipfile.ZipFile(io.BytesIO(export())) as z:
+        exported = json.loads(z.read("manifest.json"))
+    assert [a["provider"] for a in exported["apps"] if a["provider"] == "Bank"] == []
+    got = bring(data)
+    assert [r["action"] for r in got["rows"] if r["provider"] == "Bank"] == ["skipped"]
+    assert (outside / "progress.json").read_bytes() == before
+    assert sorted(p.name for p in outside.iterdir()) == ["progress.json"]
 
 
 def test_the_export_leaves_no_copy_behind(panel, tmp_path):

@@ -17,7 +17,10 @@ All notable changes to PaperPull are recorded here. Versioning follows
   before the proxy sent the browser on, carried it in the clear. When the
   browser reached the server over HTTPS, which a proxy says in
   `X-Forwarded-Proto` or `Forwarded`, the server now gives it a cookie of
-  its own name marked that way. Reached on the home network by plain
+  its own name marked that way. That name, `__Host-paperpull_session`,
+  has the browser keep it only over HTTPS and only for the very name that
+  set it, so no other name under the same domain can set or replace it.
+  Reached on the home network by plain
   HTTP, nothing changes, since a browser keeps no such cookie sent that
   way. The two names keep a plain HTTP sign-in at the proxy's name
   working after an HTTPS one, since a browser lets no plain HTTP page
@@ -53,6 +56,42 @@ All notable changes to PaperPull are recorded here. Versioning follows
   image ships pip 25.0.1, which has six medium or low advisories fixed in
   later releases. The lock now names pip 26.2.1 with its hash, and building
   the image replaces the base's pip with it.
+- **A shared data folder can no longer move a sign-in, the browser a run
+  drives or where it saves.** On PaperPull Server each provider's
+  `config.json` sits in the data folder, often a share other people can
+  write to, and a run took three of its settings as written. Someone with
+  the share could point `profile_dir` into the share, where others could
+  read a signed-in profile's cookies, aim `cdp_url` at a browser on
+  another machine, or send `output_dir` outside the data folder, through a
+  link too. On the server a run now always signs in with the account's
+  profile in the `profiles` volume, whatever the file says, and stops
+  before it connects to or saves anything when `cdp_url` names anything
+  but `127.0.0.1` or `localhost` or `output_dir` leads outside the data
+  folder, judged where its links lead as the run starts, saying which
+  setting and why. A server config that names no `output_dir` stops too,
+  where before it saved into the container's home folder, which is lost
+  when the container is made again. The panel keeps no run log, reads no
+  records and moves no history outside the data folder either, and its
+  run log replaces a link left at its name rather than follow it. Links
+  inside a provider's folder are otherwise still followed, so write
+  access to the share is still best kept to yourself. The desktop app
+  reads all three as before.
+- **PaperPull Server's password hash is stronger, and checking it no
+  longer holds up the panel.** The password was hashed with scrypt at
+  n=2^14, r=8, p=1, below every profile OWASP recommends, and the hash ran
+  inside the panel's one event loop, so nothing else was answered while a
+  sign-in was checked. It is now hashed at OWASP's n=2^14, r=8, p=5, the
+  same 16 MiB at five times the work, on threads of its own, two at a
+  time at most, and a server busy with many waiting asks the next sign-in
+  to try again. A password kept at the old cost is hashed again at the new
+  one the next time you sign in, and nobody is signed out. Each try is
+  still counted before its password is checked, so many tries sent at
+  once still meet the wait after five wrong ones.
+- **PaperPull Server reads at most 8 KiB of a sign-in.** The sign-in and
+  setup pages read a form's whole body before keeping its first 8 KiB, so
+  a request could make the panel hold as much as it was sent. A form that
+  says it is longer is refused at once, and one sent in pieces is refused
+  as soon as it passes 8 KiB, without waiting for the rest.
 
 ## [0.53.0] - 2026-10-15
 

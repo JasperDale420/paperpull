@@ -19,6 +19,13 @@ See "Design safety" in [SECURITY.md](SECURITY.md).
   you. You can set it with `PAPERPULL_PASSWORD` in the environment instead.
 - **Kept as a hash.** An scrypt hash in the `settings` volume, readable by
   the container's user only. The password itself is never written down.
+  The hash is made at OWASP's scrypt cost of 16 MiB in five lanes
+  (n=2^14, r=8, p=5). A password chosen with 0.53.0 or before was hashed
+  at a fifth of that work, and is hashed again at this cost the next time
+  you sign in, with nobody signed out. Hashing runs apart from the rest of
+  the panel, two at a time at most, so the panel keeps answering while a
+  password is checked, and a sign-in or setup form longer than 8 KiB is
+  refused before more of it is read.
 - **Sessions.** Signing in gives your browser a random token in a cookie
   that the page's scripts cannot read and other sites cannot send. A
   session lasts 14 days, and ends sooner when the container restarts, the
@@ -26,7 +33,8 @@ See "Design safety" in [SECURITY.md](SECURITY.md).
   within seconds of its session ending.
 - **Wrong guesses wait.** After five wrong passwords or setup codes from one
   address, each next try waits, twice as long each time, up to a quarter of
-  an hour.
+  an hour. Each try is counted before its password is checked, so many
+  sent at the same moment still meet the wait after the fifth.
 - **Requests from other sites are refused,** even from a browser that is
   signed in, by checking that a request came from the panel's own page.
   A link opened from an email, a chat or a PDF can open the panel, never
@@ -57,8 +65,11 @@ password manager.
   behind a reverse proxy that adds HTTPS, and list the name the proxy is
   reached by in `PAPERPULL_HOSTS`. When the proxy says the browser came by
   HTTPS, in `X-Forwarded-Proto` or `Forwarded`, the sign-in cookie is one
-  of its own, marked to travel over HTTPS only, so a plain HTTP visit to
-  the proxy's name never carries it. Caddy and Traefik say so on their own, and nginx
+  of its own, `__Host-paperpull_session`, marked to travel over HTTPS
+  only, so a plain HTTP visit to the proxy's name never carries it. Its
+  prefix has the browser keep it only that way and only for the very name
+  that set it, so no other name under the same domain can set or replace
+  it. Caddy and Traefik say so on their own, and nginx
   does with `proxy_set_header X-Forwarded-Proto $scheme;`. Anyone else on
   a network the panel's plain HTTP crosses can read what it carries, the
   password as you sign in included, so a guest network or a device you do
@@ -137,6 +148,33 @@ access to the share accordingly. A person who can write there can still
 change how your documents are classified and named, even though they can no
 longer run code.
 
+Three settings in `config.json` decide where a run reaches outside a
+provider's folder, so the server does not take them from the file on trust.
+
+- **`profile_dir`** is always the account's folder in the `profiles`
+  volume, named for the provider's folder and the account, whatever the
+  file says. A run that finds another folder there says so and uses the
+  volume's.
+- **`cdp_url`** has to name a browser at `127.0.0.1` or `localhost`, the
+  sign-in browsers inside the container, written plainly as a scheme, the
+  name, a port and a path. A run whose `cdp_url` names any other machine
+  stops before it connects to anything, so a changed setting cannot hand
+  a run to a browser someone else controls.
+- **`output_dir`** has to lead inside the data folder when a run starts,
+  judged by where any link on the way leads, so a provider folder replaced
+  by a link to somewhere else is refused. A run whose `output_dir` leads
+  outside stops before it saves anything, and the panel keeps no run log,
+  reads no records and imports or exports no history there.
+
+Each refusal says which setting and why. The desktop app reads all three as
+written, since its folder is yours alone.
+
+This does not make the share safe to open to everyone. Links inside a
+provider's folder, its subfolders and files, are followed as a run writes
+there, and a provider's other settings, such as the address of an
+employer's UKG site, are read as written. So keep write access to the data
+folder to yourself.
+
 If you previously edited a provider's scripts on the server, or kept a
 custom Python environment inside a provider's folder, those changes stop
 taking effect once you are on this version. Fold any real code change into
@@ -147,7 +185,9 @@ inside the data folder.
 
 Each provider account's signed-in browser profile is in the `profiles`
 volume, kept out of the data folder, which is often a shared folder open to
-other people. Anyone who can read that volume can act as you on those
+other people. A run takes its profile from that volume whatever the
+provider's `config.json` says, see "Where the provider code runs" above.
+Anyone who can read that volume can act as you on those
 sites, so back it up only somewhere as safe as your passwords, or not at
 all, since you can always sign in again. Deleting the volume signs you out
 everywhere at once.
