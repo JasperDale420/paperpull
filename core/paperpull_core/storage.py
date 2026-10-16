@@ -103,13 +103,15 @@ def load_config(path: Optional[Path] = None) -> dict:
 # -- PaperPull Server ----------------------------------------------------------
 #
 # On PaperPull Server an install's config.json lives in /data, often a shared
-# folder that other people on the network can write to. Three of its
+# folder that other people on the network can write to. Some of its
 # settings decide where a run reaches outside the install. profile_dir is
 # where a signed-in browser profile is kept, cdp_url is the browser a run
-# drives, and output_dir is where documents and records are written. So on
-# the server none of the three is taken from the file on trust. output_dir
-# is judged where the run starts, and links made inside that folder later
-# are not. The desktop reads all three exactly as it always has.
+# drives, output_dir is where documents and records are written, and a
+# provider's url_settings (UKG's base_url) are the site its signed-in
+# browser is sent to. So on the server none of them is taken from the file
+# on trust. output_dir is judged where the run starts, and links made
+# inside that folder later are not. The desktop reads them all exactly as
+# it always has.
 
 # A cdp_url the server connects to, matched whole. A URL parser and a
 # browser can read one text as two different hosts, a backslash or an @ in
@@ -120,13 +122,27 @@ _LOOPBACK_CDP = re.compile(
     re.IGNORECASE | re.ASCII)
 
 
+def _provider_address(domains) -> "re.Pattern":
+    """An address a url_setting may hold on the server, matched whole. It
+    is https, a name of plain labels under one of the domains, and at most
+    a slash after it. No port, user, path, query or fragment, since each
+    is a way for a URL parser and a browser to read one text as two
+    places, and an address with a path breaks the pages an app builds
+    from it anyway."""
+    return re.compile(
+        r"https://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:%s)/?"
+        % "|".join(re.escape(d) for d in domains),
+        re.IGNORECASE | re.ASCII)
+
+
 def hold_to_the_server(cfg: dict, path: Path) -> None:
     """Hold a config read on PaperPull Server to the server's own places,
     from what the file itself says, before any default is filled in. The
     profile is always the one the panel gives the account, a cdp_url has
-    to name a browser inside the container, and output_dir has to lead
-    inside the data folder. SystemExit, before anything is opened or
-    written, for a cdp_url or an output_dir that does not."""
+    to name a browser inside the container, output_dir has to lead inside
+    the data folder, and each of the bound AppSpec's url_settings has to be
+    an https address under one of the provider's own domains. SystemExit,
+    before anything is opened or written, for any that does not."""
     name = Path(path).name
     profile = server_profile_dir(path)
     given = cfg.get("profile_dir")
@@ -145,6 +161,21 @@ def hold_to_the_server(cfg: dict, path: Path) -> None:
             "connecting to anything. Someone who can write to the shared folder may have "
             "changed it. Set it back to http://127.0.0.1 and the port in this provider's "
             "config.example.json." % (name, cdp))
+
+    # The address is not repeated in the sentence, since a provider's own
+    # address can name the person's employer.
+    for key, domains in getattr(_SPEC, "url_settings", {}).items():
+        address = cfg.get(key)
+        if address is None or address == "":
+            continue
+        if not (isinstance(address, str) and _provider_address(domains).fullmatch(address)):
+            raise SystemExit(
+                "%s holds a %s that is not an https address on %s with nothing after the name, "
+                "such as https://yourname.%s. On PaperPull Server a provider's address has to "
+                "be on its own site, so this run stopped before opening any page. Someone who "
+                "can write to the shared folder may have changed it. Open %s and set %s back "
+                "to the address you sign in at."
+                % (name, key, " or ".join(domains), domains[0], name, key))
 
     out = cfg.get("output_dir")
     if out is None:

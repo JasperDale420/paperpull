@@ -157,6 +157,20 @@ All notable changes to PaperPull are recorded here. Versioning follows
   inside a provider's folder are otherwise still followed, so write
   access to the share is still best kept to yourself. The desktop app
   reads all three as before.
+- **A shared data folder can no longer send UKG's signed-in browser to
+  another site.** On PaperPull Server UKG's `base_url`, the employer's UKG
+  site that its sign-in opens and every run reaches, was read from the
+  shared `config.json` as written, and UKG's check of each page it
+  requests allows whatever site that names. Someone with the share could
+  have pointed it at a page of their own, which the Browser Screen would
+  then show in place of UKG's. On the server a run and a sign-in now stop
+  before opening any page unless `base_url` is an https address on
+  `ultipro.com` or `saashr.com` with nothing after the name, and the
+  refusal does not repeat the address, which can name an employer. A
+  provider names such a setting and its domains in its AppSpec, and a test
+  fails when any app's setting holds an address that nothing checks on the
+  server. Amazon's `marketplace` was already held to Amazon's own stores.
+  The desktop app reads `base_url` as before.
 - **PaperPull Server's password hash is stronger, and checking it no
   longer holds up the panel.** The password was hashed with scrypt at
   n=2^14, r=8, p=1, below every profile OWASP recommends, and the hash ran

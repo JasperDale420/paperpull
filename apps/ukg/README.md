@@ -31,6 +31,13 @@ address you see in your browser once you are signed in. It is not in the code
 on purpose: it varies per employer, and it identifies your employer, so it
 stays out of the repo.
 
+On PaperPull Server, where `config.json` sits in a shared folder, `base_url`
+has to be an https address on `ultipro.com` or `saashr.com` with nothing
+after the name, such as `https://yourcompany.ultipro.com`. A run stops
+before it opens any page when it is not, so nobody who can write to the
+share can send your signed-in browser somewhere else. The desktop app reads
+it as written.
+
 ## Signing in, however your company does it
 
 Some companies use a UKG username and password. Others hand off to corporate

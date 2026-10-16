@@ -1,20 +1,23 @@
-"""On PaperPull Server a config's profile_dir, cdp_url and output_dir are
-not taken on trust.
+"""On PaperPull Server a config's profile_dir, cdp_url, output_dir and a
+provider's url_settings are not taken on trust.
 
 An install's config.json lives in /data, often a shared folder that other
 people on the network can write to. Whoever can write it could point a
 signed-in browser profile into the share where others read its cookies,
-aim cdp_url at a browser on another machine, or send documents outside
-/data. So with PAPERPULL_SERVER=1, load_config takes the profile from the
-profiles volume, the way the panel names it, accepts a cdp_url only on
-127.0.0.1 or localhost, and refuses an output_dir that leads outside
-APPS_ROOT, a link included. On the desktop every one of them is read
-exactly as written.
+aim cdp_url at a browser on another machine, send documents outside
+/data, or send the signed-in browser to a page of their own in place of
+the provider's (UKG's base_url). So with PAPERPULL_SERVER=1, load_config
+takes the profile from the profiles volume, the way the panel names it,
+accepts a cdp_url only on 127.0.0.1 or localhost, refuses an output_dir
+that leads outside APPS_ROOT, a link included, and accepts a url_setting
+only as an https address under the provider's own domains. On the
+desktop every one of them is read exactly as written.
 
 Every folder is a throwaway one under tmp_path.
 """
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -236,3 +239,104 @@ def test_a_linked_folder_that_stays_in_the_data_folder_is_used(server):
     link_folder(other, server / "Statements")
     assert storage.load_config(write(server, as_the_panel_writes_it(
         server, output_dir="Statements")))["output_dir"] == "Statements"
+
+
+# -- the site a provider is reached at -------------------------------------------------------
+#
+# UKG has no one address, so its base_url names the employer's own UKG site
+# and its URL guard allows whatever host that is. A provider declares such a
+# setting in AppSpec.url_settings with the domains it may sit under. Testco
+# stands in here with two made-up ones.
+
+DOMAINS = ("testco.example", "ready.example")
+
+
+@pytest.fixture()
+def tenant(server, bound_spec):
+    """The server fixture, with Testco declaring base_url the way UKG does."""
+    storage.bind(replace(bound_spec, url_settings={"base_url": DOMAINS}))
+    return server
+
+
+@pytest.mark.parametrize("address", [
+    "https://name.testco.example", "https://name.testco.example/",
+    "HTTPS://Name.TestCo.EXAMPLE", "https://x9.testco.example",
+    "https://a-b.c.testco.example", "https://secure6.ready.example",
+    "https://xn--nme-6cd.testco.example", "", None])
+def test_an_address_on_the_providers_own_site_is_used(tenant, address):
+    cfg = storage.load_config(write(tenant, as_the_panel_writes_it(tenant, base_url=address)))
+    assert cfg["base_url"] == address
+
+
+def test_a_config_that_names_no_address_still_loads(tenant):
+    assert "base_url" not in storage.load_config(write(tenant, as_the_panel_writes_it(tenant)))
+
+
+@pytest.mark.parametrize("address", [
+    "http://name.testco.example", "https://evil.example", "https://evil.example/",
+    "https://testco.example", "https://nametestco.example",
+    "https://name.testco.example.evil.example", "https://testco.example.evil.example",
+    "https://name.testco.example@evil.example", "https://someone@name.testco.example",
+    "https://evil.example\\@name.testco.example", "https://evil.example/.name.testco.example",
+    "https://evil.example#.name.testco.example", "https://evil.example?.name.testco.example",
+    "https://name.testco.example:443", "https://name.testco.example:8443",
+    "https://name.testco.example/c/hcm/EDIT/EePayrollDirectDepositSummary",
+    "https://name.testco.example?next=https://evil.example", "https://name.testco.example#x",
+    "https://name.testco.example//", "https://name.testco.example/\\evil.example",
+    "https://name.testco.example.", "https://name..testco.example", "https://-name.testco.example",
+    " https://name.testco.example", "https://name.testco.example ", "https://name.testco.example\n",
+    "https://name.teſtco.example", "https://nаme.testco.example", "https://name.testco.examplе",
+    "//name.testco.example", "name.testco.example", "https:name.testco.example",
+    "javascript:alert(1)//.testco.example", "file:///etc/passwd", "data:text/html,hi",
+    "https://[::1]", "https://127.0.0.1", 7, True, ["https://name.testco.example"],
+    {"href": "https://name.testco.example"}])
+def test_an_address_anywhere_else_stops_the_run(tenant, address):
+    with pytest.raises(SystemExit) as stopped:
+        storage.load_config(write(tenant, as_the_panel_writes_it(tenant, base_url=address)))
+    said = str(stopped.value)
+    assert "base_url" in said and "https address on testco.example or ready.example" in said
+    assert "stopped before opening any page" in said
+
+
+def test_the_refusal_does_not_repeat_the_address(tenant):
+    """A provider's own address can name the person's employer, and a run's
+    words reach the panel's run log."""
+    with pytest.raises(SystemExit) as stopped:
+        storage.load_config(write(tenant, as_the_panel_writes_it(
+            tenant, base_url="https://employer-name.testco.example:8443")))
+    assert "employer-name" not in str(stopped.value)
+
+
+def test_an_address_is_held_for_a_second_account_too(tenant):
+    settings = as_the_panel_writes_it(tenant, output_dir="../Testco Statements - spouse",
+                                      base_url="https://evil.example")
+    with pytest.raises(SystemExit):
+        storage.load_config(write(tenant, settings, "config.spouse.json"))
+
+
+def test_only_the_settings_a_provider_declares_are_held(tenant):
+    """A setting the provider has not named as its address is not judged
+    as one, whatever it holds."""
+    settings = as_the_panel_writes_it(tenant, note="http://evil.example")
+    assert storage.load_config(write(tenant, settings))["note"] == "http://evil.example"
+
+
+def test_a_provider_without_an_address_setting_reads_base_url_as_any_other(server):
+    settings = as_the_panel_writes_it(server, base_url="http://evil.example")
+    assert storage.load_config(write(server, settings))["base_url"] == "http://evil.example"
+
+
+def test_on_the_desktop_an_address_is_read_as_written(tmp_path, monkeypatch, bound_spec):
+    storage.bind(replace(bound_spec, url_settings={"base_url": DOMAINS}))
+    monkeypatch.delenv("PAPERPULL_SERVER", raising=False)
+    written = {"output_dir": str(tmp_path / "anywhere"), "base_url": "http://evil.example/x"}
+    assert storage.load_config(write(tmp_path, written))["base_url"] == "http://evil.example/x"
+
+
+@pytest.mark.parametrize("domains", [
+    "testco.example", ("*.testco.example",), ("https://testco.example",), ("Testco.example",),
+    ("testco.example/",), ("testco",), (), ("testco.example", 7), ["testco.example"]])
+def test_a_provider_must_declare_plain_domains(bound_spec, domains):
+    with pytest.raises(ValueError) as refused:
+        replace(bound_spec, url_settings={"base_url": domains})
+    assert "url_settings['base_url']" in str(refused.value)

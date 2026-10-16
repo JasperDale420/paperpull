@@ -36,13 +36,15 @@ sys.path.insert(0, %r)
 from pathlib import Path
 from paperpull_core import storage
 from paperpull_core.spec import AppSpec, DOCUMENT
-spec = AppSpec(provider="Testco", project_dir=Path(__file__).resolve().parent, kind=DOCUMENT)
+spec = AppSpec(provider="Testco", project_dir=Path(__file__).resolve().parent, kind=DOCUMENT,
+               url_settings={"base_url": ("testco.example",)})
 storage.bind(spec)
 args = sys.argv[1:]
 path = Path(args[args.index("--config") + 1]) if "--config" in args else spec.project_dir / "config.json"
 cfg = storage.load_config(path)
 Path("loaded.json").write_text(json.dumps(
-    {key: cfg.get(key) for key in ("output_dir", "profile_dir", "cdp_url")}), encoding="utf-8")
+    {key: cfg.get(key) for key in ("output_dir", "profile_dir", "cdp_url", "base_url")}),
+    encoding="utf-8")
 print("loaded " + path.name)
 # shipped --open-browser
 """ % CORE
@@ -76,7 +78,8 @@ def configure(install: Path, name: str = "config.json", **changed) -> None:
     """A config as the panel writes it, with these settings changed."""
     account = "primary" if name == "config.json" else name[len("config."):-len(".json")]
     settings = {"owner": "", "output_dir": ".", "cdp_url": "http://127.0.0.1:9299",
-                "profile_dir": server_mode.profile_for(install.name, account)}
+                "profile_dir": server_mode.profile_for(install.name, account),
+                "base_url": "https://name.testco.example"}
     settings.update(changed)
     (install / name).write_text(json.dumps(settings), encoding="utf-8")
 
@@ -124,7 +127,8 @@ def test_a_config_as_the_panel_wrote_it_runs(layout):
     assert "loaded config.json" in said
     loaded = json.loads((install / "loaded.json").read_text(encoding="utf-8"))
     assert loaded == {"output_dir": ".", "cdp_url": "http://127.0.0.1:9299",
-                      "profile_dir": server_mode.profile_for("Testco Statements")}
+                      "profile_dir": server_mode.profile_for("Testco Statements"),
+                      "base_url": "https://name.testco.example"}
     assert (install / app.RUN_LOG).is_file()
 
 
@@ -148,13 +152,16 @@ def test_a_profile_moved_into_the_share_is_not_signed_in_with(layout):
 # -- the browser a run drives and where it saves -------------------------------------------
 
 @pytest.mark.parametrize("tampered", ["another machine's browser", "a name read two ways",
-                                      "two folders up", "a folder elsewhere"])
+                                      "two folders up", "a folder elsewhere",
+                                      "a site of somebody else's"])
 def test_a_tampered_config_stops_the_run_before_it_does_anything(layout, tmp_path, tampered):
     data, install = layout
     changed = {"another machine's browser": {"cdp_url": "http://192.168.1.50:9222"},
                "a name read two ways": {"cdp_url": "http://evil.example\\@127.0.0.1:9222"},
                "two folders up": {"output_dir": "../.."},
-               "a folder elsewhere": {"output_dir": str(tmp_path / "outside")}}[tampered]
+               "a folder elsewhere": {"output_dir": str(tmp_path / "outside")},
+               "a site of somebody else's": {"base_url": "https://name.testco.example.evil.example"}}[
+        tampered]
     configure(install, **changed)
     said = run()
     assert "this run stopped" in said, said
