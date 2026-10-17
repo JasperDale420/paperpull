@@ -57,9 +57,19 @@ WHAT THE RUN SETTLED (2026-10-15, eight statements saved)
     last four, and every one of the eight passed those checks.
   * A statementId held across the three loads of one session (Discover,
     Pilot, Run All), and the list was heard anew on each load.
-  Still open: the sign-in page's address (LOGIN_PATHS, never seen), how
-  long an idle session lasts, whether ids hold across a fresh sign-in, and
-  a wallet with more than one Bilt Card (only one was seen, and two stop).
+  Still open: how long an idle session lasts, whether ids hold across a
+  fresh sign-in, and a wallet with more than one Bilt Card (only one was
+  seen, and two stop).
+
+WHAT A SIGNED-OUT DISCOVER SHOWED (2026-10-15)
+  * A signed-out visit to /wallet stays on that exact address, with no
+    redirect, query or fragment, and the page draws its sign-in in place.
+    The nav shows a "Sign up / Log in" control and the body reads "Complete
+    login to continue" and "Welcome to Bilt. Log in or sign up.", over a
+    phone or email field, "Continue" and "Sign in with passkey". It has no
+    password field and no card. Those words or that control, with no
+    balance summary button shown, are read as signed out (shows_sign_in).
+    LOGIN_PATHS stays for an address Bilt may yet send a sign-out to.
 
 THE THREE PRESSES. Nothing else is ever pressed, and each goes through one
 place, _press, which reads every label the control carries, asks this
@@ -110,9 +120,11 @@ them, nor an answer, nor an address that carries one, is logged or said.
 Records keep the date, a fixed title and the private ids in the app's own
 discovery and progress files only.
 
-SIGNED OUT: a sign-in address, a password field, or a 401, 403, redirect
-or HTML answer to the page's own statements requests raises
-SessionExpired. The run saves, says so and stops.
+SIGNED OUT: a sign-in address, a password field, the sign-in drawn on the
+wallet itself, or a 401, 403, redirect or HTML answer to the page's own
+statements requests raises SessionExpired. The run saves, says so and
+stops, and asks for a sign-in again. A wallet that shows neither the
+sign-in nor one Bilt Card still stops the list.
 
 KNOWN CEILINGS
   * One Bilt Card. A wallet that shows none, or more than one, stops the
@@ -168,8 +180,8 @@ STATEMENTS_URL = WALLET_URL
 BILLING_URL = WALLET_URL
 URLS = {
     "home": f"{BASE}/",
-    # A signed-out visit is sent on to Bilt's sign-in, where the account
-    # holder signs in.
+    # A signed-out visit to the wallet draws Bilt's sign-in at the wallet's
+    # own address, where the account holder signs in.
     "login": WALLET_URL,
     "documents": WALLET_URL,
     "statements": WALLET_URL,
@@ -177,7 +189,8 @@ URLS = {
 API_HOST = "api.biltrewards.com"
 PDF_HOST = "statements.cardless.com"
 
-# ASSUMED: the first part of a sign-in or signed-out address. Never seen.
+# ASSUMED: the first part of a sign-in or signed-out address. Never seen,
+# since a signed-out wallet draws its sign-in in place (shows_sign_in).
 LOGIN_PATHS = {"login", "signin", "sign-in", "signup", "sign-up", "logout", "auth"}
 # The same, as the addresses the core's tests ask about. An address is read
 # by its first path part, never by a substring, so /wallet/authorized-users
@@ -368,8 +381,9 @@ def statement_label(iso: str) -> str:
 
 class SessionExpired(Exception):
     """Bilt answered as a signed-out session: its sign-in page, a password
-    field, or a 401, 403, redirect or HTML answer to the page's own
-    statements requests. The run stops for the account holder."""
+    field, its sign-in drawn on the wallet, or a 401, 403, redirect or HTML
+    answer to the page's own statements requests. The run stops for the
+    account holder."""
 
 
 class ListStopped(Exception):
@@ -394,10 +408,48 @@ def _first_part(url: str) -> str:
     return (path.strip("/").split("/", 1)[0] or "").lower()
 
 
+def shows_sign_in(state: dict) -> bool:
+    """The page draws Bilt's sign-in (SIGN_IN_SENTENCES, SIGN_IN_CONTROL) and
+    shows no balance summary button, as a signed-out visit to the wallet
+    did. The words beside a shown balance summary button are the wallet's
+    own content and are not read as signed out. The label on anything but a
+    button does not count."""
+    buttons = [x for x in _shown(state.get("summary")) if x.get("tag") == "BUTTON"]
+    return bool(state.get("signin")) and not buttons
+
+
+# How long the drawn sign-in has to stay, with no balance summary button,
+# before it is read as signed out. The signed-out wallet draws its sign-in
+# in place, and a page that does that can draw it for a moment while a
+# signed-in wallet is still finding its session, so one look never says a
+# run is signed out (#105).
+SIGN_IN_HOLD_MS = 4000
+
+
+def _sign_in_holds(page) -> bool:
+    """Whether the page draws Bilt's sign-in (shows_sign_in) on every look
+    for SIGN_IN_HOLD_MS. A look that cannot be made says no."""
+    waited = 0
+    while True:
+        try:
+            state = page.evaluate(_SIGNIN_JS)
+        except Exception:
+            return False
+        if not (isinstance(state, dict) and shows_sign_in(state)):
+            return False
+        if waited >= SIGN_IN_HOLD_MS:
+            return True
+        _pause(page, POLL_MS)
+        waited += POLL_MS
+
+
 def looks_signed_out(page) -> bool:
-    """A sign-in or signed-out address (LOGIN_PATHS), or a password field.
-    A page whose address cannot be read raises, and is never called signed
-    in."""
+    """A sign-in or signed-out address (LOGIN_PATHS), a password field, or
+    the sign-in drawn in place on the wallet for SIGN_IN_HOLD_MS
+    (shows_sign_in, _sign_in_holds). A page whose
+    address cannot be read raises, and is never called signed in. A page
+    that cannot be asked about its fields, as one mid-navigation, is not
+    called signed out for that alone."""
     if _first_part(page.url or "") in LOGIN_PATHS:
         return True
     try:
@@ -405,7 +457,7 @@ def looks_signed_out(page) -> bool:
             return True
     except Exception:
         pass
-    return False
+    return _sign_in_holds(page)
 
 
 def check_signed_in(page) -> None:
@@ -877,13 +929,50 @@ PAGER_RE = re.compile(
     r"|(?:more|older|earlier|previous)(?:\s+statements?)?"
     r"|next\s+page)$", re.I)
 
-_STATE_JS = r"""() => {
-  const CARD_LABEL_PATTERN = %s;
-  const PAGER_PATTERN = %s;
+# Bilt's sign-in as a signed-out visit to the wallet drew it on 2026-10-15,
+# in place at /wallet with no password field. Either sentence, whole and as
+# shown text (a text node may hold it beside others, as "Welcome to Bilt.
+# Log in or sign up." did), or a shown control reading exactly "Sign up /
+# Log in". Only whether it is drawn is returned, never the page's text, and
+# only where no balance summary button shows is it read as signed out
+# (shows_sign_in).
+SIGN_IN_SENTENCES = ("Complete login to continue", "Log in or sign up")
+SIGN_IN_CONTROL = "Sign up / Log in"
+
+_SIGNIN_FN = r"""
+  const signinDrawn = () => {
+    const sentences = %s, control = %s;
+    const root = document.body || document.documentElement;
+    if (!root) return false;
+    const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      if (!shown(n.parentElement)) continue;
+      for (const part of tidy(n.nodeValue).split(/(?<=[.!?])\s+/))
+        if (sentences.includes(part.replace(/[.!?]+$/, ''))) return true;
+    }
+    for (const el of root.querySelectorAll('button, [role="button"], a, [role="link"]'))
+      if (shown(el) && tidy(el.innerText) === control) return true;
+    return false;
+  };""" % (json.dumps(list(SIGN_IN_SENTENCES)), json.dumps(SIGN_IN_CONTROL))
+
+_SHOWN_FN = r"""
   const tidy = s => (s || '').replace(/\s+/g, ' ').trim();
   const shown = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
-                      && getComputedStyle(el).visibility !== 'hidden';
+                      && getComputedStyle(el).visibility !== 'hidden';"""
+
+# The sign-in question alone, for looks_signed_out. It returns whether the
+# sign-in is drawn and which balance summary buttons show, and nothing else.
+_SIGNIN_JS = r"""() => {%s%s
+  return {signin: signinDrawn(),
+          summary: Array.from(document.querySelectorAll('[aria-label="View balance summary"]'))
+            .map(el => ({shown: shown(el), tag: el.tagName}))};
+}""" % (_SHOWN_FN, _SIGNIN_FN)
+
+_STATE_JS = r"""() => {
+  const CARD_LABEL_PATTERN = %s;
+  const PAGER_PATTERN = %s;%s%s
   const out = {path: location.pathname, password: !!document.querySelector("input[type='password']"),
+               signin: signinDrawn(),
                summary: [], openers: [], statements: [], links: [], cards: [], profile: [], welcome: []};
   for (const el of document.querySelectorAll('[aria-label="View balance summary"]'))
     out.summary.push({shown: shown(el), tag: el.tagName});
@@ -959,7 +1048,7 @@ _STATE_JS = r"""() => {
   const body = (document.body && document.body.innerText) || '';
   for (const m of body.matchAll(/Welcome, ([^\n]{1,80})/g)) out.welcome.push(tidy(m[1]));
   return out;
-}""" % (json.dumps(CARD_LABEL_RE.pattern), json.dumps(PAGER_RE.pattern))
+}""" % (json.dumps(CARD_LABEL_RE.pattern), json.dumps(PAGER_RE.pattern), _SHOWN_FN, _SIGNIN_FN)
 
 _LABELS_JS = r"""el => [el.innerText, el.getAttribute('aria-label'), el.getAttribute('title')]
   .map(s => (s || '').replace(/\s+/g, ' ').trim()).filter(Boolean)"""
@@ -991,6 +1080,8 @@ def _wait_for(page, run: Run, ready: Callable[[dict], bool], timeout_ms: int) ->
         check_signed_in(page)
         run.watch.raise_if_signed_out(page)
         state = _read(page)
+        if shows_sign_in(state) and _sign_in_holds(page):
+            raise SessionExpired("Bilt drew its sign-in on the wallet")
         if ready(state):
             return state
         if waited >= timeout_ms:
