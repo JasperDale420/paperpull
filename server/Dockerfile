@@ -35,6 +35,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg tzdata procps \
       xvfb fluxbox x11vnc \
+      mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri libegl1 libgles2 \
       fonts-liberation fonts-dejavu-core fonts-noto-core fonts-noto-color-emoji \
  && cd /tmp && apt-get download novnc \
  && dpkg-deb -x novnc_*.deb /tmp/novnc \

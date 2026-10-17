@@ -892,6 +892,45 @@ def _try_each(candidates, profile_dir, port, url, fallback: bool = False, mode: 
     return None
 
 
+# PaperPull Server's sign-in window draws on a virtual screen, which has no
+# graphics of its own, so Chrome drew every page in software and turned
+# WebGL off altogether. A page with no WebGL is one of the plainest signs of
+# an automated browser, and Best Buy's bot check refused every sign-in there
+# while the desktop signed in at once. With the machine's GPU passed to the
+# container (/dev/dri), Chrome draws through Vulkan on it instead, as the NAS
+# round of 2026-10-01 measured ("ANGLE (Intel, Vulkan 1.3 ... Intel(R)
+# Graphics)") and Best Buy then stayed signed in. Mesa's software Vulkan
+# driver (lavapipe) is installed beside the real one, and Chrome may pick it
+# over the chip, so it is left out of the drivers Chrome is shown. With no
+# GPU, or PAPERPULL_GPU=off, the window starts as it always did. None of
+# these switches touches the sandbox (turns_sandbox_off).
+SERVER_GPU_SWITCHES = ("--use-angle=vulkan",
+                       "--enable-features=Vulkan,DefaultANGLEVulkan,VulkanFromANGLE",
+                       "--ignore-gpu-blocklist", "--disable-gpu-compositing")
+_VULKAN_DRIVERS = Path("/usr/share/vulkan/icd.d")
+_RENDER_NODES = Path("/dev/dri")
+
+
+def server_gpu() -> tuple:
+    """(switches, environment) for the sign-in window on PaperPull Server
+    with a GPU it can use, or ((), None) for the window as it always was."""
+    if os.environ.get("PAPERPULL_SERVER") != "1" \
+            or os.environ.get("PAPERPULL_GPU", "auto").strip().lower() == "off":
+        return (), None
+    try:
+        nodes = [n for n in sorted(_RENDER_NODES.glob("renderD*"))
+                 if os.access(n, os.R_OK | os.W_OK)]
+        drivers = [str(p) for p in sorted(_VULKAN_DRIVERS.glob("*.json"))
+                   if not p.name.startswith("lvp")]
+    except OSError:
+        return (), None
+    if not nodes or not drivers:
+        return (), None
+    env = dict(os.environ)
+    env["VK_ICD_FILENAMES"] = env["VK_DRIVER_FILES"] = ":".join(drivers)
+    return SERVER_GPU_SWITCHES, env
+
+
 def _launch(exe: str, name: str, profile_dir, port: str,
             url: str, explain_failure: bool = True, mode: str = AUTO) -> Optional[str]:
     """One attempt. Returns the browser name if its debugging port answered."""
@@ -927,13 +966,14 @@ def _launch(exe: str, name: str, profile_dir, port: str,
     said = None
     if name == CHROMIUM and sys.platform not in ("win32", "darwin"):
         said = _startup_log()
+    gpu, gpu_env = server_gpu()
     try:
         proc = subprocess.Popen([exe, f"--user-data-dir={profile_path}",
                                  f"--remote-debugging-port={port}", "--no-first-run",
-                                 "--no-default-browser-check", url],
+                                 "--no-default-browser-check", *gpu, url],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL if said is None else said,
-                                start_new_session=True, **detach)
+                                start_new_session=True, env=gpu_env, **detach)
     except OSError as e:
         _close_quietly(said)
         # This function's answer is a browser name or None, and the caller
