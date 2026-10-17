@@ -37,6 +37,7 @@
     "fairfaxwater": {"gets": "Water bills, about a year online", "group": "bills"},
     "fedex": {"gets": "Shipping invoices from Billing Online", "group": "bills", "tested": false},
     "fidelity": {"gets": "Statements, trade confirmations, tax forms", "group": "investing"},
+    "invest529": {"gets": "Quarterly statements for each beneficiary, 1099-Q tax forms", "group": "investing"},
     "firsthorizon": {"gets": "Checking statements", "group": "banks"},
     "gap": {"gets": "Order receipts for Gap, Old Navy, Banana Republic and Athleta", "group": "shopping"},
     "github": {"gets": "Payment receipts for Pro, Copilot, Actions, Sponsors and more", "group": "bills"},

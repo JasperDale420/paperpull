@@ -56,7 +56,7 @@ signed installer and automatic updates. Or download it free from the
 [Releases page](https://github.com/rheeloaded/paperpull/releases). Nothing
 is held back from the free build. See [Support](#support).
 
-Seventy providers are supported today, all built on the same pattern.
+Seventy-one providers are supported today, all built on the same pattern.
 Six more, SBA, Verizon Mobile,
 Meijer, American Family, Stripe and FedEx, are built and waiting for someone with an account to
 test them ([#28](https://github.com/rheeloaded/paperpull/issues/28),
@@ -98,6 +98,7 @@ test them ([#28](https://github.com/rheeloaded/paperpull/issues/28),
 | [`fairfaxwater`](apps/fairfaxwater) | Fairfax Water (VA) | Water bills | Mendix portal, driven like a person; PDFs for the last year only, so run it quarterly |
 | [`fedex`](apps/fedex) | FedEx Billing Online | Shipping invoices | **Untested, built from a login not connected to Billing Online. Use it? [Help test it](apps/fedex/README.md#help-test-it-no-programming-needed)** Requested in [#54](https://github.com/rheeloaded/paperpull/issues/54) |
 | [`fidelity`](apps/fidelity) | Fidelity Investments | Statements, trade confirmations, tax forms | Document Access Hub API from inside the page, nothing clicked; real Edge/Chrome |
+| [`invest529`](apps/invest529) | Invest529 (Virginia529 / Commonwealth Savers) | Official quarterly statements for every beneficiary and 1099-Q tax forms | **Built and run on the maintainer's own account, 38 documents across three beneficiaries saved on a full run.** Each read through the account's own API, nothing clicked |
 | [`firsthorizon`](apps/firsthorizon) | First Horizon Bank | Checking statements, about two years online | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 24 statements saved on a full run.** An account's panel and each statement's own Download PDF are the only presses. One checking account so far, so savings and card statements are untested |
 | [`gap`](apps/gap) | Gap Inc. (Gap, Old Navy, Banana Republic, Athleta) | Order receipts | Lazy-loading history; ~13-month limit |
 | [`irs`](apps/irs) | IRS (Individual Online Account) | Account, return, wage and income, and record of account transcripts | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 26 transcripts saved on a full run, untested by others. Have an IRS Online Account? [Help test it](apps/irs/README.md#help-test-it-no-programming-needed)** Each transcript fetched by its own address, nothing clicked. Sign-in through ID.me is your own |
@@ -828,8 +829,8 @@ Every contribution keeps the **read-only, local, no-credentials** design, see
 
 ## Status & roadmap
 
-- ✅ All **seventy-six** apps pass their tests, the seventy that are
-  supported and the six still waiting for a tester, 26,854 of them
+- ✅ All **seventy-seven** apps pass their tests, the seventy-one that are
+  supported and the six still waiting for a tester, 27,052 of them
   across the repo. Most are in regular use by the author. The rest were built or
   confirmed by people who hold those accounts, named in the table above
   and in [Thanks](#thanks).
