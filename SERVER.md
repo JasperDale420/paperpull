@@ -38,7 +38,7 @@ a Raspberry Pi cannot run it.
 ## Get the image
 
 `compose.yaml` names the image a PaperPull release publishes, by that
-release's version, such as `ghcr.io/rheeloaded/paperpull-server:0.54.0`,
+release's version, such as `ghcr.io/rheeloaded/paperpull-server:0.54.1`,
 and Docker downloads it from GitHub the first time the project starts.
 Before a release publishes it, the image is built from that release's
 code, started the way this page describes and checked, and only that very
