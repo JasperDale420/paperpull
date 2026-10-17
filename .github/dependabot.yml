@@ -1,0 +1,35 @@
+# What Dependabot proposes each week, as pull requests that the tests and
+# the Server image workflow check before anyone merges them.
+#
+# server/requirements.txt is not here. Its lock is resolved inside the
+# image's own base by server/lock.py, which Dependabot cannot run, and a
+# lock it resolved elsewhere could name other packages. The Server image
+# workflow's scan names a locked package that has a known fix instead.
+version: 2
+updates:
+  # The server image's base, named by tag and digest in server/Dockerfile.
+  # Only the tag's newer digest is proposed, which brings Debian's and
+  # Python's fixes for that base. Another Python means resolving the lock
+  # again with server/lock.py, so a new tag is a change made by hand.
+  - package-ecosystem: docker
+    directory: /server
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  # The actions the workflows use, some named by commit, in one weekly
+  # pull request. A new major version is left for a person, since some
+  # steps run only when a release is published, which no pull request
+  # tries.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      actions:
+        patterns: ["*"]

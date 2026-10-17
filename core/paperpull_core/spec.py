@@ -23,12 +23,16 @@ Two families exist and both are first-class:
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 RECEIPT = "receipt"
 DOCUMENT = "document"
+
+# A domain an AppSpec's url_settings names, such as ultipro.com.
+_DOMAIN = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -79,6 +83,13 @@ class AppSpec:
 
     csv_files: List[CsvSpec] = field(default_factory=list)
     config_defaults: Dict[str, object] = field(default_factory=dict)
+    # A config setting that holds the address of the provider's site, with
+    # the domains its host may sit under. PaperPull Server reads config.json
+    # from a shared folder, so there a run stops unless such a setting is
+    # an https address on a name under one of them. The desktop reads the
+    # setting as written. UKG's base_url is one, since every employer has
+    # its own UKG name.
+    url_settings: Dict[str, Tuple[str, ...]] = field(default_factory=dict)
 
     # Used by the PDF validator to confirm a saved file is really this
     # provider's document. Defaults to the provider name, lowercased and
@@ -113,6 +124,14 @@ class AppSpec:
         if self.default_route and self.default_route not in known:
             raise ValueError(
                 f"AppSpec.default_route {self.default_route!r} is not a declared folder")
+        for key, domains in self.url_settings.items():
+            # A tuple of plain domain names, since a string would be read
+            # one letter at a time and a pattern or a URL is not a domain.
+            if not (isinstance(domains, tuple) and domains
+                    and all(isinstance(d, str) and _DOMAIN.fullmatch(d) for d in domains)):
+                raise ValueError(
+                    f"AppSpec.url_settings[{key!r}] must be a tuple of plain lowercase "
+                    f"domain names, such as ('example.com',)")
 
     @property
     def slug(self) -> str:

@@ -32,7 +32,7 @@ APPS = sorted(d for d in (REPO / "apps").iterdir()
 # How a provider labels the control that gets you the document.
 VERBS = ("", "View ", "Download ")
 
-# Four apps refuse a document name on purpose, and all four are allowed
+# Five apps refuse a document name on purpose, and all five are allowed
 # to. On a military pay system "W-2", "SGLI", "FEGLI", "Beneficiary" and
 # "Net Pay" name a settings form as often as a document, and neither app
 # gates a click on this answer: myPay reads its documents from a JSON API
@@ -43,8 +43,11 @@ VERBS = ("", "View ", "Download ")
 # row's own Download, never by their names. Spectrum's guard takes only
 # "View Printable Statement", the one button of an Internet statement it
 # presses, and its Mobile statements are chosen by their own rows under a
-# guard of their own. Written down as names so the list can shrink and
-# cannot quietly grow.
+# guard of their own. Coinbase's guard refuses "card" and "one" for every
+# control, since the account can spend through its card, and its One Card
+# statements are pressed by their rows' own PDF buttons, whose label is
+# "PDF", under a guard of their own. Written down as names so the list can
+# shrink and cannot quietly grow.
 ALLOWED_TO = {
     "mypay": {"Annuitant Account Statement", "FEGLI Document", "Net Pay Advice",
               "SGLI Document", "W-2 Tax Form"},
@@ -52,6 +55,8 @@ ALLOWED_TO = {
     "alpaca": {"Brokerage Statement", "Crypto Statement", "Trade Confirmation"},
     # The guard accepts only the one label it presses, never a document's name.
     "spectrum": {"Internet Statement", "Mobile Statement"},
+    # The card statement's PDF button is pressed by its own label, "PDF".
+    "coinbase": {"One Card Statement"},
 }
 
 

@@ -30,7 +30,7 @@ new documents can go straight into Paperless. Both are free.
 
 ![The PaperPull control panel's Accounts page on the sample archive, each provider with its status and one button. Every name and amount is invented.](docs/panel.png)
 
-**Watch it:** a [77-second demo](https://youtu.be/TfeOMngCgLM) on the real panel with made-up accounts. **Website:** [paperpull.net](https://paperpull.net), with the [getting-started guide](https://paperpull.net/guide.html), the [provider directory](https://paperpull.net/providers.html) and the [Paperless-ngx tutorial](https://paperpull.net/paperless.html). **Download:** the [latest release](https://github.com/rheeloaded/paperpull/releases/latest), Windows 10 or 11 and macOS on Apple Silicon or Intel, Linux from source. **Self-hosting** takes the Docker image `ghcr.io/rheeloaded/paperpull-server` and [three steps](#paperpull-server).
+**Watch it:** a [77-second demo](https://youtu.be/TfeOMngCgLM) on the real panel with made-up accounts. **Website:** [paperpull.net](https://paperpull.net), with the [getting-started guide](https://paperpull.net/guide.html), the [provider directory](https://paperpull.net/providers.html), the [Paperless-ngx tutorial](https://paperpull.net/paperless.html) and the [FAQ](https://paperpull.net/faq.html) (the most asked questions are also [below](#faq)). **Download:** the [latest release](https://github.com/rheeloaded/paperpull/releases/latest), Windows 10 or 11 and macOS on Apple Silicon or Intel, Linux from source. **Self-hosting** takes the Docker image `ghcr.io/rheeloaded/paperpull-server` and [three steps](#paperpull-server).
 
 **It also turns those PDFs into spreadsheets.** Your receipts become one
 long table of every item you have ever bought, across every store and every
@@ -56,7 +56,7 @@ signed installer and automatic updates. Or download it free from the
 [Releases page](https://github.com/rheeloaded/paperpull/releases). Nothing
 is held back from the free build. See [Support](#support).
 
-Sixty-nine providers are supported today, all built on the same pattern.
+Seventy-one providers are supported today, all built on the same pattern.
 Six more, SBA, Verizon Mobile,
 Meijer, American Family, Stripe and FedEx, are built and waiting for someone with an account to
 test them ([#28](https://github.com/rheeloaded/paperpull/issues/28),
@@ -86,7 +86,7 @@ test them ([#28](https://github.com/rheeloaded/paperpull/issues/28),
 | [`chase`](apps/chase) | Chase (credit cards) | Card statements | Real Edge/Chrome; per-card accordions + year picker |
 | [`chasebusiness`](apps/chasebusiness) | Chase Business (business document center) | Business checking statements, up to seven years (business card untested) | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 10 checking statements saved on a full run.** One profile so far, so a business card's or debit account's statements are untested. Six kinds of control pressed through the guard, real Edge/Chrome |
 | [`citi`](apps/citi) | Citi (credit cards) | Monthly card statements | Statements API from inside the page, nothing clicked; the site lists about two years online |
-| [`coinbase`](apps/coinbase) | Coinbase | Monthly account statements, tax forms, gain and loss reports | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 66 statements and 2 tax documents saved on a full run.** Each month's own PDF button on the Statements page pressed once and the download taken only from Coinbase's statements bucket, and tax PDFs from the list calls the Taxes page makes, nothing pressed |
+| [`coinbase`](apps/coinbase) | Coinbase | Monthly account statements, Coinbase One Card statements, tax forms, gain and loss reports | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 66 statements and 2 tax documents saved on a full run.** Each month's own PDF button on the Statements page pressed once and the download taken only from Coinbase's statements bucket, and tax PDFs from the list calls the Taxes page makes, nothing pressed. One Card statements from the Credit Card tab, each row's own PDF button pressed once, 13 saved on a full run on one account |
 | [`costco`](apps/costco) | Costco Wholesale | Receipts, in-warehouse, gas, pharmacy and costco.com orders | **Written from a member's recording and run against their account, 34 purchases back to July 2024** ([#47](https://github.com/rheeloaded/paperpull/issues/47)). Each receipt names its part of Costco, Warehouse or Gas Station, for a file name pattern ([#60](https://github.com/rheeloaded/paperpull/issues/60)). One membership so far, so a second Pilot is welcome. Two tabs, quarters walked, the warehouse receipt is a dialog rendered with printToPDF, real Edge/Chrome |
 | [`discovercard`](apps/discovercard) | Discover (credit cards) | Card statements | Capital One is moving these accounts onto its own site. A card that has moved is read there by the [`capitalone`](apps/capitalone) app ([#13](https://github.com/rheeloaded/paperpull/issues/13)) |
 | [`dominion`](apps/dominion) | Dominion Energy (VA) | Billing statements | Paginated MUI accordion; ~18-month limit |
@@ -98,6 +98,7 @@ test them ([#28](https://github.com/rheeloaded/paperpull/issues/28),
 | [`fairfaxwater`](apps/fairfaxwater) | Fairfax Water (VA) | Water bills | Mendix portal, driven like a person; PDFs for the last year only, so run it quarterly |
 | [`fedex`](apps/fedex) | FedEx Billing Online | Shipping invoices | **Untested, built from a login not connected to Billing Online. Use it? [Help test it](apps/fedex/README.md#help-test-it-no-programming-needed)** Requested in [#54](https://github.com/rheeloaded/paperpull/issues/54) |
 | [`fidelity`](apps/fidelity) | Fidelity Investments | Statements, trade confirmations, tax forms | Document Access Hub API from inside the page, nothing clicked; real Edge/Chrome |
+| [`invest529`](apps/invest529) | Invest529 (Virginia529 / Commonwealth Savers) | Official quarterly statements for every beneficiary and 1099-Q tax forms | **Built and run on the maintainer's own account, 38 documents across three beneficiaries saved on a full run.** Each read through the account's own API, nothing clicked |
 | [`firsthorizon`](apps/firsthorizon) | First Horizon Bank | Checking statements, about two years online | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 24 statements saved on a full run.** An account's panel and each statement's own Download PDF are the only presses. One checking account so far, so savings and card statements are untested |
 | [`gap`](apps/gap) | Gap Inc. (Gap, Old Navy, Banana Republic, Athleta) | Order receipts | Lazy-loading history; ~13-month limit |
 | [`irs`](apps/irs) | IRS (Individual Online Account) | Account, return, wage and income, and record of account transcripts | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 26 transcripts saved on a full run, untested by others. Have an IRS Online Account? [Help test it](apps/irs/README.md#help-test-it-no-programming-needed)** Each transcript fetched by its own address, nothing clicked. Sign-in through ID.me is your own |
@@ -123,6 +124,7 @@ test them ([#28](https://github.com/rheeloaded/paperpull/issues/28),
 | [`schwab`](apps/schwab) | Charles Schwab | Statements, tax forms, letters, trade confirmations | Ported by [@davidrudnick](https://github.com/davidrudnick); fresh live pilot pending |
 | [`sdge`](apps/sdge) | SDG&E (San Diego Gas & Electric) | Monthly bills, about two years online | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 8 bills saved on a full run.** Each bill fetched by its own address from Billing History, nothing clicked. One account per run, the one selected on the site |
 | [`shelbycounty`](apps/shelbycounty) | Shelby County Trustee (Memphis, TN) | Property tax receipts, one per payment, and the current tax notice while a balance is due | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 17 receipts across 16 tax years saved on a full run.** A public lookup with no sign-in, the parcel ID goes in config.json. The page builds each PDF itself and the app keeps it, one guarded press per document |
+| [`simmons`](apps/simmons) | Simmons Bank (Banno online banking) | Loan statements, notices, tax forms | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 27 documents saved on a full run.** Only a document row's own button is pressed, and the download taken only when it is that document's own. One loan so far, so a sign-in with a second account stops the list. A paid-off loan's documents stay online only until a date the bank names |
 | [`smud`](apps/smud) | SMUD (Sacramento Municipal Utility District) | Monthly bills | **Confirmed by [@watling777](https://github.com/watling777)**, whose Pilot took the newest five and whose full run took the rest of the history ([#34](https://github.com/rheeloaded/paperpull/issues/34)) |
 | [`spectrum`](apps/spectrum) | Spectrum (Internet and Mobile) | Internet statements, about a year online, and Mobile statements printed from their pages | **Contributed by [@JasperDale420](https://github.com/JasperDale420), 11 Internet statements saved on a full run.** Mobile statements listed live, a whole Mobile run still to come. Each statement chosen by its own row. Two statements of one date, after an account transfer, are left for you to save by hand |
 | [`stripe`](apps/stripe) | Stripe (merchant Dashboard) | Fee invoices, tax forms such as the 1099-K | **Untested, built on an account with no documents yet. Have Stripe invoices or tax forms? [Help test it](apps/stripe/README.md#help-test-it-no-programming-needed)** Requested in [#53](https://github.com/rheeloaded/paperpull/issues/53) |
@@ -214,7 +216,7 @@ Three plain-text files carry the state, and you can read all of them:
 |------|-------|
 | `discovery.json` | what the provider showed us this run |
 | `progress.json` | what happened to each document, including the sticky `downloaded_ok` |
-| `<Provider> Document Index.csv` | one row per saved document, for humans and spreadsheets (receipt apps also keep an `Order History.csv`, one row per line item) |
+| `<Provider> Document Index.csv` | one row per saved document, for humans and spreadsheets (receipt apps also keep an `Order History.csv`, one row per line item). Text that starts like a formula, an item a seller named `=...` for one, is written with a `'` in front, so Excel opens it as text |
 
 That last step is what makes a re-run safe. `downloaded_ok` is keyed to the
 document, not to the file on disk, so you can import everything into
@@ -229,14 +231,19 @@ second copy beside it.
 ### Read-only by construction
 
 Nothing that buys, sells, transfers, pays, deletes, or changes a setting is
-ever clicked, and all site interaction lives in `provider_site.py` where it can
-be read in one sitting. Every app that clicks enforces this deny-by-default, a
-control must clear a blocklist (`FORBIDDEN_CONTROL_RE`) *and* match a document
-allowlist (`SAFE_DOC_CONTROL_RE`), and the app's host allowlist refuses any
-stored URL that points elsewhere. Sixteen apps click nothing at all (ADP, Affirm, Amazon,
-Anthem, Citi, eBay, Fidelity, Gap, GitHub, Kroger, Meijer, myPay, NetBenefits, Paylocity, TSP, UKG), they read a JSON API or render a
-page they navigated to. A repo-wide test checks every app's guard.
-[SECURITY.md](SECURITY.md) spells out which app does which.
+ever clicked, and all site interaction lives in `provider_site.py` where it
+can be read in one sitting. Every app carries a blocklist
+(`FORBIDDEN_CONTROL_RE`) of the words such a control would use. Most apps that
+press controls also decide which of the page's controls may be pressed with
+`is_safe_control()`, so a control must clear the blocklist *and* match a
+document allowlist (`SAFE_DOC_CONTROL_RE`), deny by default. The rest press
+only controls they find by a selector or by words written in the app, and the
+Target and Walmart apps check every receipt control against the blocklist,
+since a document allowlist would refuse the paging they press. Many apps click
+nothing at all during a run. They read the provider's pages by address, or the
+same data the provider's own page asks for. Each app's host allowlist refuses
+any stored URL that points elsewhere, and a repo-wide test checks every app's
+guard. [SECURITY.md](SECURITY.md) spells out which app does which.
 
 ### One app, more than one person
 
@@ -267,16 +274,18 @@ on the desktop.
 | Signing in | a browser window on your desktop | a browser screen the server shows in your browser |
 | New documents | folders on your computer | folders on the server, and copied into Paperless-ngx's consume folder if you mount it |
 | Who can reach it | only your computer | your home network, behind a password you choose |
-| Updates | the next installer, or the Store | `docker compose pull`, then `docker compose up -d` |
+| Updates | the next installer, or the Store | the new version in `compose.yaml`, then `docker compose pull` and `docker compose up -d` |
 | Price | free, or the Store edition | free |
 
 Getting it running takes three steps, and [SERVER.md](SERVER.md) has the
 rest, Paperless, a NAS's own Docker screens, updates and backups.
 
 1. Copy [`server/compose.yaml`](server/compose.yaml) and
-   [`server/seccomp-chrome.json`](server/seccomp-chrome.json) into a folder
-   on the server, and set `PUID`, `PGID`, `TZ` and the data folder in
-   `compose.yaml`.
+   [`server/seccomp-chrome.json`](server/seccomp-chrome.json), or the two
+   in `PaperPull-Server-X.Y.Z.zip` on the
+   [newest release](https://github.com/rheeloaded/paperpull/releases/latest),
+   into a folder on the server, and set `PUID`, `PGID`, `TZ` and the data
+   folder in `compose.yaml`.
 2. Start it. Docker downloads the image every release publishes,
    `ghcr.io/rheeloaded/paperpull-server`.
    ```bash
@@ -501,11 +510,48 @@ name ends in a stray dash, and your newest files are shown under the new
 pattern as you change it. The pattern can still be written by hand under
 Edit as text.
 
+A `/` in the pattern puts files in folders, inside the folder each kind of
+document already goes to. `{provider}/{year}/{date:yyyy-mm-dd} {summary}`
+files a Chase statement as
+`Statements/Chase/2026/2026-03-09 Monthly Statement.pdf`. A folder whose
+part is empty is left out, Manual Review stays one folder, and a pattern
+goes at most three folders deep.
+
 One pattern covers every receipts app or every statements app, or any
 single app can have its own. After you save, the page offers to rename
 the files you already have to match, a preview first and then the
-rename, and nothing is downloaded again. The pattern language is in
-[docs/file-naming.md](docs/file-naming.md).
+rename, and nothing is downloaded again. Renaming moves files into the
+folders a pattern names, and back out again if you change your mind. The
+pattern language is in [docs/file-naming.md](docs/file-naming.md).
+
+## A documents folder for each person
+
+Each person on each provider can send their documents to a folder of their
+own, such as one Paperless-ngx watches, one a sync program keeps or a
+share on a NAS. In Settings, under **Documents folder**, pick the provider
+and the person and give the folder's full path. Each download is still
+saved and checked in the provider's own folder, and one that fails its
+check is put aside in its Manual Review there. When a run from the panel
+ends, the documents it saved and checked move into the documents folder,
+into Statements, Tax Documents, Receipts and the other folders of each
+kind, with any folders your naming pattern adds. The provider's records,
+Manual Review, Logs, Diagnostics and Backups never move, so the documents
+folder only ever gets documents that passed their checks.
+
+Saving the setting moves nothing that is already there. Documents saved
+before stay where they are, and PaperPull still finds them, so nothing is
+downloaded again. The page says how many are still in the provider's
+folder and offers **Preview move** and then **Move**, which moves each one
+under the name it has, with its records following it, and puts everything
+back if a record cannot be written. Change the folder or set it back, and
+the same Move brings the documents to where it now points. A browser
+profile, a folder inside or around one, a folder holding a provider's own
+folder and a folder inside or around a person's own folder are refused. By
+hand, `"documents_dir"` in an account's config.json sets the same thing, as
+a full path, and from a terminal the move is a Rename run with
+`PAPERPULL_MOVE_DOCUMENTS=1` in its environment. On PaperPull Server the
+folder has to be inside the data folder, see
+[SERVER.md](SERVER.md#paperless).
 
 ## Moving to another computer
 
@@ -609,9 +655,157 @@ chmod +x setup-all.command apps/*/*.command gui/*.command
 - For the Windows installer or the macOS `.dmg`, nothing else. They carry
   their own Python.
 - For a checkout, Python 3.11+ and Playwright (installed by setup-all)
-- A Chromium-family browser for the few providers that need a real one
-  (Chrome, Edge, Brave, Vivaldi or Opera). Safari and Firefox cannot be
-  driven this way.
+- A Chromium-family browser for signing in (Chrome, Edge, Brave, Vivaldi or
+  Opera). Windows comes with Edge. From a terminal, the sign-in step can
+  download a private Chromium instead, though a few providers need a real
+  Edge or Chrome. Safari and Firefox cannot be driven this way.
+
+## FAQ
+
+The questions people ask most, answered briefly. The
+[full FAQ](https://paperpull.net/faq.html) on the website has more, on where
+documents are kept, encryption, browser profiles, PaperPull Server's
+security, the spreadsheets and moving to a new computer.
+
+### Does PaperPull see or store my passwords?
+
+No. **Open sign-in window** opens a real browser window on the provider's
+own sign-in page, and you type your password and answer the two-factor
+prompt there, the way you would on a new computer. PaperPull attaches to
+that window afterward and reads what you can see. There is no field
+anywhere in PaperPull for a provider's password, so there is nothing for it
+to store or send. PaperPull Server works the same way, through a sign-in
+window it shows in your browser, and asks only for the password to its own
+panel.
+
+### Can it move money, pay a bill or change my account?
+
+No. It only downloads. Every app that clicks presses only controls it
+recognizes, and refuses any that would buy, pay, transfer or change a
+setting. Each app can visit only its own provider's addresses, and many
+apps click nothing at all. See
+[Read-only by construction](#read-only-by-construction) and
+[SECURITY.md](SECURITY.md).
+
+### Does any of my information go to PaperPull?
+
+No. There is no PaperPull account, no PaperPull cloud and no telemetry, so
+no crash reports, no usage statistics and no update check. The program
+contacts only the providers you sign in to, plus, once and only if you
+agree, a browser download when your computer has no usable browser.
+PaperPull Server also fetches Chrome from Google, and Chrome itself talks
+to Google as any Chrome does. See
+[PRIVACY.md](PRIVACY.md) and [PRIVACY-SERVER.md](PRIVACY-SERVER.md).
+
+### Will my bank notice, or lock my account?
+
+PaperPull works in the browser you signed in to, reads only what your
+account can already see, pauses between documents the way a person would,
+and stops at every sign-in step and security check for you to handle. Even
+so, whether a provider's terms allow a tool like PaperPull is between you
+and that provider. A provider can limit or lock an account it believes an
+automated tool is using, and PaperPull cannot rule that out.
+[TERMS.md](TERMS.md) says so too.
+
+### Does it get past CAPTCHAs or two-factor prompts?
+
+No, and it never tries. When a site asks for a code, shows a robot check or
+signs you out partway, the run stops there, and everything it saved stays
+saved. Handle it in the sign-in window, then press **Continue** to pick up
+the rest. That human step is also why PaperPull does not run unattended.
+
+### What does it run on?
+
+It runs in four places. There is no phone app.
+
+- Windows 10 or 11. Windows on ARM runs it too, under the emulation
+  Windows 11 provides.
+- macOS, with one disk image for Apple Silicon and one for Intel. See
+  [Windows and macOS](#windows-and-macos).
+- Linux, from source. See [Quick start](#quick-start).
+- A NAS or home server, as [PaperPull Server](#paperpull-server) in Docker,
+  on a machine with an Intel or AMD processor.
+
+### Is it really free? How is the Store edition different?
+
+The free edition is the complete program, every provider and both
+spreadsheets, with no trial, no account and no ads. The
+[Microsoft Store edition](https://apps.microsoft.com/detail/9P5LZRR773FP) is
+the same package from the same build, for $9.99 one time. The price buys a
+Store-signed install with no warning and updates through the Store, and it
+supports the project. It unlocks nothing. See [Support](#support).
+
+### Which browser does it need?
+
+One from the Chromium family (Edge, Chrome, Brave, Vivaldi or Opera).
+Windows comes with Edge. On a Mac, install one of them, since Safari and
+Firefox cannot be driven the way PaperPull needs. Each provider gets a
+fresh profile of its own, separate from your everyday browsing. If none is
+found, the panel says so. Run from a terminal, the sign-in step offers to
+download a private copy of Chromium instead, and asks first.
+
+### Will it download the same document twice?
+
+No. PaperPull remembers every document it saved by what it is, not by
+where the file went. Move PDFs into your filing system, or let Paperless-ngx
+delete what it imports, and the next run still fetches only what is new. To
+fetch some again on purpose in the desktop app, use **Restore deleted
+files** under **More**.
+
+### Does it run on its own, on a schedule?
+
+No. You start each run, and since many banks sign you out within minutes, a
+person stays in the loop by design. The panel's Accounts page says which
+accounts are due, and **Get new for all** runs each of them, one by one. An
+assisted monthly run is on the [roadmap](#status--roadmap).
+
+### My provider is not listed. What can I do?
+
+[Request it](https://github.com/rheeloaded/paperpull/issues/new/choose). If
+you hold an account there, you are the ideal person to help, and testing a
+first version takes no programming (see
+[Testing a provider](docs/testing-a-provider.md)). If you write code,
+[Adding a provider](docs/adding-a-provider.md) shows how. See
+[Contributing a provider](#contributing-a-provider).
+
+### What happens when a provider changes its website?
+
+That provider may stop working until it is repaired. Each provider is a
+small app of its own, and everything it knows about a site lives in one
+file, so a redesign breaks only that provider and the repair is usually
+small. Make a support report from its **More** menu and
+[report it](https://github.com/rheeloaded/paperpull/issues/new?template=app-broke.yml).
+Documents you already saved stay saved.
+
+### Is a support report safe to attach to an issue?
+
+Yes, it is built for that. **Make a support report**, under a provider's
+**More** menu, saves a file whose name starts with `survey-`. It holds
+counts and states and no text from your account, and it is the file to
+attach. Never attach a password, a browser profile folder, a token or an
+unredacted statement to anything you post.
+
+### How do I know the download is genuine?
+
+The Windows installer and the Mac disk images are built by GitHub Actions
+from a tagged commit on a clean runner, never on a developer's machine, and
+the releases page shows each file's SHA-256 checksum. The Windows installer
+is code-signed, the Mac disk images are signed and notarized, and the Store
+edition is signed by the Store. Download only from the
+[releases page](https://github.com/rheeloaded/paperpull/releases), the
+Microsoft Store or [paperpull.net](https://paperpull.net). See
+[Code signing policy](#code-signing-policy).
+
+### How do I update?
+
+PaperPull never checks for a new version of itself. GitHub's **Watch**
+button, set to releases, tells you when one comes out. On Windows, run the
+new installer over the old one, and the Store edition updates through the
+Store. On a Mac, drag the new version into Applications. On PaperPull
+Server, run `docker compose pull` and then `docker compose up -d`. Your
+documents and history are left as they are, and so are the desktop app's
+sign-ins. On the server, the restart can sign you out of a provider that
+keeps its session only while the browser runs.
 
 ## Contributing a provider
 
@@ -635,8 +829,8 @@ Every contribution keeps the **read-only, local, no-credentials** design, see
 
 ## Status & roadmap
 
-- ✅ All **seventy-five** apps pass their tests, the sixty-nine that are
-  supported and the six still waiting for a tester, 24,655 of them
+- ✅ All **seventy-seven** apps pass their tests, the seventy-one that are
+  supported and the six still waiting for a tester, 27,052 of them
   across the repo. Most are in regular use by the author. The rest were built or
   confirmed by people who hold those accounts, named in the table above
   and in [Thanks](#thanks).
@@ -725,15 +919,17 @@ found a bug and diagnosed it to the line.
   app, run whole against a Live brokerage account, the First Horizon,
   Chase Business, TreasuryDirect, Venmo, IRS and Spectrum apps, each
   run on their own accounts, the Bilt Card app, run against a new card's
-  first eight statements, and NetBenefits for a sign-in with several
-  plans.
+  first eight statements, the Simmons Bank app, run against a paid-off
+  mortgage's statements, notices and tax forms, and NetBenefits for a
+  sign-in with several plans.
 - [@marecabo](https://github.com/marecabo), Amazon's legal invoice PDFs on
   the German store.
 - [@watling777](https://github.com/watling777), the tester behind AT&T,
   SMUD, Golden 1, E*TRADE, State Farm and Newrez, seven providers' worth of
   surveys and pilots in a weekend, and the PG&E pagination bug.
 - [@dertbv](https://github.com/dertbv), three exporter and Navy Federal
-  bugs, each diagnosed so exactly there was nothing to add.
+  bugs, each diagnosed so exactly there was nothing to add, and the fix
+  for Navy Federal Visa statements' closing date in 0.53.0 (#32).
 - [@liamrotheram](https://github.com/liamrotheram) and
   [@OberstK](https://github.com/OberstK), Amazon outside the United States.
 - [@jpfieber](https://github.com/jpfieber), who asked for eBay and became

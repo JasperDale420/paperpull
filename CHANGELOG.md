@@ -9,6 +9,14 @@ All notable changes to PaperPull are recorded here. Versioning follows
 
 ## [Unreleased]
 
+### Added
+- **Invest529 (Virginia529 / Commonwealth Savers) downloads your 529
+  college-savings documents.** Official quarterly statements for every
+  beneficiary and 1099-Q tax forms, read through the account's own API
+  from inside the signed-in page, nothing clicked. It is read only and
+  never contributes, withdraws, changes the portfolio or a beneficiary,
+  or changes a setting.
+
 ### Fixed
 - **Bilt asks you to sign in again when it has signed you out.** A
   signed-out visit to the Bilt wallet stays at the wallet's address and
@@ -17,6 +25,426 @@ All notable changes to PaperPull are recorded here. Versioning follows
   sign-in words and its "Sign up / Log in" button are now read as signed
   out, so the run saves, stops and asks you to sign in again and Resume. A
   wallet that shows neither still stops the list as before.
+## [0.54.1] - 2026-10-16
+
+Best Buy signs in on PaperPull Server, once the server's graphics are
+passed to its container.
+
+### Fixed
+- **Best Buy signs in on PaperPull Server.** The server's sign-in window
+  draws on a virtual screen with no graphics of its own, so Chrome drew
+  every page in software and turned WebGL off, and Best Buy took it for an
+  automated browser, refusing a correct password and every code or dropping
+  the connection with `ERR_HTTP2_PROTOCOL_ERROR`. The desktop app was never
+  affected. The image now carries Mesa's graphics drivers, and with the
+  machine's Intel or AMD graphics passed to the container the sign-in
+  window draws on them, which Best Buy accepts. `compose.yaml` has the two
+  lines to turn on, SERVER.md a Graphics section, and a sign-in, the
+  self-test and every failure and Diagnose file say when the window has no
+  graphics. Measured on a UGREEN NAS with Intel graphics.
+
+## [0.54.0] - 2026-10-16
+
+Simmons Bank loan documents and Coinbase One Card statements arrive, a
+file naming pattern can put files in folders, and each person can have
+the documents sent to a folder of their own. Wells Fargo reads a checking
+account and every account in its picker, and no longer signs you out,
+American Express reads its pages in other languages, E*TRADE gives
+statements saved before 0.53.0 their account, and the security review's
+fixes harden PaperPull Server, the browsers PaperPull starts and every
+spreadsheet it writes.
+
+### Added
+- **Simmons Bank loan documents.** A new app saves the statements, notices
+  and tax forms of a Simmons Bank loan from the bank's online banking
+  (Banno, by Jack Henry) at `login.simmonsbank.com/documents`. The list is
+  the page's own answer, read whole. It has to be one answer of one account,
+  asked from the bank's own first day of documents, and the rows drawn have
+  to name exactly its titles and types, or the list stops. Only a document
+  row's own button is pressed, never Accept, Enroll, OK, Notify, the filter
+  menu, the navigation links or Sign out, and the PDF is kept only when the
+  press made the page ask that one document's PDF and brought one browser
+  download named with the document's own file name. With no download, that
+  exact address is asked once more with no redirect followed. A PDF whose
+  text does not name its document goes to Manual Review. Files are named
+  `<date> Simmons Bank Loan Statement.pdf`, `<date> Simmons Bank Notice -
+  <title>.pdf` and `<date> Simmons Bank Tax Reporting <year>.pdf`. The user
+  id, document ids, account number and last four, your name and email stay
+  out of every log, record and diagnostic file. A paid-off loan's documents
+  stay online only until a date the bank names, and Discover prints it.
+  Built from a live survey of one paid-off mortgage and run live on it the
+  same day, all 27 documents saved. A PDF names its document by its date,
+  its title's month, or a date printed within a few days of the list's date
+  in that month, since the bank's PDFs date themselves a day or three after
+  the list does.
+- **Coinbase One Card statements.** The Coinbase app now also saves your
+  Coinbase One Card statements, as `<closing date> Coinbase One Card
+  Statement.pdf` in the Statements folder. It opens the Statements page's
+  Credit Card tab, reads the list of statements the page itself asks
+  Coinbase for, and needs the rows the page shows to match that list
+  exactly. For each statement it presses that row's own PDF button once,
+  takes the address the page was handed for that statement only when it is
+  on Coinbase's card statement host and carries that statement's closing
+  date, and keeps the file only when it is a PDF that says Coinbase One
+  Card and prints that closing date. A popup, a download, the tab going
+  anywhere else, or an answer naming another statement or another date
+  stops the run. The statement's id, the card account's id, the signed
+  address and the amounts are never logged or kept. A card list that
+  cannot be read whole, or that names more than one card account, leaves
+  only the card statements, for the next run. Your monthly account
+  statements and tax documents are still taken exactly as before, and the
+  run then ends as one that did not finish. Run live on one account on
+  2026-10-15, where it saved all 13 card statements beside the account
+  statements and tax documents.
+- **Folders in the file naming pattern (#101).** A `/` in a File names
+  pattern now puts files in folders, inside the folder each kind of
+  document already goes to, so `{provider}/{year}/{date:yyyy-mm-dd}
+  {summary}` files a statement as `Statements/Chase/2026/2026-03-09
+  Monthly Statement.pdf`. Only a `/` written in the pattern makes a folder,
+  never one inside an account or a summary, and each folder is made safe
+  the way a file name is. A folder whose part is empty is left out, so
+  `{provider}/[{account}/]{date} {summary}` files a document with no
+  account one folder up. A pattern goes at most three folders deep and
+  every folder has to name a part, and the settings page says why when a
+  pattern starts or ends with `/`, has a folder of plain text or goes
+  deeper. The preview shows the folders. Manual Review stays one folder,
+  and a folder that would leave no room for a name under the path limit,
+  or would lead outside its folder through a link, leaves the file where
+  it always went. Rename existing files moves files into the folders and
+  back out again when the pattern changes, with the index and the run
+  history following each file, so nothing downloads again. It removes a
+  folder it leaves empty, never a folder that still holds anything, and
+  puts every file back if it cannot write the index. Review names files
+  each receipt the same way. Before, a `/` was dropped from the name
+  without a word, so `{provider}/{date}` ran the two together. A pattern
+  with no `/` names files exactly as before.
+- **A documents folder for each person (#102).** Settings has a Documents
+  folder for each provider and person, written into that person's config
+  as `documents_dir`, a copy of the config kept first, so a folder
+  Paperless-ngx watches, a synced folder or a NAS share can get each
+  person's documents. A download is still saved and checked in the
+  provider's own folder, and one that fails its check is put aside in
+  Manual Review there. When a run from the panel ends, what it saved and
+  checked moves into the documents folder, into Statements, Tax Documents,
+  Receipts and the other folders of each kind, with any folders a naming
+  pattern adds, copied across when the folder is on another drive. The
+  records, Manual Review, Logs, Diagnostics and Backups never move, so the
+  documents folder only ever gets documents that passed their checks.
+  Saving moves nothing already there, and documents saved before are still
+  found where they are by Verify, Rename, Review names and the check that
+  never downloads a document twice. The page says how many are still in
+  the provider's folder and offers Preview move and Move, which moves each
+  one under the name it has, with its records following it, and puts every
+  file back if a record cannot be written. After the folder changes or is
+  cleared, the documents moved before are still found, and the same Move
+  takes them to where it points now. A browser profile, a folder around
+  one, a folder holding a provider's own folder and a folder inside or
+  around a person's own folder are refused, and on PaperPull Server so is
+  a folder outside the data folder, a link out of it included, both in the
+  panel and when a run starts. A second person added later starts with
+  documents in their own folder. With no documents folder set, every file
+  goes where it always did.
+
+### Fixed
+- **A U.S. Bank failure file says which part of the statement list was
+  missing (#106).** A Pilot gave up on its first statement before pressing
+  anything, and the file it wrote counted only general selectors, which all
+  matched. It now also counts the parts the download finds a statement's row
+  by, the statement list, its section and heading, the rows and their
+  Download buttons, the account picker and the year filter. Thanks to
+  appchamp for the report.
+- **Wells Fargo no longer signs you out looking for your statements (#27).**
+  When the page it was on showed no statement, the app typed the
+  statements address into the signed-in window, and Wells Fargo answered
+  by ending the session. It now reaches Statements & Documents only by the
+  page's own link, and a window that is not on your signed-in accounts
+  stops the run and asks you to open the page yourself. On the page it
+  opens the Statements and Disclosures section, where a checking account's
+  statements are, and goes through every account in the account picker,
+  so each account's statements are listed and the file names say which
+  account when there is more than one. With one account the names and
+  records stay as they were. With more than one, a statement an earlier
+  version saved with no account downloads once more, under its account's
+  name, and the earlier copy stays where it is. The sign-in window now
+  opens on
+  www.wellsfargo.com, whose own sign-on form worked on PaperPull Server
+  where the statements address came up blank. Thanks to crazyhorse90210
+  for the surveys and the recording.
+- **SDG&E lists your bills with no My Energy Center tab open, and dates
+  each bill by its Statement Date alone.** With no tab of yours on My
+  Energy Center, Discover, Pilot and Run All stopped at once, saying the
+  browser tab had left My Energy Center, since the new tab the app opens
+  for itself was checked before Billing History was opened in it. Billing
+  History now opens in that tab first, and a tab of another site is still
+  never read or loaded. A bill's date was the first date in its row, so a
+  blank Statement Date would have dated the bill by the Due Date beside it.
+  The date is now read only from the column headed Statement Date, and a
+  blank one stops the list rather than taking another column's date. No
+  such row has been seen on the real page. Diagnose now writes the bill
+  table's header, so a list that stops for want of that column can be
+  repaired.
+- **American Express finds the statements on pages that spell their test ids
+  data-test-id (#107).** A German account's PDF statements page writes each
+  Download button's test id as data-test-id, and the app read data-testid
+  alone, so Discover reported no statements on a page listing all of them.
+  Every test id is now read under both names, the dialog's Download among
+  them. Where a page's links and headings are in another language, the
+  links are found by where they point and the older statements' section by
+  the part it opens, so a run that starts on the dashboard reaches the PDF
+  statements and the older ones are listed and saved. A link found by where
+  it points is taken only when it shows and leads to the activity page or
+  the PDF statements, and where such links name two cards, nothing is
+  pressed and the run says to open the card's statements. Each link on the
+  way is pressed once, and one whose page does not come stops the run
+  rather than being pressed again. An English page is reached the way it
+  always was, its Older Statements heading included. Thanks to Weyoun for
+  finding it all and the fix.
+- **E*TRADE gives a statement saved before 0.53.0 its account when the
+  file itself says which (#96).** On a sign-in with more than one account,
+  0.53.0 left every statement an earlier version saved where it was, since
+  the list alone cannot say which account it belonged to, and so each
+  account's statements downloaded once more, named with the account,
+  beside the old copies. Discover now reads each of those saved PDFs and
+  gives its record an account only when the file prints that account's
+  last digits as an account number, as in XXXX-1234, 6789-1234, ...1234 or
+  "Account ending in 1234", no other listed account's digits appear
+  anywhere in it, and it prints no other account number at all, so a
+  closed account's statement that names an open one in a transfer is never
+  taken for the open one's. That statement is not downloaded again, and
+  its file keeps its name and folder until you run Rename, which now names
+  it with its account like the statements downloaded since, under the
+  default pattern or one with `{account}`. A statement whose file is gone,
+  does not open, or shows no account, more than one account, or digits two
+  of your accounts share stays as it was, and so does one whose account
+  already has that statement saved or kept for review. Its account's copy
+  then downloads once more as in 0.53.0, if it was not saved already. A
+  year, an amount, a phone number or a tax id number is never taken for an
+  account. The log says how many moved and why the rest stayed, never an
+  account or a word of a file. No E*TRADE PDF has been seen yet, so how one
+  prints its account number is still a guess. Thanks to @appchamp for the
+  report.
+- **A spreadsheet export no longer stops at a character an xlsx cannot
+  hold.** An item name, a merchant name or a document title can carry a
+  NUL or another control character from a provider's page, and the
+  library that writes the workbook refuses the 29 control characters an
+  xlsx has no place for, so one such character stopped the whole .xlsx
+  export of purchases or transactions, in the control panel and in a
+  terminal. U+FFFE, U+FFFF and half of a surrogate pair it wrote anyway,
+  and Excel then would not open the workbook. Both workbooks now leave
+  those characters out of the cell and keep the text around them, the way
+  Excel itself drops a NUL from a CSV it opens. None of them prints, so no
+  mark is put in their place, except that the six which stand between
+  words, such as the vertical tab Word uses for a line break, become a
+  space. One in front of text like a formula still hides nothing, and the
+  cell keeps its quote prefix. The CSVs keep every character as before.
+  Measured on real archives, 180,418 values and 2,368 statement
+  descriptions, none held such a character.
+
+### Security
+- **PaperPull Server's sign-in cookie stays off plain HTTP behind an HTTPS
+  proxy.** The cookie that keeps you signed in was never marked to travel
+  over HTTPS alone, so with the server behind a reverse proxy that adds
+  HTTPS, a plain HTTP visit to the proxy's name, one typed without https
+  before the proxy sent the browser on, carried it in the clear. When the
+  browser reached the server over HTTPS, which a proxy says in
+  `X-Forwarded-Proto` or `Forwarded`, the server now gives it a cookie of
+  its own name marked that way. That name, `__Host-paperpull_session`,
+  has the browser keep it only over HTTPS and only for the very name that
+  set it, so no other name under the same domain can set or replace it.
+  Reached on the home network by plain
+  HTTP, nothing changes, since a browser keeps no such cookie sent that
+  way. The two names keep a plain HTTP sign-in at the proxy's name
+  working after an HTTPS one, since a browser lets no plain HTTP page
+  replace a Secure cookie of the same name.
+- **The server image installs only the package files it was built and
+  tested with.** `server/requirements.txt` named the packages the server
+  runs, each at one version, but not the packages those bring in, which
+  came at whatever version was newest on the day an image was built, and
+  no file was checked. It now names every package, at one version, with
+  the hashes of its built files, resolved by `server/lock.py` in the
+  image's own Python, and the image is built with pip checking every file
+  against its hash and taking only built packages. The direct pins a person
+  raises are in `server/requirements.in`, and a test fails when one is
+  raised without the lock written again. PaperPull's own core is built
+  with the setuptools from the lock rather than one fetched unchecked.
+- **The server image starts from a pinned base, lists its parts and is
+  checked for known vulnerabilities.** The image was built from whatever
+  `python:3.12-slim-bookworm` pointed at on the day, and nothing listed or
+  checked what ended up inside it. The Dockerfile now names that base by
+  its digest. Dependabot proposes the tag's newer digest each week, and
+  `python server/lock.py --base` writes it by hand. Every build lists
+  every package in the image as an SPDX software bill of materials and
+  checks the list with Grype, and a critical vulnerability that has a fix
+  stops the build before a release can publish it. The check also runs on
+  its own each Monday and says when the base has a newer digest. A
+  released image now
+  carries that list and a record of the run that built it, both signed,
+  and `gh attestation verify` checks them. `compose.yaml` names the image
+  by version rather than `latest`, so a server moves to a new release only
+  when you write its version there. A server set up with `latest` keeps
+  working as before, since every release still publishes it.
+- **The server image carries a pip with no known advisories.** The base
+  image ships pip 25.0.1, which has six medium or low advisories fixed in
+  later releases. The lock now names pip 26.2.1 with its hash, and building
+  the image replaces the base's pip with it.
+- **A shared data folder can no longer move a sign-in, the browser a run
+  drives or where it saves.** On PaperPull Server each provider's
+  `config.json` sits in the data folder, often a share other people can
+  write to, and a run took three of its settings as written. Someone with
+  the share could point `profile_dir` into the share, where others could
+  read a signed-in profile's cookies, aim `cdp_url` at a browser on
+  another machine, or send `output_dir` outside the data folder, through a
+  link too. On the server a run now always signs in with the account's
+  profile in the `profiles` volume, whatever the file says, and stops
+  before it connects to or saves anything when `cdp_url` names anything
+  but `127.0.0.1` or `localhost` or `output_dir` leads outside the data
+  folder, judged where its links lead as the run starts, saying which
+  setting and why. A server config that names no `output_dir` stops too,
+  where before it saved into the container's home folder, which is lost
+  when the container is made again. The panel keeps no run log, reads no
+  records and moves no history outside the data folder either, and its
+  run log replaces a link left at its name rather than follow it. The
+  desktop app reads all three as before.
+- **A shared data folder can no longer send UKG's signed-in browser to
+  another site.** On PaperPull Server UKG's `base_url`, the employer's UKG
+  site that its sign-in opens and every run reaches, was read from the
+  shared `config.json` as written, and UKG's check of each page it
+  requests allows whatever site that names. Someone with the share could
+  have pointed it at a page of their own, which the Browser Screen would
+  then show in place of UKG's. On the server a run and a sign-in now stop
+  before opening any page unless `base_url` is an https address on
+  `ultipro.com` or `saashr.com` with nothing after the name, and the
+  refusal does not repeat the address, which can name an employer. A
+  provider names such a setting and its domains in its AppSpec, and a test
+  fails when any app's setting holds an address that nothing checks on the
+  server. Amazon's `marketplace` was already held to Amazon's own stores.
+  The desktop app reads `base_url` as before.
+- **A link left in the shared data folder can no longer carry a write
+  outside it.** Some shares let the people who use them leave a link, a
+  file or folder name that leads somewhere else, and PaperPull Server's
+  container user also owns the server's password file and every signed-in
+  browser profile. A folder such as Logs, Diagnostics or Backups left as a
+  link, or a link left at the name of a file a run or the panel writes,
+  had that write land wherever the link led, and a file read through one
+  could have been copied into the share. On the server a run now stops
+  before it writes anything when a folder it writes into holds a link that
+  leads outside the data folder, looking through a folder that is a link
+  elsewhere in the data folder too and passing over a virtual environment
+  or a browser profile, which no run writes into. It checks each folder
+  again as it makes it, and never reads or writes its records, index,
+  staged downloads, review list or backups through a link left at their
+  names. The browser's downloads are never pointed at a folder that leads
+  out. The panel never writes a config, a code file, the Stop button's file
+  or a history through a link, never reads a file through one to copy what
+  it read into the share, holds Removed inside the data folder and no
+  longer copies a core into an install's venv, which the server never runs.
+  The browser's own saves and each app's log are checked only where a run
+  starts. The desktop app reads and writes as before.
+- **PaperPull Server's password hash is stronger, and checking it no
+  longer holds up the panel.** The password was hashed with scrypt at
+  n=2^14, r=8, p=1, below every profile OWASP recommends, and the hash ran
+  inside the panel's one event loop, so nothing else was answered while a
+  sign-in was checked. It is now hashed at OWASP's n=2^14, r=8, p=5, the
+  same 16 MiB at five times the work, on threads of its own, two at a
+  time at most, and a server busy with many waiting asks the next sign-in
+  to try again. A password kept at the old cost is hashed again at the new
+  one the next time you sign in, and nobody is signed out. Each try is
+  still counted before its password is checked, so many tries sent at
+  once still meet the wait after five wrong ones.
+- **PaperPull Server reads at most 8 KiB of a sign-in.** The sign-in and
+  setup pages read a form's whole body before keeping its first 8 KiB, so
+  a request could make the panel hold as much as it was sent. A form that
+  says it is longer is refused at once, and one sent in pieces is refused
+  as soon as it passes 8 KiB, without waiting for the rest.
+- **Every browser PaperPull starts itself now runs inside its sandbox.**
+  Playwright starts Chromium with `--no-sandbox` unless it is told
+  otherwise, and two browsers were started that way, the one an app opens
+  when its settings name no `cdp_url` and the headless one Target falls
+  back to when a receipt will not print. A page in them had only the
+  renderer between it and the computer. Both now start through the core,
+  which always asks for the sandbox, refuses a setting that would turn it
+  off, and takes no switch it has not been told keeps the sandbox whole. A
+  browser whose sandbox cannot start, as for the root
+  user, in a container that does not allow it, or for the downloaded
+  Chromium on Ubuntu 23.10 and later, is not started at all, and the run
+  says why. An earlier note here said PaperPull never starts a browser
+  without its sandbox, which held only for the sign-in window. That window
+  is started directly, not through Playwright, with no such switch, and is
+  unchanged, and a test now holds it to that. A census test fails any other Playwright
+  launch in the apps, the core, the panel, the server or the tools.
+- **The headless receipt renderer keeps to the provider's hosts.** When
+  Target's ordinary print fails, the receipt's address is printed again in
+  a headless browser. Only that first address was checked, so a redirect
+  from it was followed to any host, with every cookie of the browser, and
+  what arrived was printed as the receipt. Now each request that browser
+  holds before sending, each redirect on the way included, goes out only
+  when the app's own host check accepts it, apart from the scripts, styles,
+  fonts and pictures of Target's two static hosts. What a page can send
+  without such a request, a socket, a worker's socket or a prefetch, finds
+  no address for any host but Target's, since the browser is given no
+  other. The page is checked again before and after it prints, nothing is
+  saved when it left Target, and the browser is given only the cookies of
+  Target's own hosts. Behind a proxy set for the whole computer the
+  fallback does not run, and the receipt's note says so.
+- **Text from a receipt or a statement no longer becomes a formula in the
+  spreadsheets.** The purchases and transactions spreadsheets write out
+  words other people chose, an item's name from a marketplace seller and a
+  merchant's name from a card statement. A spreadsheet takes a cell that
+  starts with = as a formula, and Excel takes one starting with +, - or @
+  the same way, so an item named like a formula became a working one in
+  the workbook and in the CSV, where a formula can reach an address and
+  take the cells it names along. Every text cell in both workbooks, on
+  every sheet, is now written as text, and one that starts like a formula
+  also carries Excel's quote prefix, so editing it keeps it text too. In
+  both CSVs such a value gets a single quote in front, and so does a piece
+  of a value after a semicolon or a line break, where Excel set to split a
+  CSV at semicolons starts a new cell. A full-width sign counts as the sign
+  it stands for. Amounts, quantities and counts are still numbers, a
+  refund's negative amount among them, and a plain negative number written
+  as text, such as -12.34, is left as it is, since a spreadsheet reads it
+  as that number and nothing more. A receipt or statement file whose name
+  started with = also left a workbook Excel found a problem in and would
+  not open as it was, and it now opens. The rule is in one place,
+  `paperpull_core.sheets`, which both tools take from the core beside
+  them, PaperPull Server's copies included.
+- **Citi refuses any control that asks it for a statement.** Its guard
+  refused only Request Older or Archived Statements, so other wordings such
+  as Request a Statement passed. Asking Citi for a statement is an action
+  on the account, so a control that requests one is refused in any wording,
+  while Requested, a statement already there to download, is still allowed.
+  Citi presses no such control today, so a run does nothing new (#103).
+- **The apps' own CSV files keep text that looks like a formula as text
+  too.** Every app writes its order history, receipt index and document
+  index beside the PDFs for a person to open in Excel, and they hold the
+  same words other people chose, an item's name from a seller, a store's
+  name, a document's title and the file names made from them. A value that
+  started with =, +, - or @ was a working formula when the file was opened.
+  Such a value is now written with a single quote in front, and so is a
+  piece of one after a semicolon or a line break, by the rule the
+  spreadsheets follow. That rule also sees through a NUL character in
+  front, which Excel drops as it opens a CSV, and through a double quote
+  at the start of a piece, which Excel's import split at semicolons took
+  for an empty quoted part with a working formula after it, in the
+  spreadsheets' CSVs too. Every reader takes that quote off again, the app
+  itself, Rename, Verify and both spreadsheet tools, so a file name, an
+  order number and a path still match what is on disk. A name that really
+  starts with a quote keeps it, written with one more in front. A refund's
+  amount such as -$12.34 is left as it is, here and in the spreadsheets,
+  since Excel reads it as a number and nothing more, while -$A$1 and
+  -kr12.34 are quoted. After a semicolon it is quoted too, since a
+  spreadsheet splitting at semicolons with a decimal comma would run it on
+  into the next value. A file an earlier version wrote reads as it did,
+  apart from a value that started with a quote and then something like a
+  formula, which now reads without that quote, and a row is quoted the
+  next time it is written. Measured on real archives, 180,418 values in 55
+  files, no value reads differently and none is written differently.
+- **Text Excel reads as its own escape stays as it came in the
+  workbooks.** Excel reads `_x003D_` in an xlsx cell as =, so an item
+  named `_x003D_1+1` opened as =1+1 without the quote prefix the other
+  formula-like cells carry, and editing the cell made it a working formula.
+  The underscore in front of such a run is now written as Excel's escape
+  for an underscore, so the cell shows exactly the text the provider gave
+  and the formula rule tests that text. No real value held such a run.
 
 ## [0.53.0] - 2026-10-15
 

@@ -81,6 +81,9 @@ STOPS = {
     ("coinbase", "_press_load_more", "click", "load more of the list"): (1,
         "a control of the whole list, read as showing and turned on before it is pressed, "
         "and a list shown in full leaves only the statement not shown"),
+    ("coinbase", "open_card_list", "click", "open the credit card statements"): (1,
+        "the Statements page's Credit Card tab reaches the list every card statement is "
+        "taken from, so a turned off tab there would leave every card statement"),
     ("ibkr", "open_activity_dialog", "click", "open the Activity Statement dialog"): (1,
         "the Activity Statement row's Run opens the dialog every month's statement is "
         "made in, so a turned off Run would leave every statement"),
@@ -105,6 +108,18 @@ STOPS = {
         "the 1099 or Return, each a plain server-drawn link that is never turned off. One "
         "that is would be a page this app does not know, and every later document is "
         "reached through the same tabs"),
+    ("wellsfargo", "goto_documents", "click", "open the statements page"): (1,
+        "the page's own Statements & Documents link reaches the page every document is "
+        "taken from, so a turned off link there would leave every document"),
+    ("wellsfargo", "open_statements", "click", "open the statements section"): (1,
+        "the heading of the section every statement is listed in, pressed only when it "
+        "says it is closed, so a turned off heading would leave every statement"),
+    ("wellsfargo", "_open_picker", "click", "open the account picker"): (1,
+        "the account picker every account's statements are chosen through, so a turned "
+        "off picker would leave every statement of the other accounts"),
+    ("wellsfargo", "choose_account", "click", "choose the account"): (1,
+        "an account's entry in the picker, a step to that account's list and every "
+        "statement in it"),
     ("vanguard", "dismiss_timeout", "click", "continue the session"): (1,
         "keeps the session open for every document"),
     ("vanguard", "show_more", "click", "show more of the list"): (1,
@@ -118,10 +133,12 @@ STOPS = {
 LEAVES = {
     ("alpaca", "_press"), ("amex", "download_document"), ("bilt", "_press"),
     ("amfam", "_catch_pdf"), ("applecard", "_catch_pdf"), ("att", "_catch_pdf"),
-    ("chasebusiness", "_press_row"), ("coinbase", "_catch_statement"), ("firsthorizon", "_press"),
+    ("chasebusiness", "_press_row"), ("coinbase", "_catch_statement"),
+    ("coinbase", "_press_card_pdf"), ("firsthorizon", "_press"),
     ("etrade", "_catch_pdf"), ("golden1", "_catch_pdf"), ("nelnet", "_catch_pdf"),
     ("newrez", "_catch_pdf"), ("pge", "_press_once"), ("sba", "_catch_pdf"),
-    ("smud", "_catch_pdf"), ("statefarm", "_catch_pdf"), ("vanguard", "download_document"),
+    ("simmons", "_catch_document"), ("smud", "_catch_pdf"), ("statefarm", "_catch_pdf"),
+    ("vanguard", "download_document"),
     ("venmo", "show_all"), ("verizonmobile", "_catch_pdf"), ("wellsfargo", "_catch_pdf")}
 
 
@@ -506,6 +523,18 @@ def _coinbase(site, page, out, staging, trace):
     return site._catch_statement(page, staging, "June 2026", out, trace)
 
 
+def _coinbase_card(site, page, out, staging, trace):
+    """A Coinbase One Card statement's row PDF button, pressed as its own
+    press path presses it, by its row's month."""
+    return site._press_card_pdf(page, "June 2026", trace)
+
+
+def _coinbase_card_button(off: bool) -> str:
+    return ('<button id="get" type="button" class="ctl"%s '
+            'onclick="window.presses++; fetch(\'/statement.pdf\');">PDF</button>'
+            % (" disabled" if off else ""))
+
+
 def _pge(site, page, out, staging, trace):
     said: dict = {}
     got = site._press_once(page, page.query_selector("#get"), lambda: False, said=said)
@@ -649,6 +678,23 @@ def _bilt_button(off: bool) -> str:
             'June 30, 2026</button>' % (" disabled" if off else ""))
 
 
+SIMMONS_ROW = "Loan Periodic Statement June 2026 Statement, RE ARM 00000000 (x0000)"
+
+
+def _simmons(site, page, out, staging, trace):
+    """Simmons Bank's capture on the bound row, the only document row on the
+    page, its button inside its list item as Banno draws it."""
+    target = site.Target(SIMMONS_ROW, "11111111-aaaa-4bbb-8ccc-000000000001", "statement.pdf",
+                         "0a1b2c3d-1111-4222-8333-944455556666")
+    return site._catch_document(page, site.Run(), staging, target, out, trace)
+
+
+def _simmons_row(off: bool) -> str:
+    return ('<jha-list-item role="listitem"><button id="get" type="button" class="ctl"%s '
+            'onclick="window.presses++; fetch(\'/statement.pdf\');">%s</button></jha-list-item>'
+            % (" disabled" if off else "", SIMMONS_ROW))
+
+
 VENMO_PROFILE = "1234567890123456"
 
 
@@ -697,10 +743,14 @@ def _how(app: str, function: str, monkeypatch):
         return "chasebusiness_site", _chasebusiness, _chasebusiness_menu, "Jun 30, 2026"
     if (app, function) == ("coinbase", "_catch_statement"):
         return "coinbase_site", _coinbase, _coinbase_button, "June 2026"
+    if (app, function) == ("coinbase", "_press_card_pdf"):
+        return "coinbase_site", _coinbase_card, _coinbase_card_button, "June 2026"
     if (app, function) == ("firsthorizon", "_press"):
         return "firsthorizon_site", _firsthorizon, _firsthorizon_card, "06/30/2026"
     if (app, function) == ("pge", "_press_once"):
         return "pge_site", _pge, _pge_link, "June 30, 2026"
+    if (app, function) == ("simmons", "_catch_document"):
+        return "simmons_site", _simmons, _simmons_row, "June 30, 2026"
     if (app, function) == ("shelbycounty", "_press_for_blob"):
         return "shelbycounty_site", _shelbycounty, _shelbycounty_link, "06/30/2026"
     if (app, function) == ("spectrum", "_press_for_statement"):

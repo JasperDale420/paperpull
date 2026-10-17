@@ -84,6 +84,27 @@ def test_what_the_security_page_says_about_waiting_matches_the_panel():
     assert "A session lasts 14 days" in text and panel_setting("SESSION_SECONDS") == 14 * 86400
 
 
+def test_what_the_security_page_says_about_the_password_matches_the_panel():
+    text = " ".join((REPO / "SECURITY-SERVER.md").read_text(encoding="utf-8").split())
+    assert "(n=2^14, r=8, p=5)" in text and panel_setting("SCRYPT") == {"n": 2 ** 14, "r": 8, "p": 5}
+    assert "two at a time at most" in text and panel_setting("HASHES_AT_ONCE") == 2
+    assert "longer than 8 KiB" in text and panel_setting("FORM_LIMIT") == 8 * 1024
+    assert "`__Host-paperpull_session`" in text
+    assert panel_setting("SECURE_SESSION_COOKIE") == "__Host-paperpull_session"
+
+
+def test_what_the_security_page_says_about_the_ukg_address_matches_the_app():
+    """The page names the domains a UKG address may be on, and UKG's AppSpec
+    is what a run is held to."""
+    text = " ".join((REPO / "SECURITY-SERVER.md").read_text(encoding="utf-8").split())
+    tree = ast.parse((REPO / "apps" / "ukg" / "storage.py").read_text(encoding="utf-8"))
+    declared = [ast.literal_eval(kw.value) for node in ast.walk(tree)
+                if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "AppSpec"
+                for kw in node.keywords if kw.arg == "url_settings"]
+    assert declared == [{"base_url": ("ultipro.com", "saashr.com")}]
+    assert "UKG's own domains, `ultipro.com` or `saashr.com`" in text
+
+
 def test_the_names_the_setup_says_the_panel_answers_to_are_the_panels():
     """A name the page promises and the panel refuses locks a person out of
     their own server, and one the panel takes that the page leaves out is a

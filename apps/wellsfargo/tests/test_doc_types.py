@@ -91,7 +91,18 @@ def test_only_the_providers_own_hosts():
         assert site.is_safe_url(u), u
     for u in ['https://wellsfargo.com.evil.test/s.pdf', 'http://connect.secure.wellsfargo.com/s.pdf', 'https://user@wellsfargo.com/s.pdf']:
         assert not site.is_safe_url(u), u
-    assert all(site.is_safe_url(u) for u in site.BILLING_CANDIDATES)
+    assert site.is_safe_url(site.BILLING_URL)
+
+
+def test_the_sign_in_opens_on_the_public_home_page():
+    """The statements address came up blank in PaperPull Server's Chrome
+    rather than sending the person on to sign on, and the home page's own
+    sign-on form worked (#27). The sign-in opens there, on the provider's
+    own host. The statements address is where a record says its document
+    was listed, and is never typed into a signed-in window."""
+    assert site.URLS["login"] == "https://www.wellsfargo.com/"
+    assert site.is_safe_url(site.URLS["login"])
+    assert site.URLS["documents"] == site.BILLING_URL
 
 
 def test_the_status_is_stated_where_a_tester_will_read_it():

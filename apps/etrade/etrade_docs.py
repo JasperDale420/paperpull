@@ -130,7 +130,8 @@ class Document:
         another label shows on a document of the same date and title
         (whole_label), so the two never share a key. Until #96 the account never reached the record,
         so every key ended in "Unnamed", and adopt_account_keys moves those
-        for a sign-in of one account."""
+        for a sign-in of one account, and relabel_by_statement, by what
+        each one's saved PDF shows, for a sign-in of several."""
         if self.document_id:
             return f"id:{self.document_id}"
         acct = account_key(self.account, whole=self.whole_label)
@@ -244,7 +245,8 @@ def forget_superseded(records: dict, listed) -> int:
     statement now, and the old one, downloaded with no account, would find
     two rows naming it and be refused on every run, or take whichever one
     the page showed. A record that is done stays, and the run's progress is
-    never touched, so nothing saved before is credited to an account.
+    never touched here, so nothing saved before is credited to an account
+    by the list alone (relabel_by_statement credits one by its own PDF).
     Returns how many records were dropped."""
     changed = 0
     for old_key, docs in _by_old_key(listed).items():
@@ -256,6 +258,164 @@ def forget_superseded(records: dict, listed) -> int:
         del records[old_key]
         changed += 1
     return changed
+
+
+# Why relabel_by_statement leaves a record kept before #96 where it is, in
+# fixed words, which the log counts. Never a label, digits or a PDF's text.
+NOT_DONE = "not done"
+TAKEN_AGAIN = "already taken again"
+HOLDS_A_FILE = "its account's record holding a file"
+OTHER_NUMBER = "another account number printed"
+NO_FILE = "no saved file"
+UNREADABLE = "a file that does not read"
+NO_DIGITS = "no listed account's digits"
+SEVERAL = "more than one account's digits"
+SHARED = "digits two accounts share"
+NOT_LISTED = "no listed statement of that account"
+NO_ONE_TAIL = "an account listed without digits of its own"
+
+
+def _held_under(records: dict, key: str) -> str:
+    """Why a record under this key may not be replaced, or "" when it may.
+    TAKEN_AGAIN when it is done (keys.is_done). HOLDS_A_FILE when it is not
+    but names a file that is there, as a Needs Manual Review copy does,
+    which _already_done counts as done while its PDF validates and which
+    keys.is_done does not. Replaced, its file would be left with no record
+    (review of the relabel). So everything _already_done counts as done
+    is held, and more."""
+    rec = records.get(key)
+    if not isinstance(rec, dict):
+        return ""
+    if _is_done(rec):
+        return TAKEN_AGAIN
+    saved = str(rec.get("pdf_path") or "")
+    try:
+        return HOLDS_A_FILE if saved and Path(saved).exists() else ""
+    except OSError:
+        return HOLDS_A_FILE
+
+
+def relabel_by_statement(progress: dict, discovery: dict, listed, min_bytes: int) -> dict:
+    """For a sign-in of several accounts, move each record kept before #96
+    to the account its own saved PDF shows, after discovery has read the
+    lists (#96). The promise made on #96, read each saved PDF for its
+    account's last digits, and move an old record to its account only when
+    the file shows that account and no other.
+
+    A record under a key with no account ("Unnamed") moves only when all of
+    this holds. It is done (keys.is_done). Every listed document of its
+    category, date and title names one account by masked digits. Not every
+    one of those accounts has its statement of that day, or a file of it,
+    under its own key already. Its saved PDF is there, validates and holds
+    text. That text prints exactly one listed account's digits as the end
+    of an account number (site.tails_printed), and no other listed
+    account's digits end any run of digits anywhere in it
+    (site.tails_seen), a year or an amount included. Those digits are no
+    two accounts' (Document.whole_label, twins anywhere in the lists). No
+    account number it prints ends in other digits, an account the lists no
+    longer name included (site.account_numbers_printed). The lists give
+    that account a document of the record's category, date and title. And
+    no record under that document's key is done or names a file that is
+    there (_held_under).
+
+    It then moves to that key the way adopt_account_keys moves one,
+    progress and discovery alike, and takes the document's account, its
+    summary, which for a sign-in of several accounts ends with the account
+    (App._document_of), and its guid when it has one. So the record reads
+    as one the list gives now, and a Rename gives the file the name a
+    statement downloaded now would have, the account in it, under the
+    default pattern as under one with {account}. Its state, downloaded_ok,
+    pdf_path and everything else go with it, so the statement is never
+    fetched again. The file itself is never renamed or moved here, and
+    keeps its name until a Rename. Anything else stays exactly as
+    it is, and 0.53.0 takes each account's statement again under a name
+    that says the account, as before.
+
+    Only state, downloaded_ok and pdf_path are read off a saved record, all
+    of which a history moved with --minimal keeps. Returns {"moved": n,
+    "listed": n} and, for each record left, how many for each fixed reason
+    above."""
+    tally: dict = {"moved": 0, "listed": 0}
+
+    def leave(why: str) -> None:
+        tally[why] = tally.get(why, 0) + 1
+
+    labels = {d.account for d in listed if d.account}
+    every_tail = {t for label in labels for t in site.account_tails(label)}
+    twins = {t for d in listed if d.whole_label for t in site.account_tails(d.account)}
+    for old_key, docs in _by_old_key(listed).items():
+        rec = progress.get(old_key)
+        if not isinstance(rec, dict) or any(d.key == old_key for d in docs):
+            continue
+        if not _is_done(rec):
+            leave(NOT_DONE)
+            continue
+        if any(len(site.account_tails(d.account)) != 1 for d in docs):
+            leave(NO_ONE_TAIL)
+            continue
+        if all(_held_under(progress, d.key) for d in docs):
+            # Each account's statement of that day is saved under its own
+            # key, or a file of it is, so there is nothing for this record to
+            # stand for, and its file is not read again on every Discover.
+            leave(TAKEN_AGAIN)
+            continue
+        saved = str(rec.get("pdf_path") or "")
+        try:
+            there = bool(saved) and Path(saved).is_file()
+        except OSError:
+            there = False
+        if not there:
+            leave(NO_FILE)
+            continue
+        if not receipt_pdf.validate_pdf(Path(saved), min_bytes).ok:
+            leave(UNREADABLE)
+            continue
+        text = receipt_pdf.pdf_text(Path(saved))
+        if not text.strip():
+            leave(UNREADABLE)
+            continue
+        shown = site.tails_printed(text, labels) & every_tail
+        seen = site.tails_seen(text, every_tail)
+        if not shown:
+            leave(NO_DIGITS)
+            continue
+        if len(shown) > 1 or seen != shown:
+            leave(SEVERAL)
+            continue
+        tail = next(iter(shown))
+        if tail in twins:
+            leave(SHARED)
+            continue
+        if any(not site.one_account(n, tail) for n in site.account_numbers_printed(text)):
+            # Another account number, listed or not. A closed account's
+            # statement printing its own number and a transfer to this one
+            # would be credited to this one.
+            leave(OTHER_NUMBER)
+            continue
+        mine = [d for d in docs if site.account_tails(d.account) == [tail]]
+        if len(mine) != 1:
+            leave(NOT_LISTED)
+            continue
+        doc = mine[0]
+        why_held = _held_under(progress, doc.key)
+        if why_held:
+            leave(why_held)
+            continue
+        carried = {"account": doc.account, "summary": doc.summary}
+        if doc.guid:
+            carried["guid"] = doc.guid
+        progress[doc.key] = dict(rec, **carried)
+        del progress[old_key]
+        tally["moved"] += 1
+        held = discovery.get(old_key)
+        if isinstance(held, dict):
+            held = dict(held, **carried)
+            other = discovery.get(doc.key)
+            if not isinstance(other, dict) or (_is_done(held) and not _is_done(other)):
+                discovery[doc.key] = held
+            del discovery[old_key]
+            tally["listed"] += 1
+    return tally
 
 
 def _one_account(held: str, doc: "Document") -> bool:
@@ -546,26 +706,38 @@ class App:
         """The records kept before #96, under keys with no account. For a
         sign-in whose lists name one account, each moves to the key that
         account gives it (adopt_account_keys), progress and discovery alike,
-        so nothing saved is fetched again. For several, the run's progress
-        is left as it is, every record still done under its old key, and
-        each account's statements are taken again under names that say the
-        account, since an old record may hold either account's statement
-        (review of #96). Only discovery's unfinished old records go
+        so nothing saved is fetched again. For several, an old record may
+        hold either account's statement (review of #96), so one moves only
+        when its own saved PDF shows its account and no other
+        (relabel_by_statement). Every other record stays done under its old
+        key, and each account's statement of it is taken again under a name
+        that says the account. Then discovery's unfinished old records go
         (forget_superseded). Each store is backed up first when anything in
-        it changes."""
+        it changes. The log says how many moved and how many were left for
+        each fixed reason, never an account or a word of a PDF."""
         moved = forgotten = 0
+        left: dict = {}
         if accounts == 1:
             moved = adopt_account_keys(self.progress.data, listed)
             if moved:
                 self.progress.save(backup=True)
             forgotten = adopt_account_keys(self.discovery.data, listed)
         elif accounts > 1:
-            forgotten = forget_superseded(self.discovery.data, listed)
+            left = relabel_by_statement(self.progress.data, self.discovery.data, listed,
+                                        int(self.config.get("min_pdf_bytes", 2000)))
+            moved, relisted = left.pop("moved"), left.pop("listed")
+            if moved:
+                self.progress.save(backup=True)
+            forgotten = relisted + forget_superseded(self.discovery.data, listed)
         if forgotten:
             self.discovery.save(backup=True)
         if moved or forgotten:
             log.info("%d saved and %d listed record(s) moved or dropped for the accounts' keys",
                      moved, forgotten)
+        if accounts > 1 and (moved or left):
+            log.info("%d saved record(s) kept before 0.53.0 moved to the account their PDF shows, "
+                     "%d left as they were%s", moved, sum(left.values()),
+                     "".join(", %d for %s" % (n, why) for why, n in sorted(left.items())))
 
     def _record_listed(self, doc: Document) -> int:
         """Record one listed document. Returns 1 if new.

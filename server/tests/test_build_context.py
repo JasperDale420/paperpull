@@ -18,6 +18,7 @@ REPO = SERVER.parent
 sys.path.insert(0, str(SERVER))
 
 import build  # noqa: E402
+import lock  # noqa: E402
 
 
 # -- what is chosen --------------------------------------------------------------
@@ -221,11 +222,182 @@ def test_chrome_keeps_no_passwords_and_reports_nothing():
     assert policies["SyncDisabled"] is True
 
 
+def requirement_lines(name: str) -> list:
+    return [line.split("#")[0].strip() for line in
+            (SERVER / name).read_text(encoding="utf-8").splitlines()
+            if line.split("#")[0].strip()]
+
+
+def dist_name(requirement: str) -> str:
+    return re.sub(r"[-_.]+", "-", re.split(r"[\[=<>~! ]", requirement)[0]).lower()
+
+
 def test_every_package_is_pinned():
-    lines = [line.strip() for line in
-             (SERVER / "requirements.txt").read_text(encoding="utf-8").splitlines()
-             if line.strip() and not line.startswith("#")]
+    lines = requirement_lines("requirements.in")
     assert lines and all("==" in line for line in lines), lines
+
+
+def locked() -> dict:
+    """Each package in requirements.txt, its version and its hashes."""
+    packages, current = {}, None
+    for line in requirement_lines("requirements.txt"):
+        line = line.rstrip("\\").strip()
+        if line.startswith("--hash="):
+            assert current, line
+            packages[current][1].append(line)
+        elif line.startswith("--"):
+            assert line == "--only-binary :all:", line
+        else:
+            name, _, version = line.partition("==")
+            assert version, "%s is not pinned to one version" % line
+            current = dist_name(name)
+            packages[current] = (version, [])
+    return packages
+
+
+def test_the_lock_names_every_package_at_one_version_with_its_hashes():
+    packages = locked()
+    assert len(packages) > len(requirement_lines("requirements.in"))
+    for name, (version, hashes) in packages.items():
+        assert hashes and all(re.fullmatch(r"--hash=sha256:[0-9a-f]{64}", h) for h in hashes), name
+
+
+def test_the_lock_holds_each_direct_pin_at_its_version():
+    """requirements.in is what a person raises, and the image installs the
+    lock, so a pin raised without running server/lock.py again is caught."""
+    packages = locked()
+    for line in requirement_lines("requirements.in"):
+        name, version = dist_name(line), line.partition("==")[2]
+        assert name in packages, "%s is not in requirements.txt, run server/lock.py" % name
+        assert packages[name][0] == version, \
+            "requirements.txt has %s %s, run server/lock.py" % (name, packages[name][0])
+
+
+def test_the_lock_was_resolved_in_the_image_s_own_base():
+    image = lock.base_image()
+    assert image.startswith("python:")
+    text = (SERVER / "requirements.txt").read_text(encoding="utf-8")
+    assert text.startswith(lock.header(image)), "the lock was resolved in another base"
+
+
+def test_the_base_is_named_by_its_digest():
+    """A tag alone moves whenever its publisher rebuilds it, so the same
+    Dockerfile built a different base from one day to the next."""
+    image = lock.base_image()
+    assert re.fullmatch(r"python:3\.\d+-slim-\w+@sha256:[0-9a-f]{64}", image), image
+    assert lock.base_tag(image) == image.split("@")[0]
+    assert "@" not in lock.header(image) and lock.base_tag(image) in lock.header(image)
+    froms = [line for line in (SERVER / "Dockerfile").read_text(encoding="utf-8").splitlines()
+             if line.startswith("FROM")]
+    assert froms == ["FROM " + image]
+
+
+def test_a_new_digest_needs_no_new_lock():
+    """Dependabot's weekly digest leaves requirements.txt alone, so the lock
+    names the tag it was resolved in, and either digest of it matches."""
+    tag = "python:3.12-slim-bookworm"
+    one, two = tag + "@sha256:" + "1" * 64, tag + "@sha256:" + "2" * 64
+    assert lock.header(one) == lock.header(two) == lock.header(tag)
+
+
+def fake_inspect(monkeypatch, answer, code=0):
+    seen = []
+
+    def run(cmd, **kwargs):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, code, answer, "no such image" if code else "")
+
+    monkeypatch.setattr(lock.subprocess, "run", run)
+    return seen
+
+
+DOCKERFILE = ("# the base\n"
+              "FROM python:3.12-slim-bookworm@sha256:%s\n"
+              "RUN echo FROM python:3.12-slim-bookworm@sha256:%s\n" % ("a" * 64, "a" * 64))
+
+
+def test_base_writes_the_tag_s_digest_of_today(monkeypatch, tmp_path):
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(DOCKERFILE, encoding="utf-8", newline="\n")
+    seen = fake_inspect(monkeypatch, "sha256:%s\n" % ("b" * 64))
+
+    assert lock.refresh_base(dockerfile) == 0
+
+    assert seen == [["docker", "buildx", "imagetools", "inspect", "python:3.12-slim-bookworm",
+                     "--format", "{{.Manifest.Digest}}"]]
+    assert dockerfile.read_bytes() == DOCKERFILE.replace("a" * 64, "b" * 64, 1).encode()
+
+
+def test_base_keeps_the_file_s_own_line_endings(monkeypatch, tmp_path):
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_bytes(DOCKERFILE.replace("\n", "\r\n").encode())
+    fake_inspect(monkeypatch, "sha256:%s\n" % ("b" * 64))
+
+    assert lock.refresh_base(dockerfile) == 0
+    assert dockerfile.read_bytes() == DOCKERFILE.replace("a" * 64, "b" * 64, 1).replace("\n", "\r\n").encode()
+
+
+def test_base_check_writes_nothing_and_says_when_the_tag_moved(monkeypatch, tmp_path):
+    """The Server image workflow's weekly run asks, in case Dependabot ever
+    stops proposing a digest of the same tag."""
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(DOCKERFILE, encoding="utf-8", newline="\n")
+    fake_inspect(monkeypatch, "sha256:%s\n" % ("b" * 64))
+    assert lock.refresh_base(dockerfile, check=True) == 1
+    assert dockerfile.read_text(encoding="utf-8") == DOCKERFILE
+
+    fake_inspect(monkeypatch, "sha256:%s\n" % ("a" * 64))
+    assert lock.refresh_base(dockerfile, check=True) == 0
+    assert lock.refresh_base(dockerfile) == 0
+    assert dockerfile.read_text(encoding="utf-8") == DOCKERFILE
+
+
+def test_base_follows_no_tag_when_the_from_line_has_none(monkeypatch, tmp_path):
+    """docker would read python@sha256:... as python:latest."""
+    dockerfile = tmp_path / "Dockerfile"
+    text = "FROM python@sha256:%s\n" % ("a" * 64)
+    dockerfile.write_text(text, encoding="utf-8", newline="\n")
+    seen = fake_inspect(monkeypatch, "sha256:%s\n" % ("b" * 64))
+
+    assert lock.refresh_base(dockerfile) == 1
+    assert seen == [] and dockerfile.read_text(encoding="utf-8") == text
+
+
+def test_base_without_docker_changes_nothing(monkeypatch, tmp_path):
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(DOCKERFILE, encoding="utf-8", newline="\n")
+
+    def run(cmd, **kwargs):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(lock.subprocess, "run", run)
+    assert lock.refresh_base(dockerfile) == 1
+    assert dockerfile.read_text(encoding="utf-8") == DOCKERFILE
+
+
+@pytest.mark.parametrize("answer, code", [
+    ("", 1),                                   # docker could not reach the registry
+    ("sha256:%s\n" % ("b" * 63), 0),           # not a digest
+    ("<no value>\n", 0),
+])
+def test_base_changes_nothing_without_a_digest(monkeypatch, tmp_path, answer, code):
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(DOCKERFILE, encoding="utf-8", newline="\n")
+    fake_inspect(monkeypatch, answer, code)
+
+    assert lock.refresh_base(dockerfile) == 1
+    assert dockerfile.read_text(encoding="utf-8") == DOCKERFILE
+
+
+def test_the_image_installs_only_the_lock_s_files():
+    text = (SERVER / "Dockerfile").read_text(encoding="utf-8")
+    install = [line for line in text.splitlines() if "-r /tmp/requirements.txt" in line]
+    assert len(install) == 1
+    assert "--require-hashes" in install[0] and "--only-binary :all:" in install[0]
+    core = [line for line in text.splitlines() if "pip install" in line and "/opt/paperpull/core" in line]
+    assert len(core) == 1
+    assert "--no-deps" in core[0] and "--no-build-isolation" in core[0]
+    assert "pip install" not in text.replace(install[0], "").replace(core[0], "")
 
 
 def test_everything_runs_as_pp_after_the_root_step():

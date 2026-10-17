@@ -1,8 +1,9 @@
 """Coinbase statement and tax-document downloader (local, supervised).
 
 Coinbase is a crypto exchange at www.coinbase.com. This downloads the
-monthly account statements from its Statements page and the tax documents
-from its Taxes page. The orchestrator below is the same one every other
+monthly account statements from its Statements page, the Coinbase One Card
+statements from that page's Credit Card tab, and the tax documents from its
+Taxes page. The orchestrator below is the same one every other
 statement app runs on. Everything about the site itself is in
 coinbase_site.py.
 
@@ -173,6 +174,9 @@ def migrate_legacy_keys(records: dict) -> int:
 class App:
     _journal = None
     _requests = None
+    # Set when this run's listing could not read the Coinbase One Card
+    # statements whole (site.CardListUnread). See _end_if_card_unread.
+    _card_unread = False
 
     def __init__(self, args):
         self.args = args
@@ -465,7 +469,11 @@ class App:
         self.discovery.update(doc.key, {"source_url": persistable(source_url)}, save=False)
         return 0
 
-    def cmd_discover(self, quiet: bool = False) -> int:
+    def cmd_discover(self, quiet: bool = False, then_take: bool = False) -> int:
+        # `then_take` is True from Pilot and Run All, which take what was
+        # listed before a listing that could not read the card statements
+        # ends the run (_end_if_card_unread). Any other caller ends the run
+        # here on such a list.
         # A listing that stops on the way, however it stops, is noted as one
         # that stopped, for Resume (paperpull_core.listing).
         listing.started(self)
@@ -477,8 +485,24 @@ class App:
             self.check_session(page)
             site.goto_documents(page)
         self.check_session(page)
+        card_unread = False
         try:
             docs = site.collect_download_docs(page)
+        except site.SessionExpired:
+            self.session_ended()
+        except site.CardListUnread as unread:
+            # The card statements could not be read whole. The monthly
+            # statements and tax documents listed are kept and taken on this
+            # run as any others, no card statement is listed, and the listing
+            # is not noted as whole, so a Resume does not call the run
+            # finished. The run ends as one that stopped once it has taken
+            # them (_end_if_card_unread).
+            docs, card_unread = unread.docs, True
+            print(f"\n!! The Coinbase One Card statements could not be read, since {unread}.")
+            print("   None of them is listed on this run, and they are left for the next one.")
+            print(f"   The {len(unread.docs)} account statement(s) and tax document(s) listed are")
+            print("   kept and taken as usual, and the run then stops as one that did not finish.")
+            self.write_failure("read the card statements list", "the card list could not be read")
         except site.ListStopped as stop:
             # What was listed is kept, and the listing stays noted as one
             # that stopped, so neither this run nor a Resume calls it whole.
@@ -495,14 +519,20 @@ class App:
         self.discovery.save()
         log.info("statements area: %d documents, %d new", len(docs), n_new)
 
+        # A list whose card statements could not be read is not the whole
+        # list, and the listing then stays noted as one that stopped.
+        self._card_unread = card_unread
         # The whole list is in, and only now may a Resume that carries on
         # from it call the run finished (paperpull_core.listing).
-        listing.read_whole(self)
+        if not card_unread:
+            listing.read_whole(self)
         self.stats["discovered"] = len(self.discovery.data)
 
         if not quiet:
             docs = [Document.from_dict(v) for v in self.discovery.data.values()]
-            print(f"\nDiscovery complete. Documents known: {len(docs)}")
+            print("\nDiscovery %s. Documents known: %d"
+                  % ("stopped short of the card statements" if card_unread else "complete",
+                     len(docs)))
             by_cat = {}
             for d in docs:
                 by_cat.setdefault(d.category, []).append(d)
@@ -518,7 +548,30 @@ class App:
                 print(f"  Date range: {dates[0]} .. {dates[-1]}")
             if self.stats["skipped_out_of_scope"]:
                 print(f"  Skipped as out of scope: {self.stats['skipped_out_of_scope']}")
+        if not then_take:
+            self._end_if_card_unread()
         return n_new
+
+    def _end_if_card_unread(self) -> None:
+        """The end of a run whose listing could not read the card
+        statements. What it listed has been taken by now, and the run stops
+        as one that did not finish."""
+        if not self._card_unread:
+            return
+        print("\n!! The Coinbase One Card statements could not be read on this run, so")
+        print("   none of them was listed or taken, and this run stops as one that did")
+        print("   not finish. Run it again later to take them.")
+        raise SystemExit(1)
+
+    def session_ended(self) -> None:
+        """Stop the run because Coinbase has signed the session out.
+        Progress is saved, nothing is recorded for review, and the run ends
+        as one that stopped (tabs.stop)."""
+        tabs.stop(self, [
+            "Coinbase appears to have signed you out, so this run stops here.",
+            "Everything saved so far is kept. Sign in again in the open browser",
+            "window, then run Resume to carry on from where this stopped.",
+        ])
 
     def _select(self, limit: Optional[int] = None) -> List[Document]:
         docs = [Document.from_dict(v) for v in self.discovery.data.values()]
@@ -595,6 +648,10 @@ class App:
             except KeyboardInterrupt:
                 print("\nInterrupted. Progress is saved, and --resume carries on from here.")
                 raise
+            except site.SessionExpired:
+                # Signed out on the way to a card statement, which the
+                # account holder answers by signing in again.
+                self.session_ended()
             except Exception as e:
                 log.exception("Failed on %s", doc.key)
                 self._record(doc, State.FAILED, notes=str(e))
@@ -633,7 +690,9 @@ class App:
             attempt = self.paths.diagnostics / "download-attempt.json"
             write_shaped(attempt, {
                 "timestamp": now_iso(), "date": doc.date,
-                "landed_on": site.redact(page.url or ""),
+                # Only the host off Coinbase's own, since a card statement's
+                # address is signed (site.where_landed).
+                "landed_on": site.redact(site.where_landed(page)),
                 "responses": trace[:80]}, words_for('Coinbase', site))
             print(f"  What the site answered is in {attempt}, attach it to the issue.")
             self._record(doc, State.NEEDS_MANUAL_REVIEW,
@@ -777,14 +836,16 @@ class App:
     def cmd_pilot(self):
         self.stats["mode"] = "pilot"
         print("PILOT MODE - limited supervised test run.\n")
-        self.cmd_discover()
+        self.cmd_discover(then_take=True)
         docs = self._select(limit=self.config.get("pilot_count", 5))
         if not docs:
             print("\nNo documents in scope to pilot. Run --diagnose.")
+            self._end_if_card_unread()
             return
         print(f"\nDownloading {len(docs)} document(s)...")
         self.process(docs, dry_run=self.args.dry_run)
         self._pilot_report(docs)
+        self._end_if_card_unread()
 
     def _pilot_report(self, docs: List[Document]):
         print("\n" + "=" * 70)
@@ -824,10 +885,11 @@ class App:
             if ask("> ").strip().upper() != "YES":
                 print("Stopped, and nothing was downloaded. Run the pilot first if you have not.")
                 return
-        self.cmd_discover()
+        self.cmd_discover(then_take=True)
         docs = self._select()
         print(f"\nDownloading {len(docs)} document(s)...")
         self.process(docs, dry_run=self.args.dry_run)
+        self._end_if_card_unread()
 
     def cmd_resume(self):
         self.stats["mode"] = "resume"
@@ -996,7 +1058,9 @@ class App:
             for name, sel in [("doc_row", site.FALLBACK["doc_row"]),
                               ("table rows", "table tbody tr"),
                               ("pdf links", "a[href*='.pdf']"),
-                              ("download attrs", "a[download]")]:
+                              ("download attrs", "a[download]"),
+                              # Transactions and Credit Card, counted and never pressed.
+                              ("sub-navigation links", site.CARD_LINK_CSS)]:
                 try:
                     info["row_counts"][name] = page.locator(sel).count()
                 except Exception as e:

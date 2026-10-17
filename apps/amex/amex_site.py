@@ -112,6 +112,7 @@ FALLBACK = {
     "doc_row": ("table tbody tr, [role='row'], [class*='statement-row'], "
                 "[class*='StatementRow'], [class*='document'], "
                 "[data-testid*='statement'], [data-testid*='document'], "
+                "[data-test-id*='statement'], [data-test-id*='document'], "
                 "li[class*='statement'], li[class*='document']"),
     "doc_link": ("a[href*='.pdf'], a[href*='statement'], a[href*='document'], "
                  "a[download], button[class*='download'], "
@@ -238,12 +239,10 @@ def detect_security_challenge(page) -> Optional[str]:
     return None
 
 
-def is_safe_control(name: str) -> bool:
-    name = (name or "").strip()
-    if not name:
-        return False
+def _forbidden(name: str) -> bool:
+    """Whether a control's words say it does what this app never does."""
     if FORBIDDEN_CONTROL_RE.search(name):
-        return False
+        return True
     # The shared core guard is consulted as well as this app's own blocklist.
     # A repo-wide review found each app had drifted its own way and every one
     # of them let settings controls through ("Save Changes", "Document
@@ -252,9 +251,18 @@ def is_safe_control(name: str) -> bool:
     try:
         from paperpull_core.controls import SETTINGS_CONTROL_RE, AUTH_CONTROL_RE
         if SETTINGS_CONTROL_RE.search(name) or AUTH_CONTROL_RE.search(name):
-            return False
+            return True
     except Exception:
         pass
+    return False
+
+
+def is_safe_control(name: str) -> bool:
+    name = (name or "").strip()
+    if not name:
+        return False
+    if _forbidden(name):
+        return False
     return bool(SAFE_DOC_CONTROL_RE.search(name))
 
 
@@ -262,66 +270,241 @@ def is_safe_control(name: str) -> bool:
 # Documents page navigation
 # ---------------------------------------------------------------------------
 
-_PDF_LINK_SEL = "[data-testid='goToPdfLinkLg'], [data-testid='goToPdfLinkSm']"
+# Amex writes a control's test id as data-testid on some pages and as
+# data-test-id on others, the PDF statements page of a German account among
+# them (#107), so every test id is looked for under both names.
+TEST_ID_ATTRS = ("data-testid", "data-test-id")
+
+
+def _by_test_id(op: str, value: str) -> str:
+    """A selector for a test id under either of its names, `op` one of
+    =, *=, $= or ^=."""
+    return ", ".join("[%s%s'%s']" % (attr, op, value) for attr in TEST_ID_ATTRS)
+
+
+def _test_ids_of(el) -> List[str]:
+    """Every test id an element carries, under either name. An element can
+    carry both, and only one of them need be the one looked for."""
+    return [tid for tid in (el.get_attribute(attr) for attr in TEST_ID_ATTRS) if tid]
+
+
+_PDF_LINK_SEL = ", ".join(_by_test_id("=", name) for name in ("goToPdfLinkLg", "goToPdfLinkSm"))
+_ACTIVITY_WORDS = re.compile(r"statements?\s*&\s*activity", re.I)
+_PDF_LINK_WORDS = re.compile(r"go to pdf statements", re.I)
+# A page in another language names its links in its own words, "Kontobewegungen
+# & Abrechnungen" and "PDF-Abrechnungen" on a German account, and their
+# addresses are the same in every language, each with a query of its own
+# (#107). They are looked for by address only where the English Statements &
+# Activity link does not show, so an English page is reached as it always was,
+# and a tile of the page before, still drawn while the next one loads, is not
+# taken for the next page's own link.
+_ACTIVITY_HREF = "a[href='/activity'], a[href^='/activity?']"
+_STATEMENTS_HREF = "a[href^='/activity/statements']"
+_DOWNLOAD_BUTTONS = _by_test_id("*=", "download-button")
+
+# How long the tab is given to show a press's page after the wait it was
+# always given, LINK_WAIT_MS after the first link and PDF_LINK_WAIT_MS after
+# Go to PDF Statements. A single page app can take its time, and a press it
+# has not answered by then is not pressed again, nor anything after it.
+LINK_WAIT_MS = 5000
+PDF_LINK_WAIT_MS = 6000
+ROUTE_MS = 20000
+# How long the statements page is given to show its first Download.
+LIST_WAIT_MS = 12000
+
+
+def _english_link(page):
+    """The English Statements & Activity link when it shows, or None."""
+    link = page.get_by_role("link", name=_ACTIVITY_WORDS)
+    return link.first if link.count() and link.first.is_visible() else None
+
+
+def _card_of(href: str) -> str:
+    """The card a link's address names, its account_key, or ""."""
+    from urllib.parse import parse_qs, urlsplit
+    return ",".join(sorted(parse_qs(urlsplit(href).query).get("account_key", [])))
+
+
+def _link_words(el) -> str:
+    """What a link says, its text and its label, or "" when it cannot be read."""
+    try:
+        return " ".join([el.inner_text(timeout=2000) or "",
+                         el.get_attribute("aria-label", timeout=2000) or "",
+                         el.get_attribute("title", timeout=2000) or ""]).strip()
+    except Exception:
+        return ""
+
+
+def _link_by_href(page, css: str):
+    """The link of `css` a page in another language is reached by, or None.
+
+    A link found by where it points has no English words to go by, so every
+    link of `css` that shows is read. When they name more than one card by
+    its account_key, which one this run is for cannot be told, and the run
+    stops with nothing pressed. A link that names no card names no other
+    one. A hidden copy is never taken, nor a link whose words say it does
+    what this app never does, nor one that says nothing. A link that could
+    not be read could be another card's, so the run stops then too, with
+    nothing pressed."""
+    loc = page.locator(css)
+    shown = []
+    for i in range(min(_safe_count(loc), 12)):
+        el = loc.nth(i)
+        try:
+            if el.is_visible():
+                shown.append((el, el.get_attribute("href", timeout=2000) or ""))
+        except Exception:
+            log.info("a link to the statements could not be read, so none is pressed")
+            raise pressing.Stop("open the statements page",
+                                "a link to the statements could not be read", [
+                "A link to the statements could not be read, and it could be another "
+                "card's, so none of them was pressed.",
+                "Open the PDF statements of the card you want in the browser window, then "
+                "press Resume here, or run this again."])
+    cards = {_card_of(href) for _, href in shown} - {""}
+    if len(cards) > 1:
+        log.info("the page links to the statements of %d cards, so none is pressed", len(cards))
+        raise pressing.Stop("open the statements page", "the page links to more than one card", [
+            "The page links to the statements of more than one card, and which one this "
+            "run is for could not be told, so none of them was pressed.",
+            "Open the PDF statements of the card you want in the browser window, then "
+            "press Resume here, or run this again."])
+    for el, href in shown:
+        words = _link_words(el)
+        if href and words and not _forbidden(words):
+            return el
+    return None
+
+
+def _href_of(el) -> str:
+    try:
+        return el.get_attribute("href", timeout=2000) or ""
+    except Exception:
+        return ""
+
+
+def _arrived(page, part: str, waited_ms: int, shown: str = "") -> bool:
+    """Whether the tab's address holds `part`, or an element of `shown` is on
+    the page, after `waited_ms` and then for up to ROUTE_MS more. A single
+    page app moves the tab without loading a page, so the address is read
+    every half second rather than waited on as a load."""
+    page.wait_for_timeout(waited_ms)
+    for i in range(ROUTE_MS // 500 + 1):
+        if part in (page.url or "") or (shown and _safe_count(page.locator(shown))):
+            return True
+        if i < ROUTE_MS // 500:
+            page.wait_for_timeout(500)
+    return False
 
 
 def goto_documents(page) -> bool:
     """Reach the PDF Statements page ('Statements and Year End Summaries') by
     CLICKING within the SPA. Amex holds the session in an in-memory token, so a
     hard page.goto drops the session and bounces to login - we never use it for
-    authenticated pages. Ready when statement download-buttons are present."""
+    authenticated pages. Ready when statement download-buttons are present.
+
+    Each link on the way is pressed once. A press whose page does not come
+    stops the run with nothing more pressed (pressing.no_answer), since every
+    caller would otherwise come back here and press it again."""
     if looks_signed_out(page):
         return False
     try:
         url = page.url or ""
         if "/activity/statements" not in url:
+            pressed = ""
             if "/activity" not in url:
-                link = page.get_by_role("link", name=re.compile(
-                    r"statements?\s*&\s*activity", re.I))
-                if link.count() and link.first.is_visible():
-                    pressing.click(page, link.first, css=pressing.LINKS,
+                link, want = _english_link(page), "/activity"
+                if link is None:
+                    # The PDF statements themselves, which a dashboard in
+                    # another language links to, or else the activity page.
+                    link, want = _link_by_href(page, _STATEMENTS_HREF), "/activity/statements"
+                    if link is None:
+                        link, want = _link_by_href(page, _ACTIVITY_HREF), "/activity"
+                if link is not None:
+                    pressed = _href_of(link)
+                    pressing.click(page, link, css=pressing.LINKS,
                                    what="the Statements and Activity link",
                                    words=_words(), step="open the statements page")
-                    page.wait_for_timeout(5000)
-            pdf = page.locator(_PDF_LINK_SEL)
-            if pdf.count() == 0:
-                pdf = page.get_by_role("link", name=re.compile(
-                    r"go to pdf statements", re.I))
-            if pdf.count() and pdf.first.is_visible():
-                pressing.click(page, pdf.first, css="%s, %s" % (_PDF_LINK_SEL, pressing.LINKS),
-                               what="the Go to PDF Statements link",
-                               words=_words(), step="open the statements page")
-                page.wait_for_timeout(6000)
+                    if not _arrived(page, want, LINK_WAIT_MS):
+                        log.info("the first link on the way to the statements was pressed "
+                                 "and its page did not come")
+                        raise pressing.no_answer(
+                            "open the statements page", "the page did not open",
+                            "The link on the way to the statements was pressed once and "
+                            "the page it leads to did not open.")
+            if "/activity/statements" not in (page.url or ""):
+                pdf = page.locator(_PDF_LINK_SEL)
+                if pdf.count() == 0:
+                    pdf = page.get_by_role("link", name=_PDF_LINK_WORDS)
+                pdf = pdf.first if pdf.count() and pdf.first.is_visible() else None
+                if pdf is None and "/activity" in (page.url or "") and _english_link(page) is None:
+                    pdf = _link_by_href(page, _STATEMENTS_HREF)
+                if pdf is not None and pressed and _href_of(pdf) == pressed:
+                    raise pressing.Stop("open the statements page", "the link was pressed already", [
+                        "The link to the PDF statements is the one pressed on the way "
+                        "there, which did not lead to them, so it was not pressed again.",
+                        pressing.AGAIN])
+                if pdf is not None:
+                    pressing.click(page, pdf, css="%s, %s" % (_PDF_LINK_SEL, pressing.LINKS),
+                                   what="the Go to PDF Statements link",
+                                   words=_words(), step="open the statements page")
+                    if not _arrived(page, "/activity/statements", PDF_LINK_WAIT_MS,
+                                    _DOWNLOAD_BUTTONS):
+                        log.info("the link to the PDF statements was pressed and they "
+                                 "did not come")
+                        raise pressing.no_answer(
+                            "open the statements page", "the statements did not open",
+                            "The Go to PDF Statements link was pressed once and the "
+                            "statements did not open.")
         try:
-            page.wait_for_selector("[data-testid*='download-button']", timeout=12000)
+            page.wait_for_selector(_DOWNLOAD_BUTTONS, timeout=LIST_WAIT_MS)
         except Exception:
             pass
         expand_sections(page)
-        return page.locator("[data-testid*='download-button']").count() > 0
+        return page.locator(_DOWNLOAD_BUTTONS).count() > 0
     except Exception as e:
         log.info("goto_documents (click-nav) failed: %s", e)
-        return page.locator("[data-testid*='download-button']").count() > 0
+        return page.locator(_DOWNLOAD_BUTTONS).count() > 0
+
+
+# The collapsible sections, each by its English words and then by the part
+# it opens, which is the same in every language ("Vergangene Abrechnungen"
+# heads the older statements on a German account, #107). Only the older
+# statements' part has been seen by its name.
+_SECTIONS = (
+    ("Older Statements", r"older\s+statements", "[aria-controls='content-older-statements']"),
+    ("Year End Summary", r"year.?end\s+summary", None),
+)
 
 
 def expand_sections(page) -> None:
     """Open the collapsible 'Older Statements' and 'Year End Summary' sections
     so their download buttons become clickable. 'Older Statements' is expanded
     by default; 'Year End Summary' is collapsed - only click a header whose
-    aria-expanded is 'false' (clicking an open one would collapse it)."""
-    for label, name in ((r"older\s+statements", "Older Statements"),
-                        (r"year.?end\s+summary", "Year End Summary")):
+    aria-expanded is 'false' (clicking an open one would collapse it). A
+    section's heading is found by its English words first, as it always was,
+    then by the part it opens, whatever kind of element carries that, and
+    only the first that shows is pressed or left as it is."""
+    for name, label, css in _SECTIONS:
         try:
-            hdr = page.get_by_role("button", name=re.compile(label, re.I))
-            for i in range(min(hdr.count(), 3)):
-                el = hdr.nth(i)
-                if not el.is_visible():
-                    continue
-                if (el.get_attribute("aria-expanded") or "").lower() == "false":
-                    pressing.click(page, el, css=pressing.BUTTONS,
-                                   what="the heading of the %s section" % name,
-                                   words=_words(), step="open a section")
-                    page.wait_for_timeout(1500)
-                break
+            found = [(page.get_by_role("button", name=re.compile(label, re.I)), pressing.BUTTONS)]
+            if css:
+                found.append((page.locator(css), css))
+            el = kind = None
+            for hdr, sel in found:
+                for i in range(min(hdr.count(), 3)):
+                    if hdr.nth(i).is_visible():
+                        el, kind = hdr.nth(i), sel
+                        break
+                if el is not None:
+                    break
+            if el is None:
+                continue
+            if (el.get_attribute("aria-expanded") or "").lower() == "false":
+                pressing.click(page, el, css=kind,
+                               what="the heading of the %s section" % name,
+                               words=_words(), step="open a section")
+                page.wait_for_timeout(1500)
         except Exception:
             continue
 
@@ -432,7 +615,8 @@ def collect_documents(page) -> List[RawDoc]:
 # Downloadable-document collection (verified 2026-07 against the live site).
 #
 # On the "Statements and Year End Summaries" page every document is a
-# <button> whose data-testid encodes its category AND date, e.g.
+# <button> whose test id, data-testid or on some pages data-test-id (#107),
+# encodes its category AND date, e.g.
 #   myca-activity-statements/common/Table/recent-statements/2020-01-15/download-button
 #   myca-activity-statements/common/Table/older-statements/2019-01-15/download-button
 #   myca-activity-statements/common/Table/year-end-summary/2019/download-button
@@ -451,34 +635,46 @@ def collect_download_docs(page) -> List[RawDoc]:
     read from the download-button testids (deduped by category+date)."""
     docs: List[RawDoc] = []
     seen = set()
-    loc = page.locator("[data-testid*='download-button']")
+    loc = page.locator(_DOWNLOAD_BUTTONS)
     try:
         n = loc.count()
     except Exception:
         n = 0
     for i in range(n):
         try:
-            tid = loc.nth(i).get_attribute("data-testid") or ""
+            tids = _test_ids_of(loc.nth(i))
         except Exception:
             continue
-        m = _STMT_TESTID_RE.search(tid)
-        if m:
-            date = m.group(2)
-            if ("stmt", date) in seen:
+        # An element may carry both names, and either may be the document's
+        # own (#107), so each is read. Two that name different documents
+        # leave which one the button downloads untold.
+        named = {}
+        for tid in tids:
+            m = _STMT_TESTID_RE.search(tid)
+            if m:
+                named.setdefault(("stmt", m.group(2)), tid)
                 continue
-            seen.add(("stmt", date))
-            human = _human_date(date)
-            docs.append(RawDoc(title=f"Monthly Statement - {human}", date_text=date,
-                               href=tid, text=f"Monthly Statement {human}", kind="statement"))
-            continue
-        m = _YE_TESTID_RE.search(tid)
-        if m:
-            year = m.group(1)
-            if ("ye", year) in seen:
+            m = _YE_TESTID_RE.search(tid)
+            if m:
+                named.setdefault(("ye", m.group(1)), tid)
+        if len(named) > 1:
+            log.info("a Download button's two test ids name two documents")
+            raise pressing.Stop("read the statements", "a download names two documents", [
+                "A Download button on the statements page names two different documents, "
+                "so which one it brings could not be told and the list was not read.",
+                "Nothing was pressed.", pressing.AGAIN])
+        for (kind, when), tid in named.items():
+            if (kind, when) in seen:
                 continue
-            seen.add(("ye", year))
-            docs.append(RawDoc(title=f"{year} Year-End Summary", date_text=f"{year}-12-31",
-                               href=tid, text=f"{year} Year-End Summary", kind="year-end"))
+            seen.add((kind, when))
+            if kind == "stmt":
+                human = _human_date(when)
+                docs.append(RawDoc(title=f"Monthly Statement - {human}", date_text=when,
+                                   href=tid, text=f"Monthly Statement {human}",
+                                   kind="statement"))
+            else:
+                docs.append(RawDoc(title=f"{when} Year-End Summary", date_text=f"{when}-12-31",
+                                   href=tid, text=f"{when} Year-End Summary", kind="year-end"))
     return docs
 
 
@@ -569,9 +765,11 @@ def _choose_pdf(page, thing: str, words) -> None:
 
 
 # The "Select File Type" dialog's confirm button renders its label as an icon
-# glyph (its accessible name is unreliable), but it carries a stable test id.
+# glyph (its accessible name is unreliable), but it carries a stable test id,
+# matched by its own last words under either name (#107).
 _DIALOG_CONFIRM_SEL = (
-    "[data-test-id='myca-activity-download-footer-download-confirm-anchor'], "
+    "[data-test-id$='download-footer-download-confirm-anchor'], "
+    "[data-testid$='download-footer-download-confirm-anchor'], "
     "[id*='download-confirm'][id$='-anchor']")
 # The dialog's own controls, its PDF radio and its confirm button, looked for
 # inside the dialog whenever it is found (_dialog_open).
@@ -619,8 +817,8 @@ def _dialog_download_button(page, timeout: int = 8000):
     for i in range(min(_safe_count(cands), 12)):
         el = cands.nth(i)
         try:
-            tid = el.get_attribute("data-testid") or ""
-            if el.is_visible() and not tid.endswith("download-button"):
+            tids = _test_ids_of(el)
+            if el.is_visible() and not any(t.endswith("download-button") for t in tids):
                 return el
         except Exception:
             continue
@@ -748,10 +946,10 @@ def download_document(page, category: str, date: str, out_path) -> bool:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     words = _words()
     if category == "Year-End Summary":
-        sel = f"[data-testid$='/year-end-summary/{date[:4]}/download-button']"
+        sel = _by_test_id("$=", f"/year-end-summary/{date[:4]}/download-button")
         thing = "the %s year-end summary" % date[:4]
     else:
-        sel = f"[data-testid$='/{date}/download-button']"
+        sel = _by_test_id("$=", f"/{date}/download-button")
         thing = "the statement dated %s" % date
     button = "the Download button of %s" % thing
 

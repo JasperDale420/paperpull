@@ -224,9 +224,10 @@ __CSS__
         <h2>Rename the files you already have to match?</h2>
         <p id="nmofferapps"></p>
         <p>Preview first. It lists every file that would change and changes nothing. Renaming then does
-          exactly that. Nothing is downloaded or deleted, nothing moves between folders, and each app's
-          index follows its files, so nothing is ever downloaded twice. The preview can also list files an
-          app would now describe better than when it saved them.</p>
+          exactly that. Nothing is downloaded or deleted, a file moves only into or out of the folders a
+          pattern with a / names, and each app's index follows its files, so nothing is ever downloaded
+          twice. The preview can also list files an app would now describe better than when it saved
+          them.</p>
         <div class="row-actions">
           <button class="btn btn-s" type="button" id="nmprevbtn" data-do="nm-preview">1. Preview the changes</button>
           <button class="btn btn-p" type="button" id="nmapplybtn" data-do="nm-apply" disabled>2. Rename them</button>
@@ -243,6 +244,10 @@ __CSS__
       <p class="hint" style="margin-top:10px">Written by hand, <code>{date:yyyymmdd}[ - {provider}][ -- {number|kind}]</code>
         is the date, then the provider, then the order number, or the kind when there is no number. Square
         brackets make a part that is skipped when empty, and <code>{a|b}</code> takes the first that has a value.</p>
+      <p class="hint" style="margin-top:10px">A <code>/</code> puts files in folders, inside the folder each kind
+        of document already goes to. <code>{provider}/{year}/{date:yyyy-mm-dd} {summary}</code> files each
+        statement in a folder for its provider and one for its year. Every folder names a field, a folder
+        whose fields are empty is left out, and a pattern goes at most three folders deep.</p>
     </details>
   </div>
 </section>
@@ -260,6 +265,29 @@ __CSS__
         <input id="rootinput" type="text" spellcheck="false" placeholder="C:\Users\you\Documents\PaperPull">
         <div class="row-actions"><button class="btn btn-s" type="button" data-do="save-root">Use this folder</button>
           <span class="hint" id="rootmsg" role="status"></span></div>
+      </div>
+    </section>
+    <section class="card pad stack" aria-labelledby="g-docs" id="g-docscard">
+      <h2 id="g-docs">Documents folder</h2>
+      <p class="hint">Where one person's statements, tax documents and receipts go, in folders of their kind,
+        such as a folder Paperless watches. Each download is checked in the provider's own folder first,
+        and when a run ends, what it saved moves there. The provider's records, Manual Review and logs never
+        move, so that folder only ever gets documents that passed their checks. Saving moves nothing already
+        saved.</p>
+      <label class="field" for="dcpick">Provider and person<select id="dcpick"></select></label>
+      <p class="mono small" id="dcnow" style="word-break:break-all"></p>
+      <label class="field" for="dcinput">A folder of their own, as its full path</label>
+      <input id="dcinput" type="text" spellcheck="false" autocomplete="off">
+      <div class="row-actions"><button class="btn btn-s" type="button" data-do="dc-save">Save</button>
+        <button class="btn btn-ghost" type="button" data-do="dc-clear">Use the provider's own folder</button>
+        <span class="hint" id="dcmsg" role="status"></span></div>
+      <div id="dcleft" class="stack" hidden>
+        <p id="dclefttext"></p>
+        <div class="row-actions">
+          <button class="btn btn-s" type="button" id="dcprevbtn" data-do="dc-preview">Preview move</button>
+          <button class="btn btn-p" type="button" id="dcmovebtn" data-do="dc-move" disabled>Move</button>
+          <span class="hint" id="dcstate" role="status"></span></div>
+        <pre class="log short" id="dclog" hidden></pre>
       </div>
     </section>
     <section class="card pad stack" aria-labelledby="hxhead" id="stmove">

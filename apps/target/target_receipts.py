@@ -959,7 +959,9 @@ class App:
                 url = (popup.url if popup else None) or purchase.receipt_url or page.url
                 state = self._context.storage_state()
                 receipt_pdf.render_url_headless(self._pw, state, url, out_path,
-                                                is_safe_url=site.is_safe_url)
+                                                is_safe_url=site.is_safe_url,
+                                                is_asset_url=site.is_print_asset_url,
+                                                hosts=site.PRINT_HOSTS)
                 return self._finish_pdf(page, purchase, out_path, popup=popup)
             except Exception as e2:
                 log.error("Headless fallback failed for %s: %s", purchase.key, e2)

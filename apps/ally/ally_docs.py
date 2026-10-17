@@ -43,6 +43,7 @@ from paperpull_core import doc_types, receipt_pdf
 from paperpull_core import browser as browser_launcher
 import ally_site as site
 from paperpull_core.models import State
+from paperpull_core.storage import refile
 from paperpull_core.keys import account_component as _account_component
 from paperpull_core.keys import migrate_account_keys as _migrate_account_keys
 from paperpull_core.words import Fixed, shape, shape_tree, shape_url, words_for, write_shaped
@@ -653,25 +654,22 @@ class App:
         doc.account = facts.addressee or doc.account
         doc.summary = summary
         filename = build_pdf_filename(doc.date, summary, "", record=doc)
-        if filename == out_path.name:
-            return out_path
         # Told apart as download_one tells a statement apart, by the last of
         # its id, and Rename the same way. With nothing to tell it apart a
         # second copy of one statement to one person was saved " (2)", and
         # a file download_one had already told apart by its id was moved on
-        # to " (2)" by its own name.
-        target = unique_path(out_path.parent, filename,
-                             self.config["max_path_length"],
-                             distinguisher=(doc.document_id or "")[-6:],
-                             ignoring=out_path.name)
-        if target.name == out_path.name:
-            return out_path
+        # to " (2)" by its own name. Filed from the folder its kind routes
+        # to, as download_one filed it, so a naming pattern's folders, an
+        # account's among them, follow what the PDF says (#101).
         try:
-            out_path.replace(target)
+            target = refile(out_path, self.paths.folder_for(doc.category), filename,
+                            self.config["max_path_length"],
+                            distinguisher=(doc.document_id or "")[-6:])
         except OSError as e:
             log.info("could not rename %s: %s", out_path.name, e)
             return out_path
-        log.info("named from contents: %s", target.name)
+        if target != out_path:
+            log.info("named from contents: %s", target.name)
         return target
 
     def download_one(self, page, doc: Document, filename: str):

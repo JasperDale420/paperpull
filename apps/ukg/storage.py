@@ -66,6 +66,10 @@ SPEC = AppSpec(
         # No default: there is no such thing as a generic UKG address.
         "base_url": "",
     },
+    # On PaperPull Server config.json sits in a shared folder, and ukg_site
+    # allows whatever host base_url names, so there base_url has to be an
+    # https address under UKG's own domains, UKG Pro's and UKG Ready's.
+    url_settings={"base_url": ("ultipro.com", "saashr.com")},
     rules_filename="document_rules.json",
 )
 

@@ -4,8 +4,9 @@ Never uses the Windows Print or Save As dialog. PDFs are produced by:
   1. Capturing a Playwright download event (download.save_as), or
   2. Chromium DevTools Page.printToPDF on the printable page (works in the
      headed supervised browser), or
-  3. A short-lived *local* headless Chromium that shares the signed-in
-     session state and renders the printable URL with page.pdf().
+  3. A short-lived *local* headless Chromium that takes the signed-in
+     session's cookies for the provider's own hosts and renders the
+     printable URL with page.pdf(), loading nothing the app's guard refuses.
 
 Validation uses pypdf locally.
 """
@@ -18,6 +19,7 @@ import re
 from pathlib import Path
 from typing import Iterable, NamedTuple, Optional
 
+from . import browser as _launcher
 from .identity import MIN_TEXT, amount_variants, date_variants, on_its_own
 from .models import ValidationResult
 
@@ -616,36 +618,271 @@ def print_frame_to_pdf(page, frame, out_path: Path) -> None:
     print_html_to_pdf(page, frame.content(), out_path)
 
 
+# What the headless renderer lets through, by the kind of request Chromium
+# names it. The provider's own hosts, as the app's guard says, answer the
+# page, its frames and every redirect on the way to them, and what the page
+# draws itself with and reads. An app's asset hosts, its provider's own
+# static servers, answer only what a page is drawn with and never a page.
+# Anything else is refused, the beacons, reports, prefetches, event streams
+# and worker scripts among them, since a printed receipt needs none of them.
+_OWN_HOST_LOADS = frozenset(("Document", "Stylesheet", "Script", "Image", "Font",
+                             "XHR", "Fetch"))
+_ASSET_LOADS = frozenset(("Stylesheet", "Script", "Image", "Font"))
+
+# Ways a page reaches a host that never pause as a request, so the policy
+# below cannot refuse them one by one. None is needed to draw a receipt, so
+# a page in the renderer has none of them. A worker never runs this script,
+# and a prefetch the page's speculation rules ask for, or a report the
+# browser sends for it, never pauses either, which is why the browser is
+# also left no address for any host but the app's (_resolver_rules).
+NO_SOCKETS_INIT_SCRIPT = r"""
+(() => {
+  for (const name of ["WebSocket", "WebSocketStream", "WebTransport",
+                      "RTCPeerConnection", "webkitRTCPeerConnection"]) {
+    try {
+      Object.defineProperty(window, name, {value: undefined, writable: false,
+                                           configurable: false});
+    } catch (e) {}
+  }
+})();
+"""
+
+
+def _host_of(url: str) -> str:
+    from urllib.parse import urlsplit
+    try:
+        return urlsplit(url or "").hostname or ""
+    except ValueError:
+        return ""
+
+
+def _allowed(url: str, kind: str, is_safe_url, is_asset_url=None) -> bool:
+    """Whether the renderer lets a request of this kind go to `url`."""
+    if kind != "Document" and str(url).startswith(("data:", "blob:")):
+        # Made inside the page, so no host is asked for it.
+        return True
+    if kind in _OWN_HOST_LOADS and is_safe_url(url):
+        return True
+    return bool(is_asset_url is not None and kind in _ASSET_LOADS and is_asset_url(url))
+
+
+class _RequestPolicy:
+    """Every request the renderer's browser pauses, of every page, frame,
+    window and worker and every hop of every redirect, held before it is
+    sent and let through only when the app's guards accept it.
+
+    Playwright's own routing cannot do this. It hears a request once and
+    follows every redirect after that with nothing asked (1.63's
+    coreBundle.js continues a request it was handed as a redirect without
+    calling the route). Chromium's Fetch domain, turned on for the whole
+    browser, pauses each hop as a request of its own. The browser is the
+    renderer's own and holds nothing else. What Chromium sends without
+    pausing it, a socket, a prefetch, a report, finds no address for any
+    other host (_resolver_rules)."""
+
+    def __init__(self, browser, is_safe_url, is_asset_url=None):
+        self.is_safe_url = is_safe_url
+        self.is_asset_url = is_asset_url
+        # (kind, frame id, host) of every request refused, noted before the
+        # browser is told, so a navigation that fails has its reason here.
+        self.refused = []
+        self._cdp = browser.new_browser_cdp_session()
+        self._cdp.on("Fetch.requestPaused", self._paused)
+        self._cdp.send("Fetch.enable", {"patterns": [
+            {"urlPattern": "*", "requestStage": "Request"}]})
+
+    def _paused(self, event: dict) -> None:
+        url = (event.get("request") or {}).get("url") or ""
+        kind = event.get("resourceType") or ""
+        try:
+            ok = _allowed(url, kind, self.is_safe_url, self.is_asset_url)
+        except Exception:
+            # A guard that cannot answer has not said yes.
+            ok = False
+        if not ok:
+            self.refused.append((kind, event.get("frameId"), _host_of(url)))
+        try:
+            if ok:
+                self._cdp.send("Fetch.continueRequest", {"requestId": event["requestId"]})
+            else:
+                self._cdp.send("Fetch.failRequest", {"requestId": event["requestId"],
+                                                     "errorReason": "BlockedByClient"})
+        except Exception:
+            # The browser is closing, and the request goes with it.
+            pass
+
+    def page_refused(self, frame_id):
+        """The host of the first page refused in the frame `frame_id`, the
+        tab's own, or "" when none was."""
+        for kind, frame, host in self.refused:
+            if kind == "Document" and frame == frame_id:
+                return host or "an address that is not the provider's"
+        return ""
+
+
+def _state_for(storage_state, url: str, is_safe_url) -> dict:
+    """The part of the signed-in session the renderer is given, the cookies
+    and site storage of hosts the app's guard accepts and nothing of any
+    other site the person's browser holds. A cookie names a host and no
+    scheme or port, so it is asked about as an address on its host reached
+    the way `url` is. The page is let load from no other host, so a cookie
+    left out here could never have been sent."""
+    from urllib.parse import urlsplit
+    state = storage_state if isinstance(storage_state, dict) else {}
+    try:
+        parts = urlsplit(url or "")
+        scheme, port = parts.scheme, parts.port
+    except ValueError:
+        return {"cookies": [], "origins": []}
+
+    def accepted(address: str) -> bool:
+        try:
+            return bool(is_safe_url(address))
+        except Exception:
+            return False
+
+    def host_ok(domain) -> bool:
+        host = str(domain or "").strip().lstrip(".")
+        if not host or "/" in host or ":" in host or "@" in host:
+            return False
+        return accepted("%s://%s%s/" % (scheme, host, ":%d" % port if port else ""))
+
+    cookies = [c for c in state.get("cookies") or []
+               if isinstance(c, dict) and host_ok(c.get("domain"))]
+    origins = [o for o in state.get("origins") or []
+               if isinstance(o, dict) and accepted(str(o.get("origin") or "") + "/")]
+    return {"cookies": cookies, "origins": origins}
+
+
+PROXY_REFUSED = (
+    "The fallback print does not go through a proxy. Its browser is given an "
+    "address for the provider's own hosts and no other, and this computer's "
+    "proxy is not one of them, so the page was not opened.")
+
+_HOST_NAME = re.compile(r"(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*")
+
+
+def _resolver_rules(hosts) -> str:
+    """Chromium's --host-resolver-rules for a browser that finds an address
+    for these hosts and no other, "*.target.com" naming every host under
+    target.com. Whatever the page sends without a request the policy
+    pauses then reaches none of the others, an address written in bare
+    numbers included unless it is named here. A proxy set for the whole
+    computer is not named either, so behind one the page does not load at
+    all and render_url_headless says why. ValueError for a host that is not
+    a plain name, since the rules are one line Chromium reads and a comma in
+    a name would add a rule of its own."""
+    names = [str(h).strip().lower().rstrip(".") for h in (hosts or [])]
+    if not names:
+        raise ValueError("render_url_headless needs the hosts its page may reach")
+    bad = [n for n in names if not _HOST_NAME.fullmatch(n)]
+    if bad:
+        raise ValueError("not a host name the renderer can be left to reach, %r" % bad)
+    return "--host-resolver-rules=MAP * ~NOTFOUND , " + " , ".join(
+        "EXCLUDE %s" % n for n in names)
+
+
+def _print_checked(page, out_path: Path, still_the_providers) -> None:
+    """Print the page, asking still_the_providers before and after, and
+    remove what was printed when the page left while it printed."""
+    still_the_providers()
+    page.emulate_media(media="print")
+    page.pdf(path=str(out_path), format="Letter", print_background=True,
+             prefer_css_page_size=True, display_header_footer=False,
+             margin={"top": "0.4in", "bottom": "0.4in",
+                     "left": "0.4in", "right": "0.4in"})
+    try:
+        still_the_providers()
+    except ValueError:
+        # Left while it printed, so what was printed is in doubt.
+        out_path.unlink(missing_ok=True)
+        raise
+
+
+def _tab_frame_id(context, page) -> str:
+    """The id Chromium gives the tab's own frame, to tell its pages from
+    those of the frames inside it and of any window it opens."""
+    session = context.new_cdp_session(page)
+    try:
+        return session.send("Page.getFrameTree")["frameTree"]["frame"]["id"]
+    finally:
+        try:
+            session.detach()
+        except Exception:
+            pass
+
+
 def render_url_headless(playwright, storage_state: dict, url: str,
                         out_path: Path, wait_ms: int = 4000,
-                        is_safe_url=None) -> None:
+                        is_safe_url=None, is_asset_url=None, hosts=None) -> None:
     """Fallback: render *url* to PDF in a temporary local headless Chromium
     that reuses the signed-in cookies. page.pdf() is headless-only, which is
     why this exists.
 
-    `is_safe_url` is the app's own guard, and the address has to pass it.
-    Every other fetch in the project is host checked and this one was not,
-    although it is reached from a page-supplied address and only ever runs
-    after the ordinary path has already failed, which is exactly when that
-    address is least trustworthy.
+    `is_safe_url` is the app's own guard and is required. The address has
+    to pass it, and so does every page the tab is sent to, every redirect on
+    the way and everything the page loads, while `is_asset_url`, when an app
+    gives one, lets its provider's own static hosts serve what the page is
+    drawn with and never a page. Every other request the browser pauses is
+    refused before it is sent (_RequestPolicy). `hosts`, also required,
+    names every host either guard accepts ("*.target.com" for all under
+    it), and the browser finds an address for no other, which holds what
+    it sends without pausing (_resolver_rules). It is reached from a
+    page-supplied address and only ever runs after the ordinary path has
+    already failed, which is exactly when that address is least
+    trustworthy. Until 2026-10 only the first address was checked, and a
+    redirect from it was followed anywhere with every cookie of the
+    person's browser and printed.
+
+    Nothing is printed when the tab was sent off the provider's hosts at any
+    point, or is not on them at the moment of printing, and a PDF already
+    written then is removed. Raises ValueError for those, SandboxRefused
+    when the browser's sandbox cannot start, RuntimeError(PROXY_REFUSED)
+    behind a proxy, and Playwright's own error when the page could not be
+    opened at all.
     """
-    if is_safe_url is not None and not is_safe_url(url):
+    if is_safe_url is None:
+        raise ValueError("render_url_headless needs the app's is_safe_url")
+    rules = _resolver_rules(hosts)
+    if not is_safe_url(url):
         raise ValueError("refusing to render an address that is not the "
                          "provider's: %r" % (url or "")[:120])
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    browser = playwright.chromium.launch(headless=True)
+    browser = _launcher.sandboxed_launch(playwright.chromium, headless=True, args=[rules])
     try:
-        context = browser.new_context(storage_state=storage_state)
+        policy = _RequestPolicy(browser, is_safe_url, is_asset_url)
+        context = browser.new_context(storage_state=_state_for(storage_state, url, is_safe_url),
+                                      service_workers="block", accept_downloads=False)
         context.add_init_script(PRINT_SUPPRESS_INIT_SCRIPT)
+        context.add_init_script(NO_SOCKETS_INIT_SCRIPT)
         page = context.new_page()
-        page.goto(url, wait_until="networkidle", timeout=60000)
+        tab = _tab_frame_id(context, page)
+
+        def still_the_providers() -> None:
+            sent_to = policy.page_refused(tab)
+            if sent_to:
+                raise ValueError("refusing to print, the page was sent on to %s, "
+                                 "which is not the provider's" % sent_to)
+            if not is_safe_url(page.url):
+                raise ValueError("refusing to print a page that is not the "
+                                 "provider's: %r" % (page.url or "")[:120])
+
+        try:
+            page.goto(url, wait_until="networkidle", timeout=60000)
+        except Exception as e:
+            # Sent elsewhere is said as such. Any other failure, a refused
+            # connection or a page that never came, keeps its own words,
+            # since the tab never left the blank page it started on.
+            sent_to = policy.page_refused(tab)
+            if sent_to:
+                raise ValueError("refusing to print, the page was sent on to %s, "
+                                 "which is not the provider's" % sent_to) from e
+            if "ERR_PROXY_CONNECTION_FAILED" in str(e):
+                raise RuntimeError(PROXY_REFUSED) from e
+            raise
         page.wait_for_timeout(wait_ms)
-        page.emulate_media(media="print")
-        page.pdf(path=str(out_path), format="Letter", print_background=True,
-                 prefer_css_page_size=True, display_header_footer=False,
-                 margin={"top": "0.4in", "bottom": "0.4in",
-                         "left": "0.4in", "right": "0.4in"})
+        _print_checked(page, out_path, still_the_providers)
     finally:
         browser.close()
 

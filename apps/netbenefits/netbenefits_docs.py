@@ -47,6 +47,7 @@ from paperpull_core import browser as browser_launcher
 import netbenefits_site as site
 import storage
 from paperpull_core.models import State
+from paperpull_core.storage import refile
 from paperpull_core.keys import is_done as _is_done
 from paperpull_core.keys import stable_occurrences as _stable_occurrences
 from paperpull_core.words import shape, shape_tree, words_for, write_shaped
@@ -915,10 +916,11 @@ class App:
         doc.summary = f"{base} - {label}"
         doc.covers = [p["digest"] for p in named if p["digest"] != doc.plan]
         filename = build_pdf_filename(doc.date, doc.summary, "", record=doc)
-        target = unique_path(out_path.parent, filename, self.config["max_path_length"])
+        # Filed from the folder its kind routes to, as download_one filed it,
+        # so a naming pattern's folders follow the combined summary (#101).
         try:
-            out_path.replace(target)
-            out_path = target
+            out_path = refile(out_path, self.paths.folder_for(doc.category), filename,
+                              self.config["max_path_length"])
         except OSError:
             # The file keeps the name its own summary gave it, so the record
             # keeps that summary too, and Rename finds nothing to change.

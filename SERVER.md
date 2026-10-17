@@ -37,15 +37,21 @@ a Raspberry Pi cannot run it.
 
 ## Get the image
 
-`compose.yaml` names the image every PaperPull release publishes,
-`ghcr.io/rheeloaded/paperpull-server:latest`, and Docker downloads it from
-GitHub the first time the project starts. Before a release publishes it,
-the image is built from that release's code, started the way this page
-describes and checked, and only that very image goes out.
+`compose.yaml` names the image a PaperPull release publishes, by that
+release's version, such as `ghcr.io/rheeloaded/paperpull-server:0.54.1`,
+and Docker downloads it from GitHub the first time the project starts.
+Before a release publishes it, the image is built from that release's
+code, started the way this page describes and checked, and only that very
+image goes out. Each image comes with a signed list of everything inside
+it, see "Its parts are listed and checked" in
+[SECURITY-SERVER.md](SECURITY-SERVER.md).
 
-If Docker cannot download it, no release has published it yet. Build it
-yourself then, from a checkout of this repository, on any computer with
-Docker and Python.
+If Docker cannot download it, no release has published that version yet.
+A release's own `PaperPull-Server-X.Y.Z.zip` always names an image that
+exists, while the copy in this repository names the next version for a
+short while before its release goes out. Write the newest version on the
+releases page in the `image:` line then, or build the image yourself, from
+a checkout of this repository, on any computer with Docker and Python.
 
 ```bash
 python server/build.py --save paperpull-server.tar
@@ -59,8 +65,10 @@ Google.
 
 ## Set it up
 
-1. **Make a folder for it** on the server, and copy `server/compose.yaml`
-   and `server/seccomp-chrome.json` from this repository into it. The second
+1. **Make a folder for it** on the server, and put `compose.yaml` and
+   `seccomp-chrome.json` in it, from `PaperPull-Server-X.Y.Z.zip` on the
+   [newest release](https://github.com/rheeloaded/paperpull/releases/latest),
+   or from `server/` in this repository. The second
    file is the container's security profile, see "Chrome's sandbox" in
    [SECURITY-SERVER.md](SECURITY-SERVER.md).
 2. **Fill in `compose.yaml`.** At least these.
@@ -69,6 +77,8 @@ Google.
    - `TZ`, your time zone.
    - The data folder, `./data` unless you point it at a shared folder.
    - If you use Paperless, its consume folder, see [Paperless](#paperless).
+   - If the server has Intel or AMD graphics, the two `devices` lines,
+     see [Graphics](#graphics).
 3. **Start it.**
    ```bash
    docker compose up -d
@@ -155,6 +165,40 @@ Community Applications.
 
 Synology should work the same way and has not been tried yet.
 
+## Graphics
+
+The sign-in window runs on a virtual screen inside the container, which has
+no graphics of its own. Without a graphics chip, Chrome draws every page in
+software and turns WebGL off, and some sites take that for an automated
+browser. Best Buy refuses the sign-in outright, rejecting a correct password
+and every code, or dropping the connection with `ERR_HTTP2_PROTOCOL_ERROR`.
+
+So when the server has Intel or AMD graphics, pass them to the container.
+In `compose.yaml`, remove the `#` from these two lines under `shm_size`, then
+recreate the container with `docker compose up -d`.
+
+```yaml
+    devices:
+      - /dev/dri:/dev/dri
+```
+
+- **Check it.** Run `ls /dev/dri` on the server first. It should list
+  `card0` and `renderD128`. Without them, leave the lines out, since Docker
+  will not start a container that names a missing device.
+- **See that it took.** Open `chrome://gpu` in the sign-in window. The
+  graphics should read hardware accelerated, with an Intel or AMD chip named
+  under GPU0, not `llvmpipe`. The self-test says the same, on its graphics
+  line.
+- **Which machines.** Intel graphics from Broadwell on, which covers most
+  Intel NAS boxes, works, measured on a UGREEN NAS. AMD graphics should work
+  and has not been tried. NVIDIA is not covered, and a machine with no
+  graphics chip, such as Synology's AMD Ryzen models, draws in software as
+  before.
+- **In a NAS's Docker app.** The project's compose file is the one to edit.
+  If the app keeps a copy of its own, edit it there and redeploy the project.
+- To turn it off without editing the file, set `PAPERPULL_GPU: "off"` under
+  `environment`.
+
 ## Paperless
 
 Point a volume at Paperless's consume folder, and after every run the
@@ -182,6 +226,12 @@ documents that run saved are copied into it.
   in the environment, each provider's documents go in a folder of that
   provider's name inside the consume folder. Paperless turns those folders
   into tags when `PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS` is on in Paperless.
+- **A documents folder stays inside /data.** The panel's Documents folder
+  setting works on the server for a folder inside the data folder, and a
+  run's checked documents move there once the plug-ins have copied them. A
+  run refuses one anywhere else, or one reached through a link out of
+  /data, before it saves anything, so Paperless gets new documents through
+  the volume above rather than through a documents folder.
 
 What happened is in each run's output, a line such as "Copied 3 new
 documents to Paperless".
@@ -192,6 +242,9 @@ documents to Paperless".
   edge of the sign-in window, paste into its clipboard box, then press
   Ctrl+V in the page. Chrome on the server does not save passwords, so keep
   them in your own password manager.
+- **A correct password or code refused**, or `ERR_HTTP2_PROTOCOL_ERROR`,
+  usually means the site took the server's browser for an automated one,
+  because it has no graphics. See [Graphics](#graphics).
 - **"Robot or human?"** Some providers check, especially Walmart. Press and
   hold the button in the sign-in window yourself. PaperPull never answers
   one for you.
@@ -203,10 +256,16 @@ documents to Paperless".
 
 ## Updating, backing up and removing
 
-- **Updating.** Download the newer image and recreate the container, with
-  `docker compose pull` and then `docker compose up -d` in the project's
-  folder, or the same from your NAS's Docker app. Everything you set up is
-  in the volumes and stays. Chrome brings itself up to date at every start.
+- **Updating.** Write the newer version in the `image:` line of
+  `compose.yaml`, the number on the
+  [releases page](https://github.com/rheeloaded/paperpull/releases), then
+  run `docker compose pull` and `docker compose up -d` in the project's
+  folder, or do the same from your NAS's Docker app. Everything you set up
+  is in the volumes and stays. To go back, write the version you had and
+  run the same two commands. Chrome brings itself up to date at every
+  start. If you would rather take every release without editing the file,
+  write `latest` in place of the version, which always names the newest
+  release, and then the two commands alone update it.
 - **Backing up.** Your documents are in the data folder. The `profiles`
   volume holds your live sign-ins, so a backup of it is as sensitive as your
   passwords, and you can always sign in again instead. The `settings` volume

@@ -59,6 +59,8 @@ def test_every_app_opens_a_browser_of_its_own_only_through_the_core():
 
 
 def test_a_browser_of_its_own_is_said_and_launched_as_before(capsys):
+    """Launched as before, and inside its sandbox since 2026-10, see
+    test_every_browser_starts_in_its_sandbox."""
     seen = {}
 
     class Chromium:
@@ -70,7 +72,8 @@ def test_a_browser_of_its_own_is_said_and_launched_as_before(capsys):
                                      accept_downloads=True)
     assert got == "context"
     assert seen == {"dir": "/x/browser-profile",
-                    "kwargs": {"headless": False, "accept_downloads": True}}
+                    "kwargs": {"headless": False, "accept_downloads": True,
+                               "chromium_sandbox": True}}
     said = capsys.readouterr().out
     assert "no cdp_url" in said and "/x/browser-profile" in said
     assert "config.example.json" in said

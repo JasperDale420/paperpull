@@ -175,6 +175,56 @@ def test_a_broken_pattern_says_what_is_wrong_and_changes_nothing(apps):
     assert all(n["new"] == n["current"] for n in d["names"])
 
 
+# -- folders from a pattern (#101) ---------------------------------------------
+
+def test_a_pattern_with_folders_previews_them(apps):
+    d = preview({"app": "chase", "pattern": "{provider}/{account}/{date} {kind}"})
+    assert d["problem"] is None
+    assert d["names"][0]["new"] == "Chase/x1234/2026-02-28 Statement.pdf"
+
+
+def test_a_file_in_folders_previews_where_it_is_now(tmp_path, monkeypatch):
+    """The newest files now are shown with the folders a pattern filed them
+    in, inside the folder of their kind, and the default, which names no
+    folder, shows each going back to the folder of its kind."""
+    out = tmp_path / "out" / "Chase Statements"
+    name = "2026-02-28 Chase Checking.pdf"
+    where = out / "Statements" / "Chase" / "2026" / name
+    d = make_install(tmp_path, "Chase Statements", "Chase", "DOCUMENT", records=[
+        {"date": "2026-02-28", "summary": "Checking", "category": "Statement",
+         "pdf_filename": name, "pdf_path": str(where)},
+        {"date": "2026-01-31", "summary": "Checking", "category": "Statement",
+         "pdf_filename": "flat.pdf", "pdf_path": str(out / "Statements" / "flat.pdf")},
+        {"date": "2025-12-31", "summary": "Checking", "category": "Statement",
+         "pdf_filename": "elsewhere.pdf", "pdf_path": str(tmp_path / "x" / "y" / "elsewhere.pdf")}])
+    monkeypatch.setattr(app_module, "discover_apps", lambda: {"chase": {"dir": str(d)}})
+    names = preview({"app": "chase", "pattern": ""})["names"]
+    assert [n["current"] for n in names] == ["Chase/2026/" + name, "flat.pdf", "elsewhere.pdf"]
+    assert [n["new"] for n in names] == [name, "flat.pdf", "elsewhere.pdf"]
+    names = preview({"app": "chase", "pattern": "{provider}/{year}/{date} {summary}"})["names"]
+    assert names[0]["new"] == "Chase/2026/2026-02-28 Checking.pdf"
+
+
+def test_a_pattern_with_folders_is_saved(apps):
+    pattern = "{provider}/[{account}/]{date} {summary}"
+    assert save({"app": "chase", "scope": "own", "pattern": pattern})["written"] == 1
+    assert cfg(apps["chase"])["filename_pattern"] == pattern
+
+
+@pytest.mark.parametrize("pattern,says", [
+    ("Statements/{date}", "names no field"),
+    ("/{provider}/{date}", "at the start"),
+    ("{provider}/{year}/{month}/{account}/{date}", "at most 3 folders deep"),
+])
+def test_a_folder_pattern_that_cannot_be_used_is_refused_and_says_why(apps, pattern, says):
+    d = preview({"app": "chase", "pattern": pattern})
+    assert d["problem"] and says in d["problem"]
+    with pytest.raises(HTTPException) as e:
+        save({"app": "chase", "scope": "own", "pattern": pattern})
+    assert e.value.status_code == 400 and says in e.value.detail
+    assert "filename_pattern" not in cfg(apps["chase"])
+
+
 # -- saving --------------------------------------------------------------------
 
 def test_shared_goes_into_every_install_of_that_kind_and_every_account(apps):

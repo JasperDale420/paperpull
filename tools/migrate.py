@@ -32,10 +32,10 @@ done, and anything the target install already knew about it is kept.
 Each person's settings come along too, the ones somebody chose rather than
 the ones that name a computer. That is every key the provider's
 config.example.json lists, the file name patterns, and nothing in
-MACHINE_KEYS, the download folder, the browser profile, the browser and its
-debugging port, which the new machine decides for itself. An import writes
-settings only into a provider or person it sets up, never over one already
-there.
+MACHINE_KEYS, the download folder, the documents folder, the browser profile,
+the browser and its debugging port, which the new machine decides for itself.
+An import writes settings only into a provider or person it sets up, never
+over one already there.
 
 PATHS ARE REWRITTEN
 
@@ -260,7 +260,7 @@ TERMINAL = {"Completed", "PDF Verified", "No Receipt Available", "Canceled"}
 # Settings that name this computer. Another machine has its own folders, its
 # own profiles and its own browser, so these never travel, and an import
 # never writes them, whatever a file says.
-MACHINE_KEYS = ("output_dir", "profile_dir", "cdp_url", "browser")
+MACHINE_KEYS = ("output_dir", "profile_dir", "cdp_url", "browser", "documents_dir")
 # The control panel's File names tab writes these, and no config.example.json
 # lists them.
 NAMING_KEYS = ("filename_pattern", "filename_pattern_receipts",
@@ -440,9 +440,12 @@ def settings_to_apply(install: Path, cfg: dict, settings: dict, check_pattern=No
     return out
 
 
-def scan(root: Path) -> list:
+def scan(root: Path, keep=None) -> list:
     """Every place under root that keeps a history, one for each person on
     each install, then any folder with a history and no app of its own.
+    keep, when given, says whether a folder may be read at all, and one it
+    refuses is left out with a line saying so (the panel on PaperPull Server
+    keeps to its data folder that way).
 
     A second person's folder sits beside the install, holding records and
     no app, so it is found through the person's config and not again as a
@@ -473,6 +476,9 @@ def scan(root: Path) -> list:
             if key in claimed:
                 continue
             claimed.add(key)
+            if keep is not None and not keep(where):
+                _say("  skipping %s, its folder is outside the data folder" % where.name)
+                continue
             recs = {}
             if (where / "progress.json").is_file():
                 recs = _records(where / "progress.json")
@@ -485,6 +491,8 @@ def scan(root: Path) -> list:
                           "config": cfg_path if cfg_path.is_file() else None})
     for child in children:
         if os.path.normcase(str(child)) in claimed or _entry_script(child) is not None:
+            continue
+        if keep is not None and not keep(child):
             continue
         provider, kind = identify(child)
         if provider is None:
@@ -577,11 +585,11 @@ def _key_fields(key: str, rec: dict, provider: str = "") -> dict:
 
 # -- export ------------------------------------------------------------------
 
-def build(root: Path, minimal: bool = False):
+def build(root: Path, minimal: bool = False, keep=None):
     """(the export file's bytes, its manifest), or (None, None) when nothing
     under root keeps a history. Written in memory, so the control panel can
-    hand it to a browser without leaving a copy anywhere."""
-    places = scan(root)
+    hand it to a browser without leaving a copy anywhere. keep is scan's."""
+    places = scan(root, keep)
     if not places:
         return None, None
     manifest = {"schema": SCHEMA, "created": datetime.now().isoformat(timespec="seconds"),
@@ -978,17 +986,28 @@ def home_of(place: dict) -> Path:
     return Path(config).parent if config else Path(place["path"])
 
 
-def write_history(where: Path, records: dict, stamp: str) -> None:
+def write_history(where: Path, records: dict, stamp: str, write=None) -> None:
     """A place's progress.json, written in one step, with the one it
-    replaces kept in its Backups first. Raises OSError."""
+    replaces kept in its Backups first. Raises OSError. write, when given,
+    writes each of the two files whole in place of the plain writes here
+    (the control panel on PaperPull Server passes one that never writes
+    through a link left in the shared folder)."""
     path = Path(where) / "progress.json"
     Path(where).mkdir(parents=True, exist_ok=True)
+    text = json.dumps(records, indent=2, ensure_ascii=False)
     if path.is_file():
         backups = Path(where) / "Backups"
         backups.mkdir(parents=True, exist_ok=True)
-        (backups / ("progress.%s.before-import.bak" % stamp)).write_bytes(path.read_bytes())
+        kept = backups / ("progress.%s.before-import.bak" % stamp)
+        if write is not None:
+            write(kept, path.read_bytes())
+        else:
+            kept.write_bytes(path.read_bytes())
+    if write is not None:
+        write(path, text)
+        return
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(records, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
 
 

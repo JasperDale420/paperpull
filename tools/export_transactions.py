@@ -24,7 +24,9 @@ exported, with the difference shown, so you know which rows to doubt.
 
 Amounts are the effect on the balance. Money in is positive, money out is
 negative, for a bank account and a card alike (a card payment is negative,
-a purchase positive, which is how the card prints them).
+a purchase positive, which is how the card prints them). Descriptions and
+every other text are written as text, never as a formula, since a merchant
+chooses the name a statement prints (paperpull_core.sheets).
 
 Reading a PDF takes a moment, and an archive can hold hundreds, so every
 reading is cached beside the installs by file size and modification time.
@@ -47,6 +49,16 @@ from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+# The core beside this tool comes first, as tools/migrate.py takes it, so
+# the rule for what a cell may hold is the one shipped with this copy.
+_CORE = Path(__file__).resolve().parents[1] / "core"
+if (_CORE / "paperpull_core").is_dir() and str(_CORE) not in sys.path:
+    sys.path.insert(0, str(_CORE))
+try:
+    from paperpull_core.sheets import csv_value, keep_text, read_stored_row, xlsx_value  # noqa: E402
+except ImportError as e:
+    raise ImportError("export_transactions.py needs PaperPull's core folder beside its tools folder") from e
 
 INDEX_SUFFIX = " Document Index.csv"
 CACHE_NAME = ".transactions-cache.json"
@@ -836,6 +848,31 @@ def pdf_path(index: Path, row: dict) -> Path:
     return index.parent / p
 
 
+def statement_name(index: Path, pdf: Path) -> str:
+    """A statement as the spreadsheet names it. Its file is read by the full
+    path its index row gives (pdf_path), and a person reads it by its name,
+    with the folders a naming pattern filed it in inside the folder of its
+    kind, "Chase/2026/2026-01-31 Chase Statement.pdf" (#101), since a
+    pattern's folders can hold two files of one name. A file in the folder
+    of its kind is its name alone, as it always was. A statement moved to
+    the account's documents folder (#102) is named from inside that folder
+    the same way, each documents folder its documents went to being
+    written down beside the index, in documents-folders.json."""
+    roots = [index.parent]
+    try:
+        listed = json.loads((index.parent / "documents-folders.json").read_text("utf-8"))
+        roots += [Path(p) for p in listed if isinstance(p, str) and Path(p).is_absolute()]
+    except (OSError, ValueError, TypeError):
+        pass
+    for root in sorted(roots, key=lambda p: len(str(p)), reverse=True):
+        try:
+            parts = pdf.relative_to(root).parts
+        except ValueError:
+            continue
+        return "/".join(parts[1:]) if len(parts) > 2 else pdf.name
+    return pdf.name
+
+
 def providers(root: Path) -> List[dict]:
     """Statement archives with at least one PDF on disk."""
     out: "OrderedDict[str, dict]" = OrderedDict()
@@ -851,8 +888,11 @@ def providers(root: Path) -> List[dict]:
 
 
 def _index_rows(path: Path) -> List[dict]:
+    """The document index's rows as the app wrote them, each quote it put in
+    front of a value that starts like a formula taken off again, so a file
+    name reads as the file is named."""
     with open(path, encoding="utf-8-sig", newline="") as fh:
-        return list(csv.DictReader(fh))
+        return [read_stored_row(r) for r in csv.DictReader(fh)]
 
 
 class Cache:
@@ -937,7 +977,7 @@ def export(root: Path, out: Optional[Path] = None, provider: Optional[str] = Non
             if row.get("Account Holder"):
                 account = f"{row['Account Holder']}, {account}" if account else row["Account Holder"]
             stmt_date = row.get("Document Date") or parsed.get("period_end") or ""
-            name = p.name
+            name = statement_name(index, p)
             reconciled = parsed["status"].startswith("reconciled")
             for t in parsed["transactions"]:
                 txn_rows.append({"Provider": prov, "Account": account, "Date": t["date"],
@@ -990,11 +1030,13 @@ def export(root: Path, out: Optional[Path] = None, provider: Optional[str] = Non
 
 
 def _write_csv(path: Path, rows: List[dict]) -> None:
+    """Descriptions, accounts and the rest are written as text a spreadsheet
+    will not take for a formula (paperpull_core.sheets). Amounts are numbers."""
     with open(path, "w", encoding="utf-8-sig", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=TXN_COLUMNS)
         w.writeheader()
         for r in rows:
-            w.writerow({k: ("" if v is None else v) for k, v in r.items()})
+            w.writerow({k: csv_value(v) for k, v in r.items()})
 
 
 def _write_xlsx(path: Path, txns: List[dict], stmts: List[dict]) -> None:
@@ -1009,7 +1051,11 @@ def _write_xlsx(path: Path, txns: List[dict], stmts: List[dict]) -> None:
         for c in ws[1]:
             c.font = Font(bold=True)
         for r in rows:
-            ws.append([r.get(c) for c in columns])
+            ws.append([xlsx_value(r.get(c)) for c in columns])
+        # Every text cell a string cell, never a formula, on every sheet.
+        for line in ws.iter_rows():
+            for cell in line:
+                keep_text(cell)
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = ws.dimensions
         for i, col in enumerate(columns, start=1):

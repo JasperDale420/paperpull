@@ -457,11 +457,16 @@ class App:
         # A listing that stops on the way, however it stops, is noted as one
         # that stopped, for Resume (paperpull_core.listing).
         listing.started(self)
-        page = self.page()
         n_new = 0
-        # Billing History is opened and read in one go by the site layer,
-        # so a sign-out anywhere on the way reaches the boundary below and
-        # stops the run, rather than a prompt to sign in again.
+        # The tab is taken the way each bill takes it. With no tab of the
+        # person's on My Energy Center, Billing History is opened in a tab
+        # of this run's own before anything asks about the session, since
+        # that tab starts blank, off the site, and the session check stops
+        # on a tab off the site. A tab of another site is never used.
+        page = self._on_its_site()
+        # Billing History is then opened and read in one go by the site
+        # layer, so a sign-out anywhere on the way reaches the boundary
+        # below and stops the run, rather than a prompt to sign in again.
         self.check_session(page)
         try:
             docs = site.collect_download_docs(page)
@@ -544,10 +549,11 @@ class App:
     # -- processing --------------------------------------------------------
 
     def _on_its_site(self):
-        """The tab the next bill is taken in, on My Energy Center and never a
-        tab of another site. My Energy Center keeps its session in a cookie a
-        new tab shares, so with no tab of the person's on the site Billing
-        History is opened in a tab of this run's own (tabs.on_its_site)."""
+        """The tab Discover and the next bill are taken in, on My Energy
+        Center and never a tab of another site. My Energy Center keeps its
+        session in a cookie a new tab shares, so with no tab of the person's
+        on the site Billing History is opened in a tab of this run's own
+        (tabs.on_its_site)."""
         return tabs.on_its_site(self, site.is_safe_url, "My Energy Center",
                                 self._open_documents)
 
@@ -941,6 +947,9 @@ class App:
             if found:
                 site.expand_all(page)
                 site.scroll_full_page(page)
+                # Where a bill's date is read from, so a list that stops
+                # for want of its Statement Date column can be repaired.
+                info["bill_table_header"] = site.table_header(page)
             info["row_counts"] = {}
             for name, sel in [("doc_row", site.FALLBACK["doc_row"]),
                               ("table rows", "table tbody tr"),

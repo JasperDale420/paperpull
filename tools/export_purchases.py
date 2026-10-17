@@ -15,7 +15,9 @@ an Orders sheet with one row per order and a Summary sheet with a total per
 provider per year.
 
 The workbook is rebuilt from the CSVs every time, so it is never the copy
-you edit. Amounts are written as numbers, so Excel can sum them.
+you edit. Amounts are written as numbers, so Excel can sum them. Item
+names and every other text are written as text, never as a formula, since
+a seller chooses an item's name (paperpull_core.sheets).
 
 Needs `openpyxl` for .xlsx. Without it the tool writes a .csv and says so.
 """
@@ -29,6 +31,16 @@ from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+# The core beside this tool comes first, as tools/migrate.py takes it, so
+# the rule for what a cell may hold is the one shipped with this copy.
+_CORE = Path(__file__).resolve().parents[1] / "core"
+if (_CORE / "paperpull_core").is_dir() and str(_CORE) not in sys.path:
+    sys.path.insert(0, str(_CORE))
+try:
+    from paperpull_core.sheets import csv_value, keep_text, read_stored, xlsx_value  # noqa: E402
+except ImportError as e:
+    raise ImportError("export_purchases.py needs PaperPull's core folder beside its tools folder") from e
 
 HISTORY_SUFFIX = " Order History.csv"
 # The apps write money in one canonical form, an optional minus, the store's
@@ -116,7 +128,9 @@ def load_purchases(provider: str, path: Path) -> List[dict]:
         for raw in csv.DictReader(fh):
             row = {}
             for out, src in COLUMNS:
-                value = provider if src is None else (raw.get(src) or "").strip()
+                # The app put a quote in front of a value that starts like a
+                # formula, and it comes off here as it does in the app.
+                value = provider if src is None else (read_stored(raw.get(src)) or "").strip()
                 if out in MONEY:
                     value = money(value)
                 elif out == "Quantity":
@@ -178,11 +192,13 @@ def sort_newest_first(rows: List[dict]) -> List[dict]:
 
 
 def write_csv(path: Path, purchases: List[dict]) -> None:
+    """Item names, notes and the rest are written as text a spreadsheet will
+    not take for a formula (paperpull_core.sheets). Amounts are numbers."""
     with open(path, "w", encoding="utf-8-sig", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=[c for c, _ in COLUMNS])
         w.writeheader()
         for p in purchases:
-            w.writerow({k: ("" if v is None else v) for k, v in p.items()})
+            w.writerow({k: csv_value(v) for k, v in p.items()})
 
 
 def write_xlsx(path: Path, purchases: List[dict], orders: List[dict], summary: List[dict]) -> None:
@@ -197,7 +213,11 @@ def write_xlsx(path: Path, purchases: List[dict], orders: List[dict], summary: L
         for c in ws[1]:
             c.font = Font(bold=True)
         for r in rows:
-            ws.append([r.get(c) for c in columns])
+            ws.append([xlsx_value(r.get(c)) for c in columns])
+        # Every text cell a string cell, never a formula, on every sheet.
+        for line in ws.iter_rows():
+            for cell in line:
+                keep_text(cell)
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = ws.dimensions
         for i, col in enumerate(columns, start=1):

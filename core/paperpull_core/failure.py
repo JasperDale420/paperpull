@@ -577,6 +577,16 @@ def write_failure(diagnostics_dir, command: str, step: str, reason: str = "",
             "step": _step(step),
             "reason": _step(reason) if reason else "",
         }
+        # On PaperPull Server, whether the sign-in window draws on a graphics
+        # chip, since a site that takes a browser without one for an
+        # automated one refuses the sign-in and says nothing of why.
+        try:
+            from .browser import server_graphics
+            graphics = server_graphics()
+        except Exception:
+            graphics = ""
+        if graphics:
+            report["graphics"] = Fixed(graphics)
         if error is not None:
             report["error"] = error_kind(error)
         if page is not None:

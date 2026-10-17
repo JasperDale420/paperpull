@@ -53,7 +53,6 @@ from paperpull_core import browser as browser_launcher
 import wellsfargo_site as site
 from paperpull_core.models import State
 from paperpull_core.keys import account_component as _account_component
-from paperpull_core.keys import migrate_account_keys as _migrate_account_keys
 from paperpull_core.words import Fixed, shape_tree, words_for, write_shaped
 from storage import (CsvFile, DOCUMENT_INDEX_COLUMNS, JsonStore, Paths,
                      atomic_write_text, build_pdf_filename, load_config,
@@ -110,16 +109,19 @@ class Document:
 
     @property
     def key(self) -> str:
-        """Stable identity. Category, date and title. The list is read from
-        the page, so there is no document id to store, and a document's date
-        and kind are what tell one from the next."""
+        """Stable identity. Category, date, title and account. The list is
+        read from the page, so there is no document id to store, and a
+        document's date and kind are what tell one from the next, and its
+        account one account's statement of the day from another's (#27).
+
+        The account part is the masked last four the picker's label ends
+        with, since the words before it are a nickname a person can change.
+        A label showing none is kept whole, short enough for a key. A sign-in
+        of one account has no account here, as every record had before #27."""
         if self.document_id:
             return f"id:{self.document_id}"
-        # Keep the last four. Cutting to forty characters made two cards
-        # of the same product collide, because the masked digits that say
-        # which one it is sit at the end, and the second card's whole
-        # history was then read as already downloaded and dropped.
-        acct = _account_component(sanitize_component(self.account or ""))
+        acct = site.account_tail(self.account or "") or \
+            _account_component(sanitize_component(self.account or ""))
         return f"{self.category}:{self.date}:{sanitize_component(self.title)[:60]}:{acct}"
 
     def to_dict(self) -> dict:
@@ -130,14 +132,30 @@ class Document:
         return cls(**d)
 
 
-def migrate_legacy_keys(records: dict) -> int:
-    """Move records written while the account was cut to forty characters.
-
-    Only a record whose key is exactly the new one with the last four taken
-    off is moved, so nothing is guessed. An archive whose account names were
-    short enough to fit has no such records and nothing happens.
-    """
-    return _migrate_account_keys(records, lambda r: Document.from_dict(r).key)
+def drop_unaccounted(records: dict, listed, done) -> int:
+    """For a sign-in of several accounts, drop discovery's records of no
+    account that are not done, where the list now gives their category,
+    date and title an account (#27). Each account's own record lists that
+    statement now, and the old one would be refused on every run, since a
+    page of several accounts cannot say which account it was. A record
+    that is done stays, and the run's progress is never touched, so
+    nothing saved before is credited to an account. `listed` holds the
+    listed documents as Documents, and `done(record)` says whether a record
+    is done. Returns how many records were dropped."""
+    named = {(d.category, d.date, d.title) for d in listed if d.account}
+    if not named:
+        return 0
+    dropped = 0
+    for key, rec in list(records.items()):
+        if not isinstance(rec, dict) or rec.get("account") or rec.get("document_id"):
+            continue
+        if (rec.get("category"), rec.get("date"), rec.get("title")) not in named:
+            continue
+        if done(rec):
+            continue
+        del records[key]
+        dropped += 1
+    return dropped
 
 
 class App:
@@ -163,9 +181,9 @@ class App:
         self.discovery = JsonStore(self.paths.discovery_json, self.paths.backups)
         self.progress.load()
         self.discovery.load()
-        for store in (self.progress, self.discovery):
-            if migrate_legacy_keys(store.data):
-                store.save(backup=True)
+        # No record here was ever kept under an account cut to forty
+        # characters, since none held an account before #27, so there is
+        # no older key to move a record from.
         self.index_csv = CsvFile(self.paths.document_index_csv,
                                  DOCUMENT_INDEX_COLUMNS, self.paths.backups)
         self.rules = doc_types.load_rules()
@@ -421,9 +439,18 @@ class App:
             self.stats["skipped_out_of_scope"] += 1
             return 0
         rows = getattr(r, "rows", 1)
+        # The site names the account only for a sign-in of several, and
+        # then the file name names it too, so one account's statement of
+        # the day is told from another's on disk as well (#27).
+        account = (getattr(r, "account", "") or "").strip()
+        if account:
+            summary = f"{summary} - {account}"
         doc = Document(title=title, category=category, summary=summary,
                        date=date, confidence=confidence, source_url=source_url,
-                       rows=rows)
+                       rows=rows, account=account)
+        # What this listing listed, for drop_unaccounted.
+        if isinstance(getattr(self, "_listed", None), list):
+            self._listed.append(doc)
         if self.discovery.get(doc.key) is None:
             rec = doc.to_dict()
             rec["state"] = State.DISCOVERED.value
@@ -447,8 +474,15 @@ class App:
             site.goto_documents(page)
         self.check_session(page)
         docs = site.collect_download_docs(page)
+        self._listed = []
         for r in docs:
             n_new += self._record_rawdoc(r, site.BILLING_URL)
+        listed = [d for d in getattr(self, "_listed", []) if d.account]
+        dropped = drop_unaccounted(self.discovery.data, listed,
+                                   lambda rec: self._already_done(Document.from_dict(rec)))
+        if dropped:
+            log.info("%d documents listed before with no account are each account's own now",
+                     dropped)
         self.discovery.save()
         log.info("Statements & Documents page: %d documents, %d new", len(docs), n_new)
 
@@ -514,19 +548,12 @@ class App:
 
     def _on_its_site(self):
         """The tab the next document is taken in, on Wells Fargo's own site and
-        never a tab of another site. Wells Fargo keeps its session in a
-        cookie a new tab shares, so with no tab of the person's on the site
-        the documents page is opened in a tab of this run's own
-        (tabs.on_its_site)."""
-        return tabs.on_its_site(self, site.is_safe_url, "Wells Fargo",
-                                self._open_documents)
-
-    def _open_documents(self, page):
-        """Wells Fargo's documents page, opened by its address the way
-        discovery opens it."""
-        if not site.goto_documents(page):
-            self.check_session(page)
-            site.goto_documents(page)
+        never a tab of another site. Every signed-in Wells Fargo address
+        carries a token of the session that only the person's own tab holds,
+        and an address typed without it ended a tester's session (#27), so
+        a tab of this run's own is never sent there. With no tab of the
+        person's on the site the run stops and says so (tabs.on_its_site)."""
+        return tabs.on_its_site(self, site.is_safe_url, "Wells Fargo")
 
     def process(self, docs: List[Document], dry_run: bool = False):
         for i, doc in enumerate(docs, 1):
@@ -580,7 +607,8 @@ class App:
             site.goto_documents(page)
         trace: list = []
         saved = site.download_bill(page, self._dl_dir, doc.date, out_path,
-                                   title=doc.title, trace=trace, rows=doc.rows)
+                                   title=doc.title, trace=trace, rows=doc.rows,
+                                   account=doc.account)
         # A capture that failed must not leave a convincing empty file behind.
         # A ZIP the capture took stays, for the branch below that opens it.
         if out_path.exists() and not (saved and receipt_pdf.is_zip(out_path)) and (
