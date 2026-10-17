@@ -7,7 +7,12 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
-## [Unreleased]
+## [0.55.0] - 2026-10-17
+
+Invest529 downloads your 529 college-savings statements and 1099-Q tax
+forms. Bilt asks you to sign in again when it has signed you out, and Best
+Buy signs in on PaperPull Server once the server's graphics are passed to
+its container.
 
 ### Added
 - **Invest529 (Virginia529 / Commonwealth Savers) downloads your 529
@@ -25,12 +30,6 @@ All notable changes to PaperPull are recorded here. Versioning follows
   sign-in words and its "Sign up / Log in" button are now read as signed
   out, so the run saves, stops and asks you to sign in again and Resume. A
   wallet that shows neither still stops the list as before.
-## [0.54.1] - 2026-10-16
-
-Best Buy signs in on PaperPull Server, once the server's graphics are
-passed to its container.
-
-### Fixed
 - **Best Buy signs in on PaperPull Server.** The server's sign-in window
   draws on a virtual screen with no graphics of its own, so Chrome drew
   every page in software and turned WebGL off, and Best Buy took it for an
