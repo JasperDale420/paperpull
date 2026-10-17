@@ -64,3 +64,28 @@ def test_the_launch_hands_the_switches_and_drivers_to_the_browser(tmp_path, monk
     argv, env = started[0]
     assert "--use-angle=vulkan" in argv and argv[-1] == "https://example.invalid/"
     assert "VK_ICD_FILENAMES" in env
+
+
+def test_a_sign_in_on_a_server_without_graphics_says_so_and_where_to_look(tmp_path, monkeypatch):
+    _machine(tmp_path, monkeypatch, nodes=())
+    note = browser.profile_note("Chrome")
+    assert "no graphics card" in note and "Graphics in SERVER.md" in note
+    _machine(tmp_path / "b", monkeypatch)
+    assert "no graphics card" not in browser.profile_note("Chrome")
+    monkeypatch.delenv("PAPERPULL_SERVER")
+    assert "no graphics card" not in browser.profile_note("Chrome")
+
+
+def test_a_failure_file_says_how_the_server_draws_and_the_desktop_says_nothing(
+        tmp_path, monkeypatch):
+    import json
+    from paperpull_core import failure
+    for nodes, said in (((), "software"), (("renderD128",), "gpu")):
+        _machine(tmp_path / said, monkeypatch, nodes=nodes)
+        path = failure.write_failure(tmp_path / said / "out", command="pilot",
+                                     step="sign in", reason="", provider="Best Buy")
+        assert json.loads(open(path, encoding="utf-8").read())["graphics"] == said
+    monkeypatch.delenv("PAPERPULL_SERVER")
+    path = failure.write_failure(tmp_path / "desk", command="pilot", step="sign in",
+                                 reason="", provider="Best Buy")
+    assert "graphics" not in json.loads(open(path, encoding="utf-8").read())

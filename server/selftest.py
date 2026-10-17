@@ -203,6 +203,24 @@ def as_pp() -> None:
                               os.path.abspath(__file__)])
 
 
+def graphics_check() -> None:
+    """Whether the sign-in window draws on a graphics chip. Not having one
+    is said, never failed, since many servers have none, but some sites
+    refuse a sign-in from a browser without one (Graphics in SERVER.md)."""
+    try:
+        sys.path.insert(0, "/opt/paperpull/core")
+        from paperpull_core.browser import server_gpu
+        switches, env = server_gpu()
+    except Exception as e:
+        check("graphics", True, "could not be read, %s" % type(e).__name__)
+        return
+    if switches:
+        check("graphics", True, "a graphics chip, through Vulkan (%s)"
+              % ", ".join(Path(p).name for p in env["VK_ICD_FILENAMES"].split(":")))
+    else:
+        check("graphics", True, "none, pages are drawn in software, see Graphics in SERVER.md")
+
+
 def main() -> int:
     as_pp()
     try:
@@ -212,6 +230,7 @@ def main() -> int:
         check("chrome", False, "%s: %s" % (type(e).__name__, e))
     if results[-1][1]:
         browser_checks()
+    graphics_check()
     panel_checks()
     screen_checks()
     network_checks()

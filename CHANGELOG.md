@@ -7,6 +7,21 @@ All notable changes to PaperPull are recorded here. Versioning follows
 - **MINOR**, a new app, or a cross-app feature
 - **MAJOR**, breaking changes (repo layout, config format, removing an app)
 
+## [Unreleased]
+
+### Fixed
+- **Best Buy signs in on PaperPull Server.** The server's sign-in window
+  draws on a virtual screen with no graphics of its own, so Chrome drew
+  every page in software and turned WebGL off, and Best Buy took it for an
+  automated browser, refusing a correct password and every code or dropping
+  the connection with `ERR_HTTP2_PROTOCOL_ERROR`. The desktop app was never
+  affected. The image now carries Mesa's graphics drivers, and with the
+  machine's Intel or AMD graphics passed to the container the sign-in
+  window draws on them, which Best Buy accepts. `compose.yaml` has the two
+  lines to turn on, SERVER.md a Graphics section, and a sign-in, the
+  self-test and every failure and Diagnose file say when the window has no
+  graphics. Measured on a UGREEN NAS with Intel graphics.
+
 ## [0.54.0] - 2026-10-16
 
 Simmons Bank loan documents and Coinbase One Card statements arrive, a

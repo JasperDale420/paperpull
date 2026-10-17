@@ -382,13 +382,20 @@ def profile_note(name: str) -> str:
     instead. That browser is the server's own, never theirs.
     """
     if os.environ.get("PAPERPULL_SERVER") == "1":
-        return (
+        note = (
             "The %s window is open on PaperPull Server's Browser Screen. Open\n"
             "it with the Browser Screen button at the top of the panel.\n"
             "\n"
             "It is a browser of the server's own, so you are NOT signed in there\n"
             "yet. Sign in as you would on a new computer, and leave the window open." % name
         )
+        if server_graphics() == "software":
+            note += (
+                "\n\n"
+                "This server's browser has no graphics card, so some sites, Best Buy\n"
+                "among them, may refuse your sign-in. If the machine has Intel or AMD\n"
+                "graphics, pass them to the container, see Graphics in SERVER.md.")
+        return note
     return (
         "This is the copy of %s already on this computer, opened with a\n"
         "separate profile of its own. Your normal browsing is untouched, and\n"
@@ -929,6 +936,14 @@ def server_gpu() -> tuple:
     env = dict(os.environ)
     env["VK_ICD_FILENAMES"] = env["VK_DRIVER_FILES"] = ":".join(drivers)
     return SERVER_GPU_SWITCHES, env
+
+
+def server_graphics() -> str:
+    """How PaperPull Server's sign-in window draws, "gpu" on a graphics chip
+    it can use, "software" without one, and "" off the server."""
+    if os.environ.get("PAPERPULL_SERVER") != "1":
+        return ""
+    return "gpu" if server_gpu()[0] else "software"
 
 
 def _launch(exe: str, name: str, profile_dir, port: str,

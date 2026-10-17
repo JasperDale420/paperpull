@@ -235,7 +235,7 @@ provider schema command note notes extra postmortem journal entries entry droppe
 discover pilot resume rename
 oldest limit seen counts bodies read too large unreadable elsewhere matched visible
 counted evaluation engine declared playwright css syntax invalid nodes node signal
-classes has testid box display visibility position len on screen ready overflow
+classes has testid box display visibility position len on screen ready overflow graphics gpu software
 scroll height width anything largest errors rejections saved bytes expected least
 kept candidates accepted rejected identity outcome refused unverified checked
 verified unknown chars requests method methods query keys shape shapes path step
