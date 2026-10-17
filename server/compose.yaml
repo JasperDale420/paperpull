@@ -32,8 +32,8 @@ services:
     # server. Leave them as they are on a machine with no /dev/dri, since
     # Docker will not start a container that names a missing device. See
     # "Graphics" in SERVER.md.
-    # devices:
-    #   - /dev/dri:/dev/dri
+    #devices:
+    #  - /dev/dri:/dev/dri
     # Chrome's own sandbox needs the container to allow user namespaces,
     # which Docker's default security profile forbids. This profile is
     # Docker's default with that one thing allowed, see seccomp-chrome.json.
