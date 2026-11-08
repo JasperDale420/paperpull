@@ -10,6 +10,10 @@ All notable changes to PaperPull are recorded here. Versioning follows
 ## [Unreleased]
 
 ### Fixed
+- **SDG&E reads a bill table whose rows start with a hidden cell.** Some
+  accounts' rows start with a cell that is never drawn and has no header, so
+  every row sat a column out from the header above it, and the list stopped
+  at its first bill. The table is now read as a person sees it.
 - **Venmo reads both tabs of its newer Statements page.** Some accounts get a
   page where a month has a Wallet tab and, with a Balance account, a Balance
   tab, with only the open tab on the page. The app stopped at the first month

@@ -86,6 +86,10 @@ TABLES = {
     "rowspan zero": ("<tr><th rowspan=\"0\"></th><th colspan=\"2\">Dates</th>"
                      "<th rowspan=\"0\">Amount Due</th><th rowspan=\"0\">Status</th></tr>"
                      "<tr><th>Due Date</th><th>Statement Date</th></tr>", DUE_FIRST, control_of),
+    # Each row starts with a cell that is never drawn and has no header,
+    # so counted, every row would be a column out from the header above it.
+    "cell never drawn": ("<tr><th>Statement Date</th><th>Due Date</th><th>Amount Due</th><th>Status</th></tr>",
+                         ROW, lambda n: '<td style="display:none">12</td>'),
     # The first row's control cell is as tall as every row, so the rows
     # after it draw no control cell, and read side by side their Due Date
     # would sit in the Statement Date column.

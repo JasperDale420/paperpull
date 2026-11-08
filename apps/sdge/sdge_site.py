@@ -406,13 +406,17 @@ _ROWS_JS = r"""() => {
   const table = document.querySelector('#billHistoryTable');
   if (!table) return null;
   const text = (cell) => (cell.textContent || '').replace(/\s+/g, ' ').trim();
+  // The table as a person sees it. Some accounts' rows start with a cell
+  // that is never drawn and has no header, which put every row a column
+  // out from the header above it.
+  const drawn = (cell) => getComputedStyle(cell).display !== 'none';
   // A header cell's column counts what spans down into its row from above
   // as well as what is before it, as the table itself lays them out.
   const heads = [];
   const taken = new Set();
   Array.from(table.tHead ? table.tHead.rows : []).forEach((tr, r) => {
     let at = 0;
-    for (const th of tr.cells) {
+    for (const th of Array.from(tr.cells).filter(drawn)) {
       while (taken.has(r + ':' + at)) at++;
       const wide = th.colSpan || 1;
       heads.push({text: text(th), at: at, wide: wide, tall: th.rowSpan});
@@ -425,7 +429,7 @@ _ROWS_JS = r"""() => {
   for (const tr of table.querySelectorAll('tbody tr[invoiceid]')) {
     const cells = [];
     let at = 0;
-    for (const td of tr.cells) {
+    for (const td of Array.from(tr.cells).filter(drawn)) {
       cells.push({text: text(td), at: at, wide: td.colSpan || 1, tall: td.rowSpan});
       at += td.colSpan || 1;
     }
