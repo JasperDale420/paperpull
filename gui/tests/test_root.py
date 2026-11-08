@@ -270,6 +270,7 @@ def test_a_packaged_install_is_not_told_to_run_setup(settings, tmp_path, monkeyp
     assert not any(a["needs_setup"] for a in packaged.values())
 
 
+@pytest.mark.reads_settings_path
 def test_on_windows_settings_live_in_roaming_appdata_not_beside_the_program(tmp_path, monkeypatch):
     """The installer puts the program in Local AppData. The settings file sat
     in the same folder for two releases and survived only because nothing
@@ -281,6 +282,7 @@ def test_on_windows_settings_live_in_roaming_appdata_not_beside_the_program(tmp_
     assert p == tmp_path / "Roaming" / "PaperPull" / "settings.json"
 
 
+@pytest.mark.reads_settings_path
 def test_a_settings_file_from_an_earlier_version_is_moved_once(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module.sys, "platform", "win32")
     monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))

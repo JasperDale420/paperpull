@@ -10,6 +10,11 @@ All notable changes to PaperPull are recorded here. Versioning follows
 ## [Unreleased]
 
 ### Fixed
+- **The panel's tests leave the settings of whoever runs them alone.** On
+  macOS `_settings_path` reads no variable, so fixtures that moved `APPDATA`
+  and `XDG_CONFIG_HOME` moved nothing, and the suite replaced the real
+  `settings.json` (#153). A `gui/tests/conftest.py` now gives every test its
+  own, and the session fails if the real file changes.
 - **Venmo reads both tabs of its newer Statements page.** Some accounts get a
   page where a month has a Wallet tab and, with a Balance account, a Balance
   tab, with only the open tab on the page. The app stopped at the first month
